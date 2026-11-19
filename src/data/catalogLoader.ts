@@ -203,11 +203,17 @@ export function getVisibleUltraTileKeys(
   return keys;
 }
 
+const DATA_BASE = `${import.meta.env.BASE_URL}data`;
+
 async function safeFetchJson<T>(url: string, retries = 2): Promise<T | null> {
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
       const res = await fetch(url);
       if (res.ok) {
+        const ct = res.headers.get('content-type') || '';
+        if (ct.includes('text/html')) {
+          return null;
+        }
         return (await res.json()) as T;
       }
       if (res.status >= 400 && res.status < 500) {
@@ -256,14 +262,14 @@ async function ensureCoreCatalogs(): Promise<void> {
       return;
     }
 
-    // Fallback for static-only hosts: load sequentially in small pairs
-    const starsRaw = await safeFetchJson<BrightStarTuple[]>('/data/stars-bright.json', 1);
-    const dsosRaw = await safeFetchJson<DsoTuple[]>('/data/dsos-bright.json', 1);
-    const consRaw = await safeFetchJson<Constellation[]>('/data/constellations.json', 1);
-    const mwRaw = await safeFetchJson<MilkyWayLayer[]>('/data/milkyway.json', 1);
-    const nebRaw = await safeFetchJson<NebulaContour[]>('/data/nebula-contours.json', 1);
-    const darkRaw = await safeFetchJson<DsoTuple[]>('/data/dark-nebulae.json', 1);
-    const bndRaw = await safeFetchJson<[number, number][][]>('/data/constellation-boundaries.json', 1);
+    // Fallback for static-only hosts (e.g., GitHub Pages): load relative to BASE_URL
+    const starsRaw = await safeFetchJson<BrightStarTuple[]>(`${DATA_BASE}/stars-bright.json`, 1);
+    const dsosRaw = await safeFetchJson<DsoTuple[]>(`${DATA_BASE}/dsos-bright.json`, 1);
+    const consRaw = await safeFetchJson<Constellation[]>(`${DATA_BASE}/constellations.json`, 1);
+    const mwRaw = await safeFetchJson<MilkyWayLayer[]>(`${DATA_BASE}/milkyway.json`, 1);
+    const nebRaw = await safeFetchJson<NebulaContour[]>(`${DATA_BASE}/nebula-contours.json`, 1);
+    const darkRaw = await safeFetchJson<DsoTuple[]>(`${DATA_BASE}/dark-nebulae.json`, 1);
+    const bndRaw = await safeFetchJson<[number, number][][]>(`${DATA_BASE}/constellation-boundaries.json`, 1);
 
     if (starsRaw) {
       cache.brightStars = starsRaw.map(mapBrightStar).sort((a, b) => a.mag - b.mag);
@@ -302,7 +308,7 @@ export async function ensureDeepStars(): Promise<void> {
   if (deepStarsPromise) return deepStarsPromise;
 
   deepStarsPromise = (async () => {
-    const raw = await safeFetchJson<DeepStarTuple[]>('/data/stars-deep.json', 2);
+    const raw = await safeFetchJson<DeepStarTuple[]>(`${DATA_BASE}/stars-deep.json`, 2);
     if (raw) {
       cache.deepStars = raw.map(mapDeepStar).sort((a, b) => a.mag - b.mag);
       cache.deepStarsLoaded = true;
@@ -319,7 +325,7 @@ async function ensureUltraStarTile(key: string): Promise<boolean> {
   let p = ultraTilePromises.get(key);
   if (!p) {
     p = (async () => {
-      const raw = await safeFetchJson<DeepStarTuple[]>(`/data/stars-ultra/tile_${key}.json`, 1);
+      const raw = await safeFetchJson<DeepStarTuple[]>(`${DATA_BASE}/stars-ultra/tile_${key}.json`, 1);
       if (raw) {
         cache.ultraStarTiles.set(key, raw.map(mapDeepStar));
       } else {
@@ -337,7 +343,7 @@ export async function ensureDeepDsos(): Promise<void> {
   if (deepDsosPromise) return deepDsosPromise;
 
   deepDsosPromise = (async () => {
-    const raw = await safeFetchJson<DsoTuple[]>('/data/dsos-deep.json', 2);
+    const raw = await safeFetchJson<DsoTuple[]>(`${DATA_BASE}/dsos-deep.json`, 2);
     if (raw) {
       cache.dsosDeep = raw.map(mapDso).sort((a, b) => a.mag - b.mag);
       cache.deepDsosLoaded = true;

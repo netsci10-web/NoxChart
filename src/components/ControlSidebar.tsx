@@ -753,33 +753,6 @@ export function ControlSidebar({
                   className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
                 />
               </label>
-
-              {layers.showSolarSystem && layers.showSolarSystemLabels && (
-                <div className="pl-2 pb-0.5 space-y-0.5">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
-                      화면 밝기 상위 표시
-                    </span>
-                    <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
-                      {layers.solarSystemLabelDensityPct}%
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={layers.solarSystemLabelDensityPct}
-                    onChange={(e) =>
-                      onChangeLayers((p) => ({
-                        ...p,
-                        solarSystemLabelDensityPct: Number(e.target.value),
-                      }))
-                    }
-                    className="w-full h-1.5 accent-cyan-500 cursor-pointer"
-                  />
-                </div>
-              )}
             </div>
 
             {/* 2. 항성 (Stars) */}
@@ -911,6 +884,33 @@ export function ControlSidebar({
                     className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
                   />
                 </label>
+
+                {layers.showDso && (
+                  <div className="pl-2 pb-0.5 space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        심볼 시각화 (화면 밝기 상위)
+                      </span>
+                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                        {layers.dsoSymbolDensityPct}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={layers.dsoSymbolDensityPct}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          dsoSymbolDensityPct: Number(e.target.value),
+                        }))
+                      }
+                      className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                    />
+                  </div>
+                )}
 
                 <label
                   className={`flex items-center justify-between gap-1.5 py-0.5 ${

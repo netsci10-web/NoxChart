@@ -70,9 +70,9 @@ const DEFAULT_LAYERS: LayerSettings = {
   showPlanetSurface: true,
   showSolarSystemOrbits: false,
   showSolarSystemLabels: true,
-  solarSystemLabelDensityPct: 10,
   showStarColors: true,
   showDso: true,
+  dsoSymbolDensityPct: 100,
   showDsoLabels: true,
   dsoLabelDensityPct: 10,
   showStarLabels: true,
@@ -114,6 +114,7 @@ const DEFAULT_OPTICS: OpticsSettings = {
   sensorWidthDeg: 2.15,
   sensorHeightDeg: 1.21,
   showStarHop: false,
+  showSelectionMark: true,
 };
 
 const DEFAULT_OBSERVER: ObserverConfig = {

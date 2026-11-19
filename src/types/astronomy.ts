@@ -85,13 +85,13 @@ export interface LayerSettings {
   showPlanetSurface: boolean;
   showSolarSystemOrbits: boolean;
   showSolarSystemLabels: boolean;
-  solarSystemLabelDensityPct: number; // 0..100 (% of currently visible on-screen solar system bodies)
   showStarColors: boolean;
   showDso: boolean;
+  dsoSymbolDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to render)
   showDsoLabels: boolean;
-  dsoLabelDensityPct: number; // 0..100 (% of currently visible on-screen DSOs)
+  dsoLabelDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to label)
   showStarLabels: boolean;
-  starLabelDensityPct: number; // 0..100 (% of currently visible on-screen stars)
+  starLabelDensityPct: number; // 0..100 (% of currently visible on-screen stars to label)
   showFieldStars: boolean;
   enableGaiaLive: boolean;
   magOffset: number; // -2.0 to +2.5 limiting magnitude adjustment
@@ -119,6 +119,7 @@ export interface OpticsSettings {
   sensorWidthDeg: number;
   sensorHeightDeg: number;
   showStarHop: boolean;
+  showSelectionMark: boolean; // 선택 천체 타겟 마크 표시 여부
 }
 
 export interface ObserverConfig {

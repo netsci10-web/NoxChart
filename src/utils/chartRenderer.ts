@@ -1205,16 +1205,22 @@ export function renderStarChart(
       dsoLists.push(catalogs.darkNebulae);
     }
 
-    const onScreenDsoItems: {
-      mag: number;
+    interface PendingDso {
+      dso: DeepSkyObject;
+      pt: { x: number; y: number };
+      belowMinAlt: boolean;
       isSelected: boolean;
-      candidate: LabelCandidate;
-    }[] = [];
+      isOnScreen: boolean;
+    }
+
+    const pendingDsos: PendingDso[] = [];
+    const onScreenNonDimmed: PendingDso[] = [];
 
     for (const list of dsoLists) {
       for (let i = 0; i < list.length; i++) {
         const dso = list[i];
-        if (dso.mag > dsoMagCutoff && selected?.data.id !== dso.id) {
+        const isSelected = selected?.kind === 'dso' && selected.data.id === dso.id;
+        if (dso.mag > dsoMagCutoff && !isSelected) {
           if (list === catalogs.dsosDeep || list === catalogs.darkNebulae) break;
           continue;
         }
@@ -1228,61 +1234,92 @@ export function renderStarChart(
         if (altFilterActive) {
           const { altDeg } = equatorialToHorizontal(dso.ra, dso.dec, lstDeg, observer.lat);
           belowMinAlt = altDeg < observer.minAltitudeDeg;
-          if (belowMinAlt && !observer.highlightAboveMinAlt && selected?.data.id !== dso.id) {
+          if (belowMinAlt && !observer.highlightAboveMinAlt && !isSelected) {
             continue;
           }
         }
 
-        visibleDsoCount++;
-        const symColor = palette.dsoColor[dso.type] ?? palette.dsoLabel;
-        const symR = drawDsoSymbol(ctx, dso, pt.x, pt.y, pxPerDeg, symColor, palette, proj, belowMinAlt);
-        if (dso.mag < 11.5 && dso.type !== 'DARK' && !belowMinAlt) {
-          placer.registerObstacle(pt.x, pt.y, symR);
+        const isOnScreen = pt.x >= 0 && pt.x <= width && pt.y >= 0 && pt.y <= height;
+        const entry: PendingDso = { dso, pt, belowMinAlt, isSelected, isOnScreen };
+        pendingDsos.push(entry);
+        if (isOnScreen && !belowMinAlt) {
+          onScreenNonDimmed.push(entry);
         }
+      }
+    }
 
-        if (sessionIds.has(dso.id)) {
-          ctx.save();
-          ctx.strokeStyle = palette.selectionRing;
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          ctx.arc(pt.x, pt.y, symR + 3.5, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.restore();
-        }
+    const symPct = Math.max(0, Math.min(100, layers.dsoSymbolDensityPct ?? 100));
+    const allowedDsoSet = new Set<PendingDso>();
+    if (symPct >= 100) {
+      for (const entry of pendingDsos) allowedDsoSet.add(entry);
+    } else {
+      onScreenNonDimmed.sort((a, b) => a.dso.mag - b.dso.mag);
+      const symQuota = symPct <= 0 ? 0 : Math.ceil((onScreenNonDimmed.length * symPct) / 100);
+      for (let i = 0; i < symQuota && i < onScreenNonDimmed.length; i++) {
+        allowedDsoSet.add(onScreenNonDimmed[i]);
+      }
+      for (const entry of pendingDsos) {
+        if (entry.isSelected) allowedDsoSet.add(entry);
+      }
+    }
 
-        targets.push({
-          kind: 'dso',
-          id: dso.id,
-          x: pt.x,
-          y: pt.y,
-          radius: Math.max(9, Math.min(28, symR + 3)),
+    const onScreenDsoItems: {
+      mag: number;
+      isSelected: boolean;
+      candidate: LabelCandidate;
+    }[] = [];
+
+    for (const entry of pendingDsos) {
+      if (!allowedDsoSet.has(entry)) continue;
+      const { dso, pt, belowMinAlt, isSelected, isOnScreen } = entry;
+
+      visibleDsoCount++;
+      const symColor = palette.dsoColor[dso.type] ?? palette.dsoLabel;
+      const symR = drawDsoSymbol(ctx, dso, pt.x, pt.y, pxPerDeg, symColor, palette, proj, belowMinAlt);
+      if (dso.mag < 11.5 && dso.type !== 'DARK' && !belowMinAlt) {
+        placer.registerObstacle(pt.x, pt.y, symR);
+      }
+
+      if (sessionIds.has(dso.id)) {
+        ctx.save();
+        ctx.strokeStyle = palette.selectionRing;
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, symR + 3.5, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      targets.push({
+        kind: 'dso',
+        id: dso.id,
+        x: pt.x,
+        y: pt.y,
+        radius: Math.max(9, Math.min(28, symR + 3)),
+        mag: dso.mag,
+        item: { kind: 'dso', data: dso },
+      });
+
+      if (layers.showDsoLabels && !belowMinAlt && isOnScreen) {
+        const showCommon = view.fsz < 42 && dso.koName;
+        const text = showCommon ? `${dso.id} ${dso.koName}` : dso.id;
+        onScreenDsoItems.push({
           mag: dso.mag,
-          item: { kind: 'dso', data: dso },
+          isSelected,
+          candidate: {
+            priority: isSelected
+              ? -100
+              : dso.mag - (dso.id.startsWith('M') ? 0.5 : 0),
+            x: pt.x,
+            y: pt.y,
+            radius: Math.min(24, symR),
+            text,
+            color: dso.type === 'DARK' ? palette.darkNebulaStroke : palette.dsoLabel,
+            font: isSelected
+              ? '600 11px "IBM Plex Mono", monospace'
+              : '500 10.5px "IBM Plex Mono", monospace',
+          },
         });
-
-        const isOnScreenPt = pt.x >= 0 && pt.x <= width && pt.y >= 0 && pt.y <= height;
-        if (layers.showDsoLabels && !belowMinAlt && isOnScreenPt) {
-          const isSelected = selected?.kind === 'dso' && selected.data.id === dso.id;
-          const showCommon = view.fsz < 42 && dso.koName;
-          const text = showCommon ? `${dso.id} ${dso.koName}` : dso.id;
-          onScreenDsoItems.push({
-            mag: dso.mag,
-            isSelected,
-            candidate: {
-              priority: isSelected
-                ? -100
-                : dso.mag - (dso.id.startsWith('M') ? 0.5 : 0),
-              x: pt.x,
-              y: pt.y,
-              radius: Math.min(24, symR),
-              text,
-              color: dso.type === 'DARK' ? palette.darkNebulaStroke : palette.dsoLabel,
-              font: isSelected
-                ? '600 11px "IBM Plex Mono", monospace'
-                : '500 10.5px "IBM Plex Mono", monospace',
-            },
-          });
-        }
       }
     }
 
@@ -1657,11 +1694,6 @@ export function renderStarChart(
     const solarBodies = getSolarSystemBodies(obsTimeMs);
     const sunBody = solarBodies.find((b) => b.id === 'Sun');
     const planetRenderer = getPlanetRenderer();
-    const onScreenSolarItems: {
-      mag: number;
-      isSelected: boolean;
-      candidate: LabelCandidate;
-    }[] = [];
     ctx.save();
     for (const body of solarBodies) {
       const isSelected = selected?.kind === 'planet' && selected.data.id === body.id;
@@ -2151,37 +2183,21 @@ export function renderStarChart(
             : isPlanetaryMoon
             ? '#E2E8F0'
             : '#FDE68A';
-        onScreenSolarItems.push({
-          mag: body.mag,
-          isSelected,
-          candidate: {
-            priority: isSelected ? -100 : body.mag - 5,
-            text: isPlanetaryMoon ? body.koName : `${body.symbol} ${body.koName}`,
-            x: pt.x,
-            y: pt.y,
-            radius: baseR + 3,
-            color: labelColor,
-            font:
-              isMinorBody || isPlanetaryMoon
-                ? '500 10px "Pretendard", "IBM Plex Sans", sans-serif'
-                : '600 11px "Pretendard", "IBM Plex Sans", sans-serif',
-          },
+        labelCandidates.push({
+          priority: isSelected ? -100 : body.mag - 5,
+          text: isPlanetaryMoon ? body.koName : `${body.symbol} ${body.koName}`,
+          x: pt.x,
+          y: pt.y,
+          radius: baseR + 3,
+          color: labelColor,
+          font:
+            isMinorBody || isPlanetaryMoon
+              ? '500 10px "Pretendard", "IBM Plex Sans", sans-serif'
+              : '600 11px "Pretendard", "IBM Plex Sans", sans-serif',
         });
       }
     }
     ctx.restore();
-
-    if (layers.showSolarSystemLabels && onScreenSolarItems.length > 0) {
-      onScreenSolarItems.sort((a, b) => a.mag - b.mag);
-      const solarPct = Math.max(0, Math.min(100, layers.solarSystemLabelDensityPct ?? 10));
-      const solarQuota =
-        solarPct <= 0 ? 0 : Math.ceil((onScreenSolarItems.length * solarPct) / 100);
-      for (let i = 0; i < onScreenSolarItems.length; i++) {
-        if (i < solarQuota || onScreenSolarItems[i].isSelected) {
-          labelCandidates.push(onScreenSolarItems[i].candidate);
-        }
-      }
-    }
   }
 
   // 9. Star-Hopping Guide Path(s) — supports multi-route pointers (e.g., Dubhe & Navi -> Polaris)
@@ -2464,7 +2480,7 @@ export function renderStarChart(
   }
 
   // 11. Selection & Hover Reticles
-  if (selected) {
+  if (selected && optics.showSelectionMark) {
     const selPt = projectStereographic(selected.data.ra, selected.data.dec, proj, 30);
     if (selPt) {
       ctx.save();

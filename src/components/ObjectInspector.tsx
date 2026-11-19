@@ -8,6 +8,7 @@ import {
   Crosshair,
   Navigation,
   Sparkles,
+  Target,
   Trash2,
   X,
 } from 'lucide-react';
@@ -289,8 +290,8 @@ export function ObjectInspector({
                 </div>
               </div>
 
-              {/* Action Row */}
-              <div className="grid grid-cols-2 gap-1.5">
+              {/* Action Row: 시야중심 | 선택마크 | 목록추가 */}
+              <div className="grid grid-cols-3 gap-1">
                 <button
                   type="button"
                   onClick={() =>
@@ -310,7 +311,7 @@ export function ObjectInspector({
                           : 14,
                     }))
                   }
-                  className={`py-1.5 px-1.5 border text-[10.5px] tracking-[-0.06em] font-medium flex items-center justify-center gap-1 whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
+                  className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
                   style={{ borderRadius: '5px' }}
                 >
                   <Crosshair className="w-3 h-3 shrink-0" />
@@ -318,8 +319,22 @@ export function ObjectInspector({
                 </button>
                 <button
                   type="button"
+                  onClick={() =>
+                    onChangeOptics((p) => ({ ...p, showSelectionMark: !p.showSelectionMark }))
+                  }
+                  title={optics.showSelectionMark ? '선택 마크 숨기기' : '선택 마크 표시'}
+                  className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${
+                    optics.showSelectionMark ? ui.buttonActive : ui.buttonIdle
+                  }`}
+                  style={{ borderRadius: '5px' }}
+                >
+                  <Target className="w-3 h-3 shrink-0" />
+                  <span>선택 마크</span>
+                </button>
+                <button
+                  type="button"
                   onClick={() => onToggleSessionItem(selected)}
-                  className={`py-1.5 px-1.5 border text-[10.5px] tracking-[-0.06em] font-medium flex items-center justify-center gap-1 whitespace-nowrap shrink-0 ${
+                  className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${
                     sessionEntry ? ui.buttonActive : ui.buttonIdle
                   }`}
                   style={{ borderRadius: '5px' }}
