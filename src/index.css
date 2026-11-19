@@ -1,0 +1,134 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "IBM Plex Sans", "Noto Sans KR", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    padding: 0;
+    overflow: hidden;
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Precision thin scrollbars for sidebars */
+.astro-scroll::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+.astro-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.astro-scroll::-webkit-scrollbar-thumb {
+  background: rgba(148, 163, 184, 0.25);
+  border-radius: 3px;
+}
+
+.astro-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(148, 163, 184, 0.45);
+}
+
+/* True scotopic red night-vision styling for native controls & scrollbars */
+[data-theme="red"] {
+  color-scheme: dark;
+}
+
+[data-theme="red"] .astro-scroll::-webkit-scrollbar-thumb {
+  background: rgba(220, 38, 38, 0.35);
+}
+
+[data-theme="red"] .astro-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(239, 68, 68, 0.55);
+}
+
+[data-theme="red"] input[type="checkbox"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background-color: #1A0303;
+  border: 1.5px solid #991B1B;
+  border-radius: 3px;
+  display: inline-grid;
+  place-content: center;
+  cursor: pointer;
+  transition: background-color 120ms ease, border-color 120ms ease;
+}
+
+[data-theme="red"] input[type="checkbox"]:checked {
+  background-color: #B91C1C;
+  border-color: #EF4444;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12' fill='none'%3E%3Cpath d='M2.2 6.2L4.8 8.8L9.8 3.2' stroke='%230D0000' stroke-width='2.1' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: center;
+  background-size: 10px 10px;
+}
+
+[data-theme="red"] input[type="checkbox"]:hover {
+  border-color: #EF4444;
+}
+
+[data-theme="red"] input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  background: transparent;
+  cursor: pointer;
+}
+
+[data-theme="red"] input[type="range"]::-webkit-slider-runnable-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: #3B0808;
+  border: 1px solid #6B1111;
+}
+
+[data-theme="red"] input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -5px;
+  border-radius: 9999px;
+  background: #DC2626;
+  border: 1.5px solid #EF4444;
+  box-shadow: 0 0 0 1px #0D0000;
+}
+
+[data-theme="red"] input[type="range"]::-moz-range-track {
+  height: 4px;
+  border-radius: 9999px;
+  background: #3B0808;
+  border: 1px solid #6B1111;
+}
+
+[data-theme="red"] input[type="range"]::-moz-range-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 9999px;
+  background: #DC2626;
+  border: 1.5px solid #EF4444;
+}
+
+/* Print stylesheet for field printable star chart */
+@media print {
+  header,
+  aside,
+  .no-print {
+    display: none !important;
+  }
+  main,
+  #chart-stage {
+    position: fixed !important;
+    inset: 0 !important;
+    width: 100vw !important;
+    height: 100vh !important;
+    background: #ffffff !important;
+  }
+}

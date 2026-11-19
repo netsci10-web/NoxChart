@@ -1,0 +1,6 @@
+{
+  "name": "Sidereal Atlas — Interactive Astronomical Star Chart",
+  "description": "High-precision web star chart with stereographic projection, level-of-detail celestial catalogs, collision-free labeling, and multi-mode observation planning.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}
