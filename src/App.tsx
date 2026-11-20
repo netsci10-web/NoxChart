@@ -484,7 +484,7 @@ export default function App() {
             title="초기값으로 되돌리기"
             className="text-sm font-bold tracking-tight whitespace-nowrap shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
           >
-            Sidereal Atlas
+            NoxChart
           </button>
         </div>
 

@@ -129,7 +129,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         const canvas = canvasRef.current;
         if (!canvas) return;
         const link = document.createElement('a');
-        link.download = `sidereal-atlas-${view.coordSystem}-ra${view.ra.toFixed(2)}-dec${view.dec.toFixed(1)}-fsz${view.fsz < 1 ? view.fsz.toFixed(3) : view.fsz.toFixed(0)}.png`;
+        link.download = `noxchart-${view.coordSystem}-ra${view.ra.toFixed(2)}-dec${view.dec.toFixed(1)}-fsz${view.fsz < 1 ? view.fsz.toFixed(3) : view.fsz.toFixed(0)}.png`;
         link.href = canvas.toDataURL('image/png');
         link.click();
       },
