@@ -422,6 +422,15 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     const gaiaActive =
       layers.enableGaiaLive && view.fsz <= GAIA_LIVE_MAX_FSZ && renderStats.magLimit > 9.0;
 
+    const formattedFov =
+      view.fsz >= 10
+        ? `${view.fsz.toFixed(1)}°`
+        : view.fsz >= 1
+        ? `${view.fsz.toFixed(2)}°`
+        : view.fsz >= 0.1
+        ? `${(view.fsz * 60).toFixed(1)}′`
+        : `${(view.fsz * 60).toFixed(2)}′`;
+
     return (
       <div
         id="chart-stage"
@@ -454,10 +463,10 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           className="relative z-10 block w-full h-full cursor-crosshair touch-none"
         />
 
-        {/* Top-Left Live Coordinate & LoD Telemetry HUD */}
+        {/* Top-Left Live Coordinate & Object Count Telemetry HUD (single line) */}
         <div
-          className={`no-print pointer-events-none absolute z-20 top-3 max-w-[calc(100%-240px)] border px-3 py-2 text-xs font-mono tabular-nums backdrop-blur-sm transition-[left] duration-200 ease-out ${ui.hudOverlay}`}
-          style={{ borderRadius: '6px', left: leftDrawerOpen ? '236px' : '16px' }}
+          className={`no-print pointer-events-none absolute z-20 top-3 max-w-[calc(100%-296px)] border px-3 py-1.5 text-xs font-mono tabular-nums backdrop-blur-sm transition-[left] duration-200 ease-out ${ui.hudOverlay}`}
+          style={{ borderRadius: '6px', left: leftDrawerOpen ? '282px' : '16px' }}
         >
           <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
             <span className={ui.accentText}>
@@ -469,23 +478,11 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                 ? `고도 ${centerAltAz.altDeg.toFixed(1)}° · 방위각 ${centerAltAz.azDeg.toFixed(1)}° (${getCompassDirection(centerAltAz.azDeg)})`
                 : `RA ${formatRA(view.ra * 15)} · Dec ${formatDec(view.dec)}`}
             </span>
-          </div>
-          <div className={`mt-1 flex flex-wrap items-center gap-x-2 gap-y-0.5 ${ui.textMuted}`}>
-            <span>
-              시야각{' '}
-              {view.fsz >= 10
-                ? `${view.fsz.toFixed(1)}°`
-                : view.fsz >= 1
-                ? `${view.fsz.toFixed(2)}°`
-                : view.fsz >= 0.1
-                ? `${(view.fsz * 60).toFixed(1)}′`
-                : `${(view.fsz * 60).toFixed(2)}′ (${(view.fsz * 3600).toFixed(0)}″)`}
-            </span>
-            <span aria-hidden="true">·</span>
-            <span>천체 {renderStats.stars + renderStats.dsos}개</span>
+            <span aria-hidden="true" className={ui.textMuted}>·</span>
+            <span className={ui.textMuted}>천체 {renderStats.stars + renderStats.dsos}개</span>
             {observer.minAltitudeDeg > -90 && (
               <>
-                <span aria-hidden="true">·</span>
+                <span aria-hidden="true" className={ui.textMuted}>·</span>
                 <span className={ui.accentText}>
                   고도 ≥{observer.minAltitudeDeg}° ({observer.highlightAboveMinAlt ? '흐림' : '숨김'})
                 </span>
@@ -493,7 +490,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             )}
             {gaiaActive && (
               <>
-                <span aria-hidden="true">·</span>
+                <span aria-hidden="true" className={ui.textMuted}>·</span>
                 <span className={ui.accentText}>
                   {catalogs.gaiaLoading
                     ? 'Gaia 로딩'
@@ -510,7 +507,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         {pointerEq && pointerAltAz && (
           <div
             className={`no-print pointer-events-none absolute z-20 bottom-3 border px-3 py-1.5 text-[11px] font-mono tabular-nums backdrop-blur-sm transition-[left] duration-200 ease-out ${ui.hudOverlay}`}
-            style={{ borderRadius: '6px', left: leftDrawerOpen ? '236px' : '16px' }}
+            style={{ borderRadius: '6px', left: leftDrawerOpen ? '282px' : '16px' }}
           >
             <div className="flex items-center gap-2">
               <Crosshair className="w-3.5 h-3.5 shrink-0" />
@@ -529,7 +526,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         {/* Top-Right Quick Viewport Controls (Zoom, 180° All-Sky, Flip H/V) */}
         <div
           className={`no-print absolute z-20 top-3 flex items-center gap-1 border p-1 backdrop-blur-sm transition-[right] duration-200 ease-out ${ui.hudOverlay}`}
-          style={{ borderRadius: '6px', right: rightDrawerOpen ? '236px' : '12px' }}
+          style={{ borderRadius: '6px', right: rightDrawerOpen ? '282px' : '12px' }}
         >
           <button
             type="button"
@@ -543,6 +540,12 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           >
             <Plus className="w-4 h-4" />
           </button>
+          <div
+            title={`현재 시야각 (FOV): ${formattedFov}`}
+            className={`px-2 py-1.5 min-w-[54px] text-center font-mono text-xs font-semibold tabular-nums whitespace-nowrap shrink-0 select-none ${ui.accentText}`}
+          >
+            {formattedFov}
+          </div>
           <button
             type="button"
             onClick={() =>

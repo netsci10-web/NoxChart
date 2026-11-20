@@ -57,13 +57,13 @@ const DEFAULT_THEME: ThemeMode = 'dark';
 const DEFAULT_LAYERS: LayerSettings = {
   showGridEq: true,
   showGridAltAz: false,
-  showHorizon: true,
+  showHorizon: false,
   showTerrain: false,
-  showEcliptic: true,
-  showMilkyWay: true,
-  showNebulaContours: true,
+  showEcliptic: false,
+  showMilkyWay: false,
+  showNebulaContours: false,
   showConstellationLines: true,
-  constellationLineStyle: 'modern',
+  constellationLineStyle: 'traditional',
   showConstellationBoundaries: false,
   showConstellationNames: true,
   showSolarSystem: true,
@@ -72,11 +72,11 @@ const DEFAULT_LAYERS: LayerSettings = {
   showSolarSystemLabels: true,
   showStarColors: true,
   showDso: true,
-  dsoSymbolDensityPct: 100,
+  dsoSymbolDensityPct: 30,
   showDsoLabels: true,
-  dsoLabelDensityPct: 10,
+  dsoLabelDensityPct: 7,
   showStarLabels: true,
-  starLabelDensityPct: 10,
+  starLabelDensityPct: 7,
   showFieldStars: true,
   enableGaiaLive: true,
   magOffset: 0,
@@ -96,7 +96,7 @@ const DEFAULT_LAYERS: LayerSettings = {
 const DEFAULT_HIPS: HipsSettings = {
   enabled: true,
   survey: 'dss2',
-  opacity: 0.55,
+  opacity: 0.5,
 };
 
 const DEFAULT_OPTICS: OpticsSettings = {
@@ -351,6 +351,9 @@ export default function App() {
   const handleSelect = (item: SelectedItem | null) => {
     setSelected(item);
     if (item) {
+      setOptics((prev) =>
+        prev.showSelectionMark ? prev : { ...prev, showSelectionMark: true }
+      );
       setInspectorTab('detail');
       setRightOpen(true);
     }
@@ -766,9 +769,9 @@ export default function App() {
           />
         </div>
 
-        {/* Left Overlay Control Drawer (224px) */}
+        {/* Left Overlay Control Drawer (270px) */}
         <div
-          className={`no-print absolute inset-y-0 left-0 z-30 w-56 transition-transform duration-200 ease-out shadow-2xl ${
+          className={`no-print absolute inset-y-0 left-0 z-30 w-[270px] transition-transform duration-200 ease-out shadow-2xl ${
             leftOpen ? 'translate-x-0' : '-translate-x-full pointer-events-none'
           }`}
         >
@@ -800,7 +803,7 @@ export default function App() {
           aria-label={leftOpen ? '왼쪽 메뉴 접기' : '왼쪽 메뉴 펼치기'}
           className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-14 w-5 border border-l-0 flex items-center justify-center transition-[left,background-color] duration-200 ease-out shadow-md ${ui.panel} hover:opacity-90`}
           style={{
-            left: leftOpen ? '224px' : '0px',
+            left: leftOpen ? '270px' : '0px',
             borderTopRightRadius: '6px',
             borderBottomRightRadius: '6px',
           }}
@@ -812,9 +815,9 @@ export default function App() {
           )}
         </button>
 
-        {/* Right Overlay Object Inspector / Session Drawer (224px, matches left drawer) */}
+        {/* Right Overlay Object Inspector / Session Drawer (270px, matches left drawer) */}
         <div
-          className={`no-print absolute inset-y-0 right-0 z-30 w-56 transition-transform duration-200 ease-out shadow-2xl ${
+          className={`no-print absolute inset-y-0 right-0 z-30 w-[270px] transition-transform duration-200 ease-out shadow-2xl ${
             rightOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
           }`}
         >
@@ -829,7 +832,7 @@ export default function App() {
               sessionPlan={sessionPlan}
               onTabChange={setInspectorTab}
               onClose={() => setRightOpen(false)}
-              onSelect={setSelected}
+              onSelect={handleSelect}
               onChangeView={handleChangeView}
               onChangeOptics={setOptics}
               onToggleSessionItem={handleToggleSessionItem}

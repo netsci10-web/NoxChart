@@ -2,15 +2,13 @@ import React, { useEffect, useState } from 'react';
 import {
   CalendarMinus2,
   CalendarPlus2,
-  ChevronLeft,
-  ChevronRight,
   ChevronsLeft,
   ChevronsRight,
+  Clock,
   Pause,
   Play,
   RotateCcw,
-  StepBack,
-  StepForward,
+  Timer,
 } from 'lucide-react';
 import { ObserverConfig, ThemeMode } from '../types/astronomy';
 
@@ -148,12 +146,19 @@ export function TimeControlBar({
       ? 'text-[#FF3B3B]'
       : 'text-[#22D3EE]';
 
-  const stepBtnCls =
+  const stepBackBtnCls =
     theme === 'white'
-      ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+      ? 'bg-indigo-50/80 border-indigo-300 text-indigo-700 hover:bg-indigo-100'
       : theme === 'red'
-      ? 'bg-[#150202] border-[#420C0C] text-[#DC2626] hover:bg-[#240404] hover:text-[#FF4545]'
-      : 'bg-[#141D2F] border-[#26344E] text-slate-200 hover:bg-[#1C2840]';
+      ? 'bg-[#170202] border-[#521010] text-[#E04040] hover:bg-[#260505] hover:text-[#FF5A5A]'
+      : 'bg-[#121D36] border-[#314E89] text-[#93C5FD] hover:bg-[#19284A] hover:text-[#BFDBFE]';
+
+  const stepFwdBtnCls =
+    theme === 'white'
+      ? 'bg-sky-50/80 border-sky-300 text-sky-700 hover:bg-sky-100'
+      : theme === 'red'
+      ? 'bg-[#1C0303] border-[#6B1515] text-[#F05252] hover:bg-[#2C0606] hover:text-[#FF6B6B]'
+      : 'bg-[#0A2234] border-[#0C7BB3] text-[#7DD3FC] hover:bg-[#103048] hover:text-[#BAE6FD]';
 
   const capsuleCls =
     theme === 'white'
@@ -162,12 +167,19 @@ export function TimeControlBar({
       ? 'bg-[#100101] border-[#420C0C]'
       : 'bg-[#0D1424] border-[#26344E]';
 
-  const iconBtnCls =
+  const decelBtnCls =
     theme === 'white'
-      ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+      ? 'bg-amber-50 border-amber-400 text-amber-700 hover:bg-amber-100'
       : theme === 'red'
-      ? 'text-[#B91C1C] hover:text-[#FF4545] hover:bg-[#220404]'
-      : 'text-slate-300 hover:text-white hover:bg-[#1B273E]';
+      ? 'bg-[#220404] border-[#8A1818] text-[#FF6B6B] hover:bg-[#330707] hover:text-[#FF8585]'
+      : 'bg-[#2A1806] border-[#D97706]/80 text-[#FBBF24] hover:bg-[#3A220A] hover:text-[#FDE68A]';
+
+  const accelBtnCls =
+    theme === 'white'
+      ? 'bg-emerald-50 border-emerald-400 text-emerald-700 hover:bg-emerald-100'
+      : theme === 'red'
+      ? 'bg-[#280505] border-[#B91C1C] text-[#FF4D4D] hover:bg-[#3A0808] hover:text-[#FF6E6E]'
+      : 'bg-[#062822] border-[#10B981]/80 text-[#34D399] hover:bg-[#0A3A31] hover:text-[#6EE7B7]';
 
   const playBtnCls = observer.isPlaying
     ? theme === 'white'
@@ -210,47 +222,50 @@ export function TimeControlBar({
         <span className={clockCls}>{formatClockIso(displayMs)}</span>
       </div>
 
-      {/* Bottom icon-only time step & playback dock + right-side speed readout badge */}
+      {/* Bottom time step & playback dock + right-anchored leftward-growing speed readout */}
       <div className="flex items-center justify-center gap-1.5 flex-wrap">
-        {/* Step Back Icons: -1D, -1H, -1M */}
+        {/* Step Back: -1D, -1H, -1M */}
         <button
           type="button"
           onClick={() => stepTime(-86400 * 1000)}
           title="1일 전 (-1D)"
-          aria-label="1일 전"
-          className={`h-7 w-7 rounded-md border flex items-center justify-center transition-colors shrink-0 ${stepBtnCls}`}
+          aria-label="1일 전 (-1D)"
+          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepBackBtnCls}`}
         >
-          <CalendarMinus2 className="w-3.5 h-3.5" />
+          <CalendarMinus2 className="w-3 h-3 opacity-85 shrink-0" />
+          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">-1D</span>
         </button>
         <button
           type="button"
           onClick={() => stepTime(-3600 * 1000)}
           title="1시간 전 (-1H)"
-          aria-label="1시간 전"
-          className={`h-7 w-7 rounded-md border flex items-center justify-center transition-colors shrink-0 ${stepBtnCls}`}
+          aria-label="1시간 전 (-1H)"
+          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepBackBtnCls}`}
         >
-          <StepBack className="w-3.5 h-3.5" />
+          <Clock className="w-3 h-3 opacity-85 shrink-0" />
+          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">-1H</span>
         </button>
         <button
           type="button"
           onClick={() => stepTime(-60 * 1000)}
           title="1분 전 (-1M)"
-          aria-label="1분 전"
-          className={`h-7 w-7 rounded-md border flex items-center justify-center transition-colors shrink-0 ${stepBtnCls}`}
+          aria-label="1분 전 (-1M)"
+          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepBackBtnCls}`}
         >
-          <ChevronLeft className="w-4 h-4" />
+          <Timer className="w-3 h-3 opacity-85 shrink-0" />
+          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">-1M</span>
         </button>
 
-        {/* Inner Bordered Icon-Only Playback Capsule: [<<] [▶/⏸] [↺] [>>] */}
+        {/* Inner Bordered Playback Capsule: [<<] [▶/⏸] [↺] [>>] */}
         <div
-          className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border ${capsuleCls}`}
+          className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border shrink-0 ${capsuleCls}`}
         >
           <button
             type="button"
             onClick={handleDecelerate}
             title="감속 (속도 감소 / 역방향 가속)"
             aria-label="감속"
-            className={`h-6 w-6 rounded flex items-center justify-center transition-colors shrink-0 ${iconBtnCls}`}
+            className={`h-6 w-6 rounded border flex items-center justify-center transition-colors shrink-0 ${decelBtnCls}`}
           >
             <ChevronsLeft className="w-4 h-4" />
           </button>
@@ -284,49 +299,54 @@ export function TimeControlBar({
             onClick={handleAccelerate}
             title="가속 (속도 증가)"
             aria-label="가속"
-            className={`h-6 w-6 rounded flex items-center justify-center transition-colors shrink-0 ${iconBtnCls}`}
+            className={`h-6 w-6 rounded border flex items-center justify-center transition-colors shrink-0 ${accelBtnCls}`}
           >
             <ChevronsRight className="w-4 h-4" />
           </button>
         </div>
 
-        {/* Step Forward Icons: +1M, +1H, +1D */}
+        {/* Step Forward: +1M, +1H, +1D */}
         <button
           type="button"
           onClick={() => stepTime(60 * 1000)}
           title="1분 후 (+1M)"
-          aria-label="1분 후"
-          className={`h-7 w-7 rounded-md border flex items-center justify-center transition-colors shrink-0 ${stepBtnCls}`}
+          aria-label="1분 후 (+1M)"
+          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepFwdBtnCls}`}
         >
-          <ChevronRight className="w-4 h-4" />
+          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">+1M</span>
+          <Timer className="w-3 h-3 opacity-85 shrink-0" />
         </button>
         <button
           type="button"
           onClick={() => stepTime(3600 * 1000)}
           title="1시간 후 (+1H)"
-          aria-label="1시간 후"
-          className={`h-7 w-7 rounded-md border flex items-center justify-center transition-colors shrink-0 ${stepBtnCls}`}
+          aria-label="1시간 후 (+1H)"
+          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepFwdBtnCls}`}
         >
-          <StepForward className="w-3.5 h-3.5" />
+          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">+1H</span>
+          <Clock className="w-3 h-3 opacity-85 shrink-0" />
         </button>
         <button
           type="button"
           onClick={() => stepTime(86400 * 1000)}
           title="1일 후 (+1D)"
-          aria-label="1일 후"
-          className={`h-7 w-7 rounded-md border flex items-center justify-center transition-colors shrink-0 ${stepBtnCls}`}
+          aria-label="1일 후 (+1D)"
+          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepFwdBtnCls}`}
         >
-          <CalendarPlus2 className="w-3.5 h-3.5" />
+          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">+1D</span>
+          <CalendarPlus2 className="w-3 h-3 opacity-85 shrink-0" />
         </button>
 
-        {/* Right-side Time Acceleration / Deceleration Rate Readout */}
-        <div
-          title="현재 시간 가감속 배율 (<< / >> 버튼으로 조절)"
-          className={`h-7 ml-1 px-2.5 rounded-md border flex items-center justify-center font-mono text-[11px] font-semibold tabular-nums whitespace-nowrap shrink-0 transition-opacity ${speedBadgeCls} ${
-            observer.isPlaying ? 'opacity-100' : 'opacity-85'
-          }`}
-        >
-          {formatTimeRateBadge(observer.timeRateSecPerSec)}
+        {/* Fixed-width right-aligned slot so speed badge expands strictly leftward without shifting any buttons */}
+        <div className="w-[132px] shrink-0 flex items-center justify-end ml-1">
+          <div
+            title="현재 시간 가감속 배율 (<< / >> 버튼으로 조절)"
+            className={`h-7 px-2.5 rounded-md border flex items-center justify-center font-mono text-[11px] font-semibold tabular-nums whitespace-nowrap transition-opacity ${speedBadgeCls} ${
+              observer.isPlaying ? 'opacity-100' : 'opacity-85'
+            }`}
+          >
+            {formatTimeRateBadge(observer.timeRateSecPerSec)}
+          </div>
         </div>
       </div>
     </div>

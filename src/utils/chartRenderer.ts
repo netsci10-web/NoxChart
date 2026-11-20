@@ -85,7 +85,7 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       belowHorizonFill: 'rgba(15, 23, 42, 0.065)',
       minAltStroke: 'rgba(37, 99, 235, 0.72)',
       minAltText: '#1D4ED8',
-      milkyWayFill: 'rgba(100, 116, 139, 0.085)',
+      milkyWayFill: 'rgba(100, 116, 139, 0.11)',
       nebulaContourFill: [
         'rgba(5, 150, 105, 0.055)',
         'rgba(5, 150, 105, 0.11)',
@@ -136,7 +136,7 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       belowHorizonFill: 'rgba(69, 10, 10, 0.34)',
       minAltStroke: 'rgba(248, 113, 113, 0.72)',
       minAltText: '#FCA5A5',
-      milkyWayFill: 'rgba(153, 27, 27, 0.068)',
+      milkyWayFill: 'rgba(185, 28, 28, 0.085)',
       nebulaContourFill: [
         'rgba(185, 28, 28, 0.075)',
         'rgba(220, 38, 38, 0.13)',
@@ -187,7 +187,7 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
     belowHorizonFill: 'rgba(2, 6, 18, 0.58)',
     minAltStroke: 'rgba(34, 211, 238, 0.72)',
     minAltText: '#22D3EE',
-    milkyWayFill: 'rgba(148, 163, 184, 0.045)',
+    milkyWayFill: 'rgba(148, 179, 224, 0.085)',
     nebulaContourFill: [
       'rgba(16, 185, 129, 0.065)',
       'rgba(20, 184, 166, 0.12)',
@@ -331,18 +331,76 @@ function drawMilkyWayContours(
 ) {
   ctx.save();
   ctx.fillStyle = fillStyle;
-  const jumpThreshold = Math.max(proj.width, proj.height) * 0.48;
+  const jumpThreshold = Math.max(proj.width, proj.height) * 0.6;
+
+  // View center unit vector in J2000 equatorial 3D Cartesian coordinates
+  const ra0Rad = proj.ra0Deg * DEG2RAD;
+  const dec0Rad = proj.dec0Deg * DEG2RAD;
+  const cx = Math.cos(dec0Rad) * Math.cos(ra0Rad);
+  const cy = Math.cos(dec0Rad) * Math.sin(ra0Rad);
+  const cz = Math.sin(dec0Rad);
+  const minDot = -0.12;
 
   for (const layer of layers) {
     for (const poly of layer.polys) {
+      // Skip the 2 global 360° cap-separating rings in ol1 (handled cleanly by the Galactic Plane band)
+      if (poly.length > 1000) continue;
+
+      // Convert polygon vertices to 3D unit vectors and clip against front hemisphere (dot >= minDot)
+      const clipped: [number, number, number][] = [];
+      const n = poly.length;
+      if (n < 3) continue;
+
+      let prevRa = poly[n - 1][0] * DEG2RAD;
+      let prevDec = poly[n - 1][1] * DEG2RAD;
+      let prevX = Math.cos(prevDec) * Math.cos(prevRa);
+      let prevY = Math.cos(prevDec) * Math.sin(prevRa);
+      let prevZ = Math.sin(prevDec);
+      let prevDot = prevX * cx + prevY * cy + prevZ * cz;
+
+      for (let i = 0; i < n; i++) {
+        const ra = poly[i][0] * DEG2RAD;
+        const dec = poly[i][1] * DEG2RAD;
+        const vx = Math.cos(dec) * Math.cos(ra);
+        const vy = Math.cos(dec) * Math.sin(ra);
+        const vz = Math.sin(dec);
+        const curDot = vx * cx + vy * cy + vz * cz;
+
+        const prevInside = prevDot >= minDot;
+        const curInside = curDot >= minDot;
+
+        if (prevInside !== curInside) {
+          const denom = curDot - prevDot;
+          const t = Math.abs(denom) > 1e-8 ? (minDot - prevDot) / denom : 0.5;
+          const ix = prevX + (vx - prevX) * t;
+          const iy = prevY + (vy - prevY) * t;
+          const iz = prevZ + (vz - prevZ) * t;
+          const len = Math.hypot(ix, iy, iz) || 1;
+          clipped.push([ix / len, iy / len, iz / len]);
+        }
+        if (curInside) {
+          clipped.push([vx, vy, vz]);
+        }
+
+        prevX = vx;
+        prevY = vy;
+        prevZ = vz;
+        prevDot = curDot;
+      }
+
+      if (clipped.length < 3) continue;
+
       let validPts = 0;
-      let prevX = 0;
-      let prevY = 0;
+      let lastX = 0;
+      let lastY = 0;
       let broken = false;
 
       ctx.beginPath();
-      for (let i = 0; i < poly.length; i++) {
-        const pt = projectStereographicRaw(poly[i][0], poly[i][1], proj);
+      for (let i = 0; i < clipped.length; i++) {
+        const [vx, vy, vz] = clipped[i];
+        const raDeg = ((Math.atan2(vy, vx) * RAD2DEG) + 360) % 360;
+        const decDeg = Math.asin(Math.max(-1, Math.min(1, vz))) * RAD2DEG;
+        const pt = projectStereographicRaw(raDeg, decDeg, proj, -0.35);
         if (!pt) {
           broken = true;
           break;
@@ -350,14 +408,14 @@ function drawMilkyWayContours(
         if (validPts === 0) {
           ctx.moveTo(pt.x, pt.y);
         } else {
-          if (Math.hypot(pt.x - prevX, pt.y - prevY) > jumpThreshold) {
+          if (Math.hypot(pt.x - lastX, pt.y - lastY) > jumpThreshold) {
             broken = true;
             break;
           }
           ctx.lineTo(pt.x, pt.y);
         }
-        prevX = pt.x;
-        prevY = pt.y;
+        lastX = pt.x;
+        lastY = pt.y;
         validPts++;
       }
       if (!broken && validPts >= 3) {
@@ -914,24 +972,39 @@ export function renderStarChart(
     }
   }
 
-  // 2. Milky Way (Suppressed when photographic HiPS is dominant)
-  if (layers.showMilkyWay && (!hipsVisible || hips.opacity < 0.48)) {
-    if (catalogs.milkyWay.length > 0 && view.fsz >= 18) {
-      drawMilkyWayContours(ctx, catalogs.milkyWay, proj, palette.milkyWayFill);
-    } else if (!hipsVisible) {
-      ctx.save();
-      ctx.strokeStyle = palette.milkyWayFill;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      for (const bOffset of [-5, 0, 5]) {
-        ctx.lineWidth = Math.max(18, pxPerDeg * (bOffset === 0 ? 15 : 9));
-        const pts: { raDeg: number; decDeg: number }[] = [];
-        for (let l = 0; l <= 360; l += 6) {
-          pts.push(galacticToEquatorial(l, bOffset));
-        }
-        drawProjectedCurve(ctx, pts, proj, true);
+  // 2. Milky Way (Galactic Plane band + layered star-cloud contours)
+  if (layers.showMilkyWay) {
+    ctx.save();
+    ctx.strokeStyle = palette.milkyWayFill;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    for (const bOffset of [-6, 0, 6]) {
+      ctx.lineWidth = Math.max(16, Math.min(260, pxPerDeg * (bOffset === 0 ? 16 : 10)));
+      const pts: { raDeg: number; decDeg: number }[] = [];
+      for (let l = 0; l <= 360; l += 4) {
+        pts.push(galacticToEquatorial(l, bOffset));
       }
-      ctx.restore();
+      drawProjectedCurve(ctx, pts, proj, true);
+    }
+
+    // Subtle Galactic Equator (b = 0°) guide line
+    ctx.setLineDash([5, 5]);
+    ctx.lineWidth = 1.0;
+    ctx.strokeStyle =
+      theme === 'white'
+        ? 'rgba(71, 85, 105, 0.36)'
+        : theme === 'red'
+        ? 'rgba(220, 38, 38, 0.35)'
+        : 'rgba(148, 197, 255, 0.28)';
+    const eqPts: { raDeg: number; decDeg: number }[] = [];
+    for (let l = 0; l <= 360; l += 4) {
+      eqPts.push(galacticToEquatorial(l, 0));
+    }
+    drawProjectedCurve(ctx, eqPts, proj, true);
+    ctx.restore();
+
+    if (catalogs.milkyWay.length > 0 && view.fsz >= 12) {
+      drawMilkyWayContours(ctx, catalogs.milkyWay, proj, palette.milkyWayFill);
     }
   }
 
@@ -1213,13 +1286,27 @@ export function renderStarChart(
       isOnScreen: boolean;
     }
 
+    const normDsoId = (s?: string) => (s ? s.replace(/\s+/g, '').toUpperCase() : '');
+    const selectedDsoKeys = new Set<string>();
+    if (selected?.kind === 'dso') {
+      const k1 = normDsoId(selected.data.id);
+      const k2 = normDsoId(selected.data.altId);
+      if (k1) selectedDsoKeys.add(k1);
+      if (k2) selectedDsoKeys.add(k2);
+    }
+
     const pendingDsos: PendingDso[] = [];
     const onScreenNonDimmed: PendingDso[] = [];
 
     for (const list of dsoLists) {
       for (let i = 0; i < list.length; i++) {
         const dso = list[i];
-        const isSelected = selected?.kind === 'dso' && selected.data.id === dso.id;
+        const isSelected =
+          selected?.kind === 'dso' &&
+          (selectedDsoKeys.has(normDsoId(dso.id)) ||
+            (dso.altId ? selectedDsoKeys.has(normDsoId(dso.altId)) : false) ||
+            (Math.abs(dso.dec - selected.data.dec) < 0.03 &&
+              angularDistanceDeg(dso.ra, dso.dec, selected.data.ra, selected.data.dec) < 0.03));
         if (dso.mag > dsoMagCutoff && !isSelected) {
           if (list === catalogs.dsosDeep || list === catalogs.darkNebulae) break;
           continue;
@@ -1274,20 +1361,25 @@ export function renderStarChart(
       const { dso, pt, belowMinAlt, isSelected, isOnScreen } = entry;
 
       visibleDsoCount++;
-      const symColor = palette.dsoColor[dso.type] ?? palette.dsoLabel;
-      const symR = drawDsoSymbol(ctx, dso, pt.x, pt.y, pxPerDeg, symColor, palette, proj, belowMinAlt);
-      if (dso.mag < 11.5 && dso.type !== 'DARK' && !belowMinAlt) {
-        placer.registerObstacle(pt.x, pt.y, symR);
-      }
+      const hideSelectedOverlay = isSelected && !optics.showSelectionMark;
+      let symR = 10;
 
-      if (sessionIds.has(dso.id)) {
-        ctx.save();
-        ctx.strokeStyle = palette.selectionRing;
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, symR + 3.5, 0, Math.PI * 2);
-        ctx.stroke();
-        ctx.restore();
+      if (!hideSelectedOverlay) {
+        const symColor = palette.dsoColor[dso.type] ?? palette.dsoLabel;
+        symR = drawDsoSymbol(ctx, dso, pt.x, pt.y, pxPerDeg, symColor, palette, proj, belowMinAlt);
+        if (dso.mag < 11.5 && dso.type !== 'DARK' && !belowMinAlt) {
+          placer.registerObstacle(pt.x, pt.y, symR);
+        }
+
+        if (sessionIds.has(dso.id)) {
+          ctx.save();
+          ctx.strokeStyle = palette.selectionRing;
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, symR + 3.5, 0, Math.PI * 2);
+          ctx.stroke();
+          ctx.restore();
+        }
       }
 
       targets.push({
@@ -1300,7 +1392,7 @@ export function renderStarChart(
         item: { kind: 'dso', data: dso },
       });
 
-      if (layers.showDsoLabels && !belowMinAlt && isOnScreen) {
+      if (layers.showDsoLabels && !belowMinAlt && isOnScreen && !hideSelectedOverlay) {
         const showCommon = view.fsz < 42 && dso.koName;
         const text = showCommon ? `${dso.id} ${dso.koName}` : dso.id;
         onScreenDsoItems.push({
@@ -2502,9 +2594,16 @@ export function renderStarChart(
     }
   }
 
-  if (hoveredId && hoveredId !== selected?.data.id) {
+  if (hoveredId) {
     const hTarget = targets.find((t) => t.id === hoveredId);
-    if (hTarget) {
+    const isHoveredSelected =
+      selected &&
+      (hoveredId === selected.data.id ||
+        (selected.kind === 'dso' &&
+          hTarget?.kind === 'dso' &&
+          hoveredId.replace(/\s+/g, '').toUpperCase() ===
+            selected.data.id.replace(/\s+/g, '').toUpperCase()));
+    if (hTarget && !isHoveredSelected) {
       ctx.save();
       ctx.strokeStyle = palette.selectionRing;
       ctx.globalAlpha = 0.55;

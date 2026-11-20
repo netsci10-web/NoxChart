@@ -192,8 +192,8 @@ export function ObjectInspector({
     onAddRecommendedTonight(candidates);
   };
 
-  // Compact SVG polyline for 24h altitude curve (tuned for 224px panel width)
-  const svgW = 186;
+  // Compact SVG polyline for 24h altitude curve (tuned for 270px panel width)
+  const svgW = 230;
   const svgH = 74;
   const altToY = (alt: number) => svgH / 2 - (alt / 90) * (svgH / 2 - 5);
   const horizonY = altToY(0);
@@ -220,7 +220,7 @@ export function ObjectInspector({
 
   return (
     <aside
-      className={`no-print w-56 shrink-0 h-full border-l flex flex-col overflow-hidden ${ui.panel}`}
+      className={`no-print w-[270px] shrink-0 h-full border-l flex flex-col overflow-hidden ${ui.panel}`}
     >
       {/* Header Tabs */}
       <div className={`flex items-center justify-between gap-1 border-b px-2 py-1.5 ${ui.divider}`}>
