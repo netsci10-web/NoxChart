@@ -9,6 +9,7 @@ import {
 } from 'lucide-react';
 import { CatalogSnapshot, GAIA_LIVE_MAX_FSZ } from '../data/catalogLoader';
 import {
+  ChallengeTrack,
   ChartViewState,
   HipsSettings,
   LayerSettings,
@@ -54,6 +55,7 @@ interface StarChartCanvasProps {
   solarTrails?: Record<string, number>;
   sessionIds: Set<string>;
   sessionPlan: ObservingSessionEntry[];
+  challenges: ChallengeTrack[];
   leftDrawerOpen?: boolean;
   rightDrawerOpen?: boolean;
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
@@ -78,6 +80,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       solarTrails,
       sessionIds,
       sessionPlan,
+      challenges,
       leftDrawerOpen = false,
       rightDrawerOpen = false,
       onChangeView,
@@ -190,7 +193,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           hoveredTarget?.id ?? null,
           sessionIds,
           solarTrails,
-          sessionPlan
+          sessionPlan,
+          challenges
         );
         targetsRef.current = result.targets;
         setRenderStats({
@@ -216,6 +220,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       hoveredTarget?.id,
       sessionIds,
       sessionPlan,
+      challenges,
       solarTrails,
       planetTexRev,
     ]);

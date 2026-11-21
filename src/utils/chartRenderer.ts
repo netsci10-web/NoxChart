@@ -7,6 +7,8 @@ import {
 import { DSO_CATALOG } from '../data/dso';
 import { getFieldStarsInBounds } from '../data/stars';
 import {
+  ChallengeCheckpoint,
+  ChallengeTrack,
   ChartViewState,
   DeepSkyObject,
   DoubleStarSystem,
@@ -665,9 +667,7 @@ function drawTerrainSilhouette(
   theme: ThemeMode,
   proj: ProjectionParams,
   lstDeg: number,
-  observerLat: number,
-  showHorizonCardinals: boolean,
-  horizonTextColor: string
+  observerLat: number
 ) {
   const groundFillTop =
     theme === 'white'
@@ -888,39 +888,6 @@ function drawTerrainSilhouette(
   grad.addColorStop(0, groundFillTop);
   grad.addColorStop(1, groundFillBot);
   renderRidgeBand(() => 0, grad, horizonEdgeStroke);
-
-  // Re-draw cardinal direction labels cleanly above the terrain ridge when horizon is on
-  if (showHorizonCardinals) {
-    ctx.save();
-    ctx.fillStyle = horizonTextColor;
-    ctx.font = '600 11px "IBM Plex Mono", monospace';
-    const cardinals =
-      view.coordSystem === 'horizontal'
-        ? [
-            { az: 0, label: 'N 북' },
-            { az: 45, label: 'NE' },
-            { az: 90, label: 'E 동' },
-            { az: 135, label: 'SE' },
-            { az: 180, label: 'S 남' },
-            { az: 225, label: 'SW' },
-            { az: 270, label: 'W 서' },
-            { az: 315, label: 'NW' },
-          ]
-        : [
-            { az: 0, label: 'N 북' },
-            { az: 90, label: 'E 동' },
-            { az: 180, label: 'S 남' },
-            { az: 270, label: 'W 서' },
-          ];
-    for (const c of cardinals) {
-      const eq = horizontalToEquatorial(1.2, c.az, lstDeg, observerLat);
-      const pt = projectStereographic(eq.raDeg, eq.decDeg, proj, 10);
-      if (pt) {
-        ctx.fillText(c.label, pt.x - 10, pt.y);
-      }
-    }
-    ctx.restore();
-  }
 }
 
 export interface RenderResult {
@@ -1161,7 +1128,8 @@ function renderStarChartPass(
   sessionIds: Set<string>,
   solarTrails?: Record<string, number>,
   passOptions?: PassOptions,
-  sessionPlan?: ObservingSessionEntry[]
+  sessionPlan?: ObservingSessionEntry[],
+  challenges?: ChallengeTrack[]
 ): RenderResult {
   const palette = getThemePalette(theme);
   const obsTimeMs = observer.timestampMs;
@@ -1375,34 +1343,6 @@ function renderStarChartPass(
       horizonPts.push(horizontalToEquatorial(0, az, lstDeg, observer.lat));
     }
     drawProjectedCurve(ctx, horizonPts, proj, true);
-
-    ctx.fillStyle = palette.horizonText;
-    ctx.font = '600 11px "IBM Plex Mono", monospace';
-    const cardinals =
-      view.coordSystem === 'horizontal'
-        ? [
-            { az: 0, label: 'N 북' },
-            { az: 45, label: 'NE' },
-            { az: 90, label: 'E 동' },
-            { az: 135, label: 'SE' },
-            { az: 180, label: 'S 남' },
-            { az: 225, label: 'SW' },
-            { az: 270, label: 'W 서' },
-            { az: 315, label: 'NW' },
-          ]
-        : [
-            { az: 0, label: 'N 북' },
-            { az: 90, label: 'E 동' },
-            { az: 180, label: 'S 남' },
-            { az: 270, label: 'W 서' },
-          ];
-    for (const c of cardinals) {
-      const eq = horizontalToEquatorial(1.4, c.az, lstDeg, observer.lat);
-      const pt = projectStereographic(eq.raDeg, eq.decDeg, proj, 10);
-      if (pt) {
-        ctx.fillText(c.label, pt.x - 10, pt.y);
-      }
-    }
     ctx.restore();
   }
 
@@ -3446,6 +3386,440 @@ function renderStarChartPass(
     ctx.restore();
   }
 
+  // 11.6. Challenge Tracks & Seasonal Observing Tours Overlay (Subway-Map Dashed -> Golden Solid)
+  const activeChallenges = (challenges ?? []).filter(
+    (t) => t.activeOnChart && t.checkpoints.length > 0
+  );
+  if (activeChallenges.length > 0) {
+    const allChallengeDsos = [
+      ...catalogs.dsosBright,
+      ...catalogs.darkNebulae,
+      ...catalogs.dsosDeep,
+      ...CALDWELL_CATALOG,
+    ];
+    const dsoLookup = new Map<string, DeepSkyObject>();
+    for (const d of allChallengeDsos) {
+      dsoLookup.set(d.id.replace(/\s+/g, '').toUpperCase(), d);
+      if (d.altId) dsoLookup.set(d.altId.replace(/\s+/g, '').toUpperCase(), d);
+    }
+    const starLookup = new Map<string, Star>();
+    for (const s of catalogs.brightStars) {
+      starLookup.set(s.id.replace(/\s+/g, '').toUpperCase(), s);
+      if (s.hip) starLookup.set(`HIP${s.hip}`, s);
+      if (s.name) starLookup.set(s.name.replace(/\s+/g, '').toUpperCase(), s);
+    }
+    const dblLookup = new Map<string, DoubleStarSystem>();
+    for (const dbl of catalogs.doubleStars) {
+      dblLookup.set(dbl.id.replace(/\s+/g, '').toUpperCase(), dbl);
+    }
+
+    const interpolateArc = (
+      ra1: number,
+      dec1: number,
+      ra2: number,
+      dec2: number,
+      steps = 12
+    ): { raDeg: number; decDeg: number }[] => {
+      const a1 = ra1 * DEG2RAD;
+      const d1 = dec1 * DEG2RAD;
+      const a2 = ra2 * DEG2RAD;
+      const d2 = dec2 * DEG2RAD;
+      const v0x = Math.cos(d1) * Math.cos(a1);
+      const v0y = Math.cos(d1) * Math.sin(a1);
+      const v0z = Math.sin(d1);
+      const v1x = Math.cos(d2) * Math.cos(a2);
+      const v1y = Math.cos(d2) * Math.sin(a2);
+      const v1z = Math.sin(d2);
+      const dot = Math.max(-1, Math.min(1, v0x * v1x + v0y * v1y + v0z * v1z));
+      const omega = Math.acos(dot);
+      const sinOmega = Math.sin(omega);
+      const pts: { raDeg: number; decDeg: number }[] = [];
+      for (let s = 0; s <= steps; s++) {
+        const f = s / steps;
+        let x: number;
+        let y: number;
+        let z: number;
+        if (sinOmega > 1e-4) {
+          const w0 = Math.sin((1 - f) * omega) / sinOmega;
+          const w1 = Math.sin(f * omega) / sinOmega;
+          x = w0 * v0x + w1 * v1x;
+          y = w0 * v0y + w1 * v1y;
+          z = w0 * v0z + w1 * v1z;
+        } else {
+          x = v0x * (1 - f) + v1x * f;
+          y = v0y * (1 - f) + v1y * f;
+          z = v0z * (1 - f) + v1z * f;
+        }
+        const len = Math.hypot(x, y, z) || 1;
+        pts.push({
+          raDeg: ((Math.atan2(y / len, x / len) * RAD2DEG) + 360) % 360,
+          decDeg: Math.asin(Math.max(-1, Math.min(1, z / len))) * RAD2DEG,
+        });
+      }
+      return pts;
+    };
+
+    const resolveCheckpoint = (
+      cp: ChallengeCheckpoint
+    ): { ra: number; dec: number; item: SelectedItem } | null => {
+      const key = cp.catalogId ? cp.catalogId.replace(/\s+/g, '').toUpperCase() : '';
+      if (cp.kind === 'dso' && key && dsoLookup.has(key)) {
+        const d = dsoLookup.get(key)!;
+        return { ra: d.ra, dec: d.dec, item: { kind: 'dso', data: d } };
+      }
+      if (cp.kind === 'star' && key && starLookup.has(key)) {
+        const s = starLookup.get(key)!;
+        return { ra: s.ra, dec: s.dec, item: { kind: 'star', data: s } };
+      }
+      if (cp.kind === 'double' && key && dblLookup.has(key)) {
+        const dbl = dblLookup.get(key)!;
+        return { ra: dbl.ra, dec: dbl.dec, item: { kind: 'double', data: dbl } };
+      }
+      if (cp.ra !== undefined && cp.dec !== undefined) {
+        if (cp.kind === 'star') {
+          const synthStar: Star = {
+            id: cp.catalogId || cp.id,
+            ra: cp.ra,
+            dec: cp.dec,
+            mag: cp.mag ?? 2.0,
+            bv: 0.4,
+            koName: cp.name,
+            name: cp.name,
+            con: cp.constellation || '',
+          };
+          return { ra: cp.ra, dec: cp.dec, item: { kind: 'star', data: synthStar } };
+        }
+        const synthDso: DeepSkyObject = {
+          id: cp.catalogId || cp.code,
+          type: 'DN',
+          ra: cp.ra,
+          dec: cp.dec,
+          mag: cp.mag ?? 7.0,
+          majAx: 20,
+          minAx: 15,
+          pa: 0,
+          koName: cp.name,
+          name: cp.name,
+          con: cp.constellation || '',
+        };
+        return { ra: cp.ra, dec: cp.dec, item: { kind: 'dso', data: synthDso } };
+      }
+      return null;
+    };
+
+    const goldSolid =
+      theme === 'white' ? '#D97706' : theme === 'red' ? '#FF4D4D' : '#FBBF24';
+    const goldGlow =
+      theme === 'white'
+        ? 'rgba(217, 119, 6, 0.25)'
+        : theme === 'red'
+        ? 'rgba(255, 77, 77, 0.30)'
+        : 'rgba(251, 191, 36, 0.32)';
+    const pillBg =
+      theme === 'white'
+        ? 'rgba(255, 255, 255, 0.92)'
+        : theme === 'red'
+        ? 'rgba(18, 2, 2, 0.88)'
+        : 'rgba(7, 12, 22, 0.88)';
+    const jumpThreshold = Math.max(width, height) * 0.45;
+
+    ctx.save();
+    for (const track of activeChallenges) {
+      const baseLineColor =
+        theme === 'red'
+          ? '#DC2626'
+          : theme === 'white'
+          ? '#2563EB'
+          : track.lineColor || '#38BDF8';
+
+      // A. Dual-Layer Background Geometry (e.g., Winter Hexagon & Winter Triangle)
+      if (track.guidePolygons && track.guidePolygons.length > 0) {
+        ctx.save();
+        for (const poly of track.guidePolygons) {
+          if (poly.points.length < 2) continue;
+          const polyStroke =
+            theme === 'white'
+              ? 'rgba(37, 99, 235, 0.38)'
+              : theme === 'red'
+              ? 'rgba(248, 113, 113, 0.35)'
+              : poly.color || 'rgba(147, 197, 253, 0.45)';
+          ctx.strokeStyle = polyStroke;
+          ctx.lineWidth = 1.4;
+          ctx.globalAlpha = theme === 'white' ? 0.85 : 0.48;
+          ctx.setLineDash([7, 5]);
+
+          const segCount = poly.closed ? poly.points.length : poly.points.length - 1;
+          for (let s = 0; s < segCount; s++) {
+            const pA = poly.points[s];
+            const pB = poly.points[(s + 1) % poly.points.length];
+            const arcPts = interpolateArc(pA.ra, pA.dec, pB.ra, pB.dec, 14);
+            drawProjectedCurve(ctx, arcPts, proj, false);
+          }
+
+          if (poly.label) {
+            let sumX = 0;
+            let sumY = 0;
+            let visCount = 0;
+            for (const p of poly.points) {
+              const sp = projectStereographic(p.ra, p.dec, proj, 40);
+              if (sp) {
+                sumX += sp.x;
+                sumY += sp.y;
+                visCount++;
+              }
+            }
+            if (visCount >= 2) {
+              ctx.setLineDash([]);
+              ctx.globalAlpha = 0.7;
+              ctx.fillStyle = polyStroke;
+              ctx.font = '600 10.5px "IBM Plex Sans", "Noto Sans KR", sans-serif';
+              ctx.textAlign = 'center';
+              ctx.textBaseline = 'middle';
+              ctx.fillText(poly.label, sumX / visCount, sumY / visCount);
+            }
+          }
+        }
+        ctx.restore();
+      }
+
+      // Resolve all checkpoints in sequence
+      const resolvedCps = track.checkpoints.map((cp) => ({
+        cp,
+        res: resolveCheckpoint(cp),
+      }));
+
+      const totalCount = track.checkpoints.length;
+      const doneCount = track.checkpoints.filter((c) => c.observed).length;
+      const isMasterCompleted = totalCount > 0 && doneCount === totalCount;
+      const nextTodoIdx = track.checkpoints.findIndex((c) => !c.observed);
+
+      // B. Sequential Hopping Route Segments (Dashed Base -> Glowing Golden Solid when Observed)
+      const drawLeg = (
+        a: { ra: number; dec: number },
+        b: { ra: number; dec: number },
+        completed: boolean
+      ) => {
+        const dist = angularDistanceDeg(a.ra, a.dec, b.ra, b.dec);
+        const steps = Math.max(4, Math.min(18, Math.ceil(dist / 3)));
+        const arcPts = interpolateArc(a.ra, a.dec, b.ra, b.dec, steps);
+
+        if (completed) {
+          ctx.save();
+          ctx.setLineDash([]);
+          ctx.lineCap = 'round';
+          ctx.strokeStyle = goldGlow;
+          ctx.lineWidth = 6.2;
+          drawProjectedCurve(ctx, arcPts, proj, false);
+          ctx.strokeStyle = goldSolid;
+          ctx.lineWidth = 2.35;
+          ctx.globalAlpha = 0.96;
+          drawProjectedCurve(ctx, arcPts, proj, false);
+          ctx.restore();
+        } else {
+          ctx.save();
+          ctx.strokeStyle = baseLineColor;
+          ctx.lineWidth = 1.55;
+          ctx.globalAlpha = 0.78;
+          ctx.setLineDash([6, 4]);
+          drawProjectedCurve(ctx, arcPts, proj, false);
+          ctx.restore();
+        }
+
+        // Midpoint directional arrow chevron when segment is long enough on screen
+        const midIdx = Math.floor(arcPts.length / 2);
+        const pMid = projectStereographicRaw(arcPts[midIdx].raDeg, arcPts[midIdx].decDeg, proj);
+        const pPrev = projectStereographicRaw(
+          arcPts[Math.max(0, midIdx - 1)].raDeg,
+          arcPts[Math.max(0, midIdx - 1)].decDeg,
+          proj
+        );
+        if (
+          pMid &&
+          pPrev &&
+          pMid.x >= 10 &&
+          pMid.x <= width - 10 &&
+          pMid.y >= 10 &&
+          pMid.y <= height - 10
+        ) {
+          const dx = pMid.x - pPrev.x;
+          const dy = pMid.y - pPrev.y;
+          const segLen = Math.hypot(dx, dy);
+          if (segLen > 4 && segLen < jumpThreshold) {
+            const ang = Math.atan2(dy, dx);
+            const sz = completed ? 5.5 : 4.2;
+            ctx.save();
+            ctx.translate(pMid.x, pMid.y);
+            ctx.rotate(ang);
+            ctx.strokeStyle = completed ? goldSolid : baseLineColor;
+            ctx.globalAlpha = completed ? 0.95 : 0.72;
+            ctx.lineWidth = completed ? 1.8 : 1.25;
+            ctx.beginPath();
+            ctx.moveTo(-sz, -sz * 0.65);
+            ctx.lineTo(0, 0);
+            ctx.lineTo(-sz, sz * 0.65);
+            ctx.stroke();
+            ctx.restore();
+          }
+        }
+      };
+
+      for (let i = 0; i < resolvedCps.length - 1; i++) {
+        const a = resolvedCps[i];
+        const b = resolvedCps[i + 1];
+        if (!a.res || !b.res) continue;
+        drawLeg(a.res, b.res, a.cp.observed && b.cp.observed);
+      }
+
+      // Close Winter Hexagon loop in gold upon full completion
+      if (
+        track.id === 'winter-hexagon-orion-spur' &&
+        isMasterCompleted &&
+        resolvedCps.length >= 2 &&
+        resolvedCps[0].res &&
+        resolvedCps[resolvedCps.length - 1].res
+      ) {
+        drawLeg(
+          resolvedCps[resolvedCps.length - 1].res!,
+          resolvedCps[0].res!,
+          true
+        );
+      }
+
+      // C. Station Nodes, Clickable Hit Targets & Compact Labels
+      const isCompactTrack = resolvedCps.length <= 24;
+      const showAllLabels = isCompactTrack || view.fsz <= 55;
+
+      for (let i = 0; i < resolvedCps.length; i++) {
+        const { cp, res } = resolvedCps[i];
+        if (!res) continue;
+        const pt = projectStereographic(res.ra, res.dec, proj, 30);
+        if (!pt) continue;
+
+        const isNext = i === nextTodoIdx;
+        const isSelectedCp =
+          selected !== null &&
+          ((cp.catalogId &&
+            selected.data.id.replace(/\s+/g, '').toUpperCase() ===
+              cp.catalogId.replace(/\s+/g, '').toUpperCase()) ||
+            angularDistanceDeg(res.ra, res.dec, selected.data.ra, selected.data.dec) < 0.04);
+
+        ctx.save();
+        if (cp.observed) {
+          ctx.fillStyle = goldGlow;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 9.5, 0, Math.PI * 2);
+          ctx.fill();
+
+          ctx.fillStyle = goldSolid;
+          ctx.strokeStyle = theme === 'white' ? '#FFFFFF' : '#05070C';
+          ctx.lineWidth = 1.4;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 4.8, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        } else if (isNext) {
+          ctx.strokeStyle = baseLineColor;
+          ctx.lineWidth = 1.6;
+          ctx.globalAlpha = 0.9;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 8.2, 0, Math.PI * 2);
+          ctx.stroke();
+
+          ctx.fillStyle = palette.skyCircleBg;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 4.4, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        } else {
+          ctx.fillStyle = palette.skyCircleBg;
+          ctx.strokeStyle = baseLineColor;
+          ctx.lineWidth = 1.6;
+          ctx.globalAlpha = 0.92;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 4.0, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+        ctx.restore();
+
+        // Register clickable station target
+        targets.push({
+          kind: res.item.kind,
+          id: res.item.data.id,
+          x: pt.x,
+          y: pt.y,
+          radius: 11,
+          mag: cp.mag ?? res.item.data.mag,
+          item: res.item,
+        });
+
+        // Station label pill (clutter-controlled for 110-object marathons)
+        const shouldLabel = showAllLabels || cp.observed || isNext || isSelectedCp;
+        if (
+          shouldLabel &&
+          pt.x >= 10 &&
+          pt.x <= width - 10 &&
+          pt.y >= 10 &&
+          pt.y <= height - 10
+        ) {
+          const shortTag = cp.catalogId
+            ? `${cp.code} ${cp.catalogId}`
+            : `${cp.code} ${cp.name.slice(0, 10)}`;
+          const badgeText = cp.observed ? `✓ ${shortTag}` : shortTag;
+          ctx.save();
+          ctx.font = '600 9.5px "IBM Plex Mono", "Pretendard", sans-serif';
+          const tw = ctx.measureText(badgeText).width;
+          const padX = 4.5;
+          const pillH = 14.5;
+          const pillW = tw + padX * 2;
+          let bx = pt.x + 9;
+          let by = pt.y - pillH / 2 - 7;
+          if (bx + pillW > width - 6) bx = pt.x - 9 - pillW;
+          if (by < 6) by = pt.y + 8;
+
+          const accent = cp.observed ? goldSolid : baseLineColor;
+          ctx.fillStyle = pillBg;
+          ctx.strokeStyle = accent;
+          ctx.lineWidth = cp.observed || isNext ? 1.2 : 0.9;
+          ctx.beginPath();
+          ctx.roundRect(bx, by, pillW, pillH, 3.5);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.fillStyle = accent;
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(badgeText, bx + padX, by + pillH / 2 + 0.5);
+          ctx.restore();
+        }
+      }
+
+      // D. Print Mode Master Completion Certificate Ribbon (when 100% completed in White mode)
+      if (isMasterCompleted && theme === 'white' && !isInnerClip) {
+        const certText = `★ ${track.title} · 완주 인증 (${doneCount}/${totalCount}) ★`;
+        ctx.save();
+        ctx.font = '700 12px "IBM Plex Sans", "Noto Sans KR", sans-serif';
+        const cw = ctx.measureText(certText).width + 28;
+        const ch = 26;
+        const cxBox = width / 2 - cw / 2;
+        const cyBox = 14;
+        ctx.fillStyle = 'rgba(255, 251, 235, 0.96)';
+        ctx.strokeStyle = '#D97706';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.roundRect(cxBox, cyBox, cw, ch, 6);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = '#92400E';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(certText, width / 2, cyBox + ch / 2 + 0.5);
+        ctx.restore();
+      }
+    }
+    ctx.restore();
+  }
+
   // 11. Selection & Hover Reticles
   if (selected && optics.showSelectionMark) {
     const selPt = projectStereographic(selected.data.ra, selected.data.dec, proj, 30);
@@ -3531,10 +3905,44 @@ function renderStarChartPass(
       theme,
       proj,
       lstDeg,
-      observer.lat,
-      layers.showHorizon,
-      palette.horizonText
+      observer.lat
     );
+  }
+
+  // 12.6. Horizon Cardinal Direction Labels (rendered strictly once above terrain & sky labels)
+  if (layers.showHorizon) {
+    ctx.save();
+    ctx.fillStyle = palette.horizonText;
+    ctx.font = '600 11px "IBM Plex Mono", monospace';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const cardinals =
+      view.coordSystem === 'horizontal'
+        ? [
+            { az: 0, label: 'N 북' },
+            { az: 45, label: 'NE' },
+            { az: 90, label: 'E 동' },
+            { az: 135, label: 'SE' },
+            { az: 180, label: 'S 남' },
+            { az: 225, label: 'SW' },
+            { az: 270, label: 'W 서' },
+            { az: 315, label: 'NW' },
+          ]
+        : [
+            { az: 0, label: 'N 북' },
+            { az: 90, label: 'E 동' },
+            { az: 180, label: 'S 남' },
+            { az: 270, label: 'W 서' },
+          ];
+    const labelAltDeg = Math.min(1.4, Math.max(0.15, view.fsz * 0.015));
+    for (const c of cardinals) {
+      const eq = horizontalToEquatorial(labelAltDeg, c.az, lstDeg, observer.lat);
+      const pt = projectStereographic(eq.raDeg, eq.decDeg, proj, 10);
+      if (pt) {
+        ctx.fillText(c.label, pt.x, pt.y);
+      }
+    }
+    ctx.restore();
   }
 
   if (applySkyCircleClip) {
@@ -3583,7 +3991,8 @@ export function renderStarChart(
   hoveredId: string | null,
   sessionIds: Set<string>,
   solarTrails?: Record<string, number>,
-  sessionPlan?: ObservingSessionEntry[]
+  sessionPlan?: ObservingSessionEntry[],
+  challenges?: ChallengeTrack[]
 ): RenderResult {
   const rawFlipActive = view.flipH || view.flipV;
   const normEpRot = optics.showEyepiece
@@ -3623,7 +4032,8 @@ export function renderStarChart(
         eyepieceFlipActive: optics.showEyepiece && (fullFlipActive || fullRotDeg > 0),
         rotationDeg: fullRotDeg,
       },
-      sessionPlan
+      sessionPlan,
+      challenges
     );
   }
 
@@ -3647,7 +4057,8 @@ export function renderStarChart(
     sessionIds,
     solarTrails,
     { skipReticles: true, isInnerClip: false, rotationDeg: 0 },
-    sessionPlan
+    sessionPlan,
+    challenges
   );
 
   const cx = width / 2;
@@ -3675,7 +4086,8 @@ export function renderStarChart(
     sessionIds,
     solarTrails,
     { skipReticles: true, isInnerClip: true, rotationDeg: normEpRot },
-    sessionPlan
+    sessionPlan,
+    challenges
   );
   ctx.restore();
 

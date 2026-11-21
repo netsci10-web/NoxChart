@@ -264,4 +264,56 @@ export interface SavedObservingSite {
   createdAt: number;
 }
 
+export interface ChallengeGuidePolygon {
+  id: string;
+  label: string;
+  closed: boolean;
+  points: { name: string; ra: number; dec: number }[];
+  color?: string;
+}
+
+export interface ChallengeBadgeRule {
+  id: string;
+  title: string;
+  description: string;
+  /** Checkpoint IDs required to unlock this badge (empty array means all checkpoints) */
+  requiredCheckpointIds: string[];
+  isMaster?: boolean;
+}
+
+export interface ChallengeCheckpoint {
+  id: string;
+  code: string;
+  name: string;
+  catalogId?: string;
+  kind: 'dso' | 'star' | 'double' | 'planet';
+  stage: string;
+  constellation?: string;
+  objectType?: string;
+  mag?: number;
+  ra?: number;
+  dec?: number;
+  guideNote?: string;
+  observed: boolean;
+  observedAt?: number;
+  logNote?: string;
+}
+
+export interface ChallengeTrack {
+  id: string;
+  title: string;
+  subtitle?: string;
+  description: string;
+  season?: 'spring' | 'summer' | 'autumn' | 'winter' | 'all';
+  lineColor: string;
+  completedColor: string;
+  activeOnChart: boolean;
+  builtIn?: boolean;
+  guidePolygons?: ChallengeGuidePolygon[];
+  badges?: ChallengeBadgeRule[];
+  checkpoints: ChallengeCheckpoint[];
+  createdAt: number;
+}
+
+
 

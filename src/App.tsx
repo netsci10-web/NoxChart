@@ -14,12 +14,15 @@ import {
   Share2,
   Star,
   Sun,
+  Trophy,
 } from 'lucide-react';
 import { ControlSidebar } from './components/ControlSidebar';
 import { ObjectInspector } from './components/ObjectInspector';
 import { ObservingSiteMapModal } from './components/ObservingSiteMapModal';
 import { StarChartCanvas, StarChartCanvasHandle } from './components/StarChartCanvas';
 import { TimeControlBar } from './components/TimeControlBar';
+import { CALDWELL_CATALOG } from './data/caldwell';
+import { createDefaultChallengeTracks } from './data/challenges';
 import {
   ensureCoreCatalogs,
   ensureDeepDsos,
@@ -29,8 +32,11 @@ import {
   useCatalogData,
 } from './data/catalogLoader';
 import {
+  ChallengeCheckpoint,
+  ChallengeTrack,
   ChartViewState,
   CoordSystem,
+  DeepSkyObject,
   EquipmentCategory,
   EquipmentItem,
   EquipmentLockerState,
@@ -41,9 +47,12 @@ import {
   OpticsSettings,
   SavedObservingSite,
   SelectedItem,
+  Star as StarType,
   ThemeMode,
 } from './types/astronomy';
 import {
+  angularDistanceDeg,
+  DEG2RAD,
   equatorialToHorizontal,
   getDsoLimitingMagnitude,
   getLimitingMagnitude,
@@ -53,6 +62,7 @@ import {
   RAD2DEG,
   syncUrlState,
 } from './utils/astronomy';
+import { CHALLENGES_STORAGE_KEY, mergeChallengeTracks } from './utils/challengeStorage';
 import {
   downloadSkylistFile,
   exportObservingListToSkylist,
@@ -124,16 +134,16 @@ const DEFAULT_VIEW: ChartViewState = {
   fsz: 95,
   flipH: false,
   flipV: false,
-  coordSystem: 'equatorial',
+  coordSystem: 'horizontal',
 };
 
 const DEFAULT_THEME: ThemeMode = 'dark';
 
 const DEFAULT_LAYERS: LayerSettings = {
-  showGridEq: true,
-  showGridAltAz: false,
-  showHorizon: false,
-  showTerrain: false,
+  showGridEq: false,
+  showGridAltAz: true,
+  showHorizon: true,
+  showTerrain: true,
   showEcliptic: false,
   showMilkyWay: false,
   showNebulaContours: false,
@@ -217,44 +227,70 @@ const DEFAULT_OBSERVER: ObserverConfig = {
   highlightAboveMinAlt: false,
 };
 
+function createInitialObserver(): ObserverConfig {
+  try {
+    const raw = localStorage.getItem(ACTIVE_SITE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as { name?: string; lat?: number; lon?: number };
+      if (
+        typeof parsed.lat === 'number' &&
+        Number.isFinite(parsed.lat) &&
+        typeof parsed.lon === 'number' &&
+        Number.isFinite(parsed.lon)
+      ) {
+        return {
+          ...DEFAULT_OBSERVER,
+          name:
+            typeof parsed.name === 'string' && parsed.name.trim()
+              ? parsed.name
+              : DEFAULT_OBSERVER.name,
+          lat: Math.max(-90, Math.min(90, parsed.lat)),
+          lon: Math.max(-180, Math.min(180, parsed.lon)),
+          timestampMs: Date.now(),
+        };
+      }
+    }
+  } catch {
+    // Ignore storage parse failure
+  }
+  return { ...DEFAULT_OBSERVER, timestampMs: Date.now() };
+}
+
+function getDefaultHorizontalCenter(obs: ObserverConfig): { ra: number; dec: number } {
+  const lstDeg = getLSTDeg(obs.timestampMs, obs.lon);
+  const eq = horizontalToEquatorial(30, 180, lstDeg, obs.lat);
+  return {
+    ra: ((eq.raDeg / 15) % 24 + 24) % 24,
+    dec: Math.max(-89.5, Math.min(89.5, eq.decDeg)),
+  };
+}
+
 export default function App() {
   const initialUrl = useMemo(() => parseUrlState(), []);
+  const initialObserver = useMemo(() => createInitialObserver(), []);
   const canvasHandleRef = useRef<StarChartCanvasHandle>(null);
 
-  const [view, setView] = useState<ChartViewState>(initialUrl.view);
+  const [view, setView] = useState<ChartViewState>(() => {
+    if (initialUrl.view.coordSystem === 'horizontal' && !initialUrl.hasExplicitCoords) {
+      const center = getDefaultHorizontalCenter(initialObserver);
+      return {
+        ...initialUrl.view,
+        ra: center.ra,
+        dec: center.dec,
+      };
+    }
+    return initialUrl.view;
+  });
   const [theme, setTheme] = useState<ThemeMode>(initialUrl.theme);
   const [layers, setLayers] = useState<LayerSettings>(() => ({
     ...DEFAULT_LAYERS,
     showGridEq: initialUrl.view.coordSystem === 'equatorial',
     showGridAltAz: initialUrl.view.coordSystem === 'horizontal',
+    showHorizon: initialUrl.view.coordSystem === 'horizontal',
     showTerrain: initialUrl.view.coordSystem === 'horizontal',
   }));
   const [optics, setOptics] = useState<OpticsSettings>(DEFAULT_OPTICS);
-  const [observer, setObserver] = useState<ObserverConfig>(() => {
-    try {
-      const raw = localStorage.getItem(ACTIVE_SITE_STORAGE_KEY);
-      if (raw) {
-        const parsed = JSON.parse(raw) as { name?: string; lat?: number; lon?: number };
-        if (
-          typeof parsed.lat === 'number' &&
-          Number.isFinite(parsed.lat) &&
-          typeof parsed.lon === 'number' &&
-          Number.isFinite(parsed.lon)
-        ) {
-          return {
-            ...DEFAULT_OBSERVER,
-            name: typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name : DEFAULT_OBSERVER.name,
-            lat: Math.max(-90, Math.min(90, parsed.lat)),
-            lon: Math.max(-180, Math.min(180, parsed.lon)),
-            timestampMs: Date.now(),
-          };
-        }
-      }
-    } catch {
-      // Ignore storage parse failure
-    }
-    return DEFAULT_OBSERVER;
-  });
+  const [observer, setObserver] = useState<ObserverConfig>(initialObserver);
   const [hips, setHips] = useState<HipsSettings>(DEFAULT_HIPS);
 
   const [savedSites, setSavedSites] = useState<SavedObservingSite[]>(() => {
@@ -280,7 +316,7 @@ export default function App() {
   const [solarTrails, setSolarTrails] = useState<Record<string, number>>({});
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
-  const [inspectorTab, setInspectorTab] = useState<'detail' | 'session'>('detail');
+  const [inspectorTab, setInspectorTab] = useState<'detail' | 'session' | 'challenge'>('detail');
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [searchActive, setSearchActive] = useState(false);
   const [resetCount, setResetCount] = useState(0);
@@ -440,6 +476,23 @@ export default function App() {
   const sessionPlanRef = useRef<ObservingSessionEntry[]>(sessionPlan);
   sessionPlanRef.current = sessionPlan;
 
+  const [challenges, setChallenges] = useState<ChallengeTrack[]>(() => {
+    try {
+      const raw = localStorage.getItem(CHALLENGES_STORAGE_KEY);
+      if (raw !== null) {
+        const parsed = JSON.parse(raw) as ChallengeTrack[];
+        if (Array.isArray(parsed)) {
+          return parsed;
+        }
+      }
+    } catch {
+      // Ignore storage parse failure
+    }
+    return createDefaultChallengeTracks();
+  });
+  const challengesRef = useRef<ChallengeTrack[]>(challenges);
+  challengesRef.current = challenges;
+
   const [equipmentLocker, setEquipmentLocker] = useState<EquipmentLockerState>(() => {
     try {
       const raw = localStorage.getItem(EQUIPMENT_STORAGE_KEY);
@@ -488,6 +541,15 @@ export default function App() {
       // Ignore storage quota errors
     }
   }, [sessionPlan]);
+
+  // Persist Challenge Tracks & progress locally
+  useEffect(() => {
+    try {
+      localStorage.setItem(CHALLENGES_STORAGE_KEY, JSON.stringify(challenges));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [challenges]);
 
   // Persist Equipment Locker locally
   useEffect(() => {
@@ -1011,6 +1073,252 @@ export default function App() {
     setSiteMapOpen(true);
   }, []);
 
+  const handleToggleChallengeOnChart = useCallback((trackId: string) => {
+    setChallenges((prev) =>
+      prev.map((t) => (t.id === trackId ? { ...t, activeOnChart: !t.activeOnChart } : t))
+    );
+  }, []);
+
+  const handleToggleChallengeCheckpoint = useCallback((trackId: string, checkpointId: string) => {
+    setChallenges((prev) =>
+      prev.map((t) => {
+        if (t.id !== trackId) return t;
+        return {
+          ...t,
+          checkpoints: t.checkpoints.map((cp) =>
+            cp.id === checkpointId
+              ? {
+                  ...cp,
+                  observed: !cp.observed,
+                  observedAt: !cp.observed ? Date.now() : undefined,
+                }
+              : cp
+          ),
+        };
+      })
+    );
+  }, []);
+
+  const handleUpdateChallengeCheckpointNote = useCallback(
+    (trackId: string, checkpointId: string, note: string) => {
+      setChallenges((prev) =>
+        prev.map((t) => {
+          if (t.id !== trackId) return t;
+          return {
+            ...t,
+            checkpoints: t.checkpoints.map((cp) =>
+              cp.id === checkpointId ? { ...cp, logNote: note } : cp
+            ),
+          };
+        })
+      );
+    },
+    []
+  );
+
+  const handleSaveChallengeTrack = useCallback((track: ChallengeTrack) => {
+    setChallenges((prev) => {
+      const idx = prev.findIndex((t) => t.id === track.id);
+      const next = idx >= 0 ? prev.map((t) => (t.id === track.id ? track : t)) : [track, ...prev];
+      challengesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleDeleteChallengeTrack = useCallback((trackId: string) => {
+    setChallenges((prev) => {
+      const next = prev.filter((t) => t.id !== trackId);
+      challengesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleResetBuiltInChallenge = useCallback((trackId: string) => {
+    const fresh = createDefaultChallengeTracks().find((t) => t.id === trackId);
+    if (!fresh) return;
+    setChallenges((prev) =>
+      prev.map((t) => (t.id === trackId ? { ...fresh, activeOnChart: t.activeOnChart } : t))
+    );
+  }, []);
+
+  const handleImportChallenges = useCallback((incoming: ChallengeTrack[]) => {
+    const res = mergeChallengeTracks(challengesRef.current, incoming);
+    challengesRef.current = res.merged;
+    setChallenges(res.merged);
+    return { addedCount: res.addedCount, updatedCount: res.updatedCount };
+  }, []);
+
+  const handleFrameChallengeTrack = useCallback(
+    (track: ChallengeTrack) => {
+      setChallenges((prev) =>
+        prev.map((t) => (t.id === track.id ? { ...t, activeOnChart: true } : t))
+      );
+
+      const coords: { ra: number; dec: number }[] = [];
+      for (const cp of track.checkpoints) {
+        if (cp.ra !== undefined && cp.dec !== undefined) {
+          coords.push({ ra: cp.ra, dec: cp.dec });
+        }
+      }
+      if (track.guidePolygons) {
+        for (const poly of track.guidePolygons) {
+          for (const p of poly.points) {
+            coords.push({ ra: p.ra, dec: p.dec });
+          }
+        }
+      }
+      if (coords.length === 0) return;
+
+      let sx = 0;
+      let sy = 0;
+      let sz = 0;
+      for (const c of coords) {
+        const a = c.ra * DEG2RAD;
+        const d = c.dec * DEG2RAD;
+        sx += Math.cos(d) * Math.cos(a);
+        sy += Math.cos(d) * Math.sin(a);
+        sz += Math.sin(d);
+      }
+      const len = Math.hypot(sx, sy, sz);
+      if (len < 1e-4) {
+        // Full-sky marathon (like Messier 110): jump to first unobserved or first checkpoint at wide FOV
+        const firstTarget =
+          track.checkpoints.find((c) => !c.observed && c.ra !== undefined && c.dec !== undefined) ??
+          track.checkpoints.find((c) => c.ra !== undefined && c.dec !== undefined);
+        if (firstTarget && firstTarget.ra !== undefined && firstTarget.dec !== undefined) {
+          handleChangeView((p) => ({
+            ...p,
+            ra: ((firstTarget.ra! / 15) % 24 + 24) % 24,
+            dec: Math.max(-85, Math.min(85, firstTarget.dec!)),
+            fsz: 135,
+          }));
+        }
+        return;
+      }
+
+      const centerRaDeg = ((Math.atan2(sy / len, sx / len) * RAD2DEG) + 360) % 360;
+      const centerDecDeg = Math.asin(Math.max(-1, Math.min(1, sz / len))) * RAD2DEG;
+      let maxDist = 8;
+      for (const c of coords) {
+        const d = angularDistanceDeg(centerRaDeg, centerDecDeg, c.ra, c.dec);
+        if (d > maxDist) maxDist = d;
+      }
+
+      centerLockedRef.current = false;
+      setCenterLocked(false);
+      lockedHzRef.current = null;
+      handleChangeView((p) => ({
+        ...p,
+        ra: ((centerRaDeg / 15) % 24 + 24) % 24,
+        dec: Math.max(-85, Math.min(85, centerDecDeg)),
+        fsz: Math.max(18, Math.min(150, maxDist * 2.35)),
+      }));
+    },
+    [handleChangeView]
+  );
+
+  const handlePrintChallengeCertificate = useCallback(
+    (track: ChallengeTrack) => {
+      handleFrameChallengeTrack(track);
+      if (theme !== 'white') {
+        setTheme('white');
+        window.setTimeout(() => window.print(), 280);
+      } else {
+        window.setTimeout(() => window.print(), 120);
+      }
+    },
+    [handleFrameChallengeTrack, theme]
+  );
+
+  const handleSelectChallengeCheckpoint = useCallback(
+    (track: ChallengeTrack, cp: ChallengeCheckpoint) => {
+      setChallenges((prev) =>
+        prev.map((t) => (t.id === track.id ? { ...t, activeOnChart: true } : t))
+      );
+
+      const snap = getCatalogSnapshot();
+      const key = cp.catalogId ? cp.catalogId.replace(/\s+/g, '').toUpperCase() : '';
+      let item: SelectedItem | null = null;
+
+      if (cp.kind === 'dso' && key) {
+        const allDsos = [
+          ...snap.dsosBright,
+          ...snap.darkNebulae,
+          ...snap.dsosDeep,
+          ...CALDWELL_CATALOG,
+        ];
+        const found = allDsos.find(
+          (d) =>
+            d.id.replace(/\s+/g, '').toUpperCase() === key ||
+            (d.altId && d.altId.replace(/\s+/g, '').toUpperCase() === key)
+        );
+        if (found) item = { kind: 'dso', data: found };
+      } else if (cp.kind === 'star' && key) {
+        const found = snap.brightStars.find(
+          (s) =>
+            s.id.replace(/\s+/g, '').toUpperCase() === key ||
+            (s.hip && `HIP${s.hip}` === key) ||
+            (s.name && s.name.replace(/\s+/g, '').toUpperCase() === key)
+        );
+        if (found) item = { kind: 'star', data: found };
+      } else if (cp.kind === 'double' && key) {
+        const found = snap.doubleStars.find(
+          (d) => d.id.replace(/\s+/g, '').toUpperCase() === key
+        );
+        if (found) item = { kind: 'double', data: found };
+      }
+
+      if (!item && cp.ra !== undefined && cp.dec !== undefined) {
+        if (cp.kind === 'star') {
+          const synthStar: StarType = {
+            id: cp.catalogId || cp.id,
+            ra: cp.ra,
+            dec: cp.dec,
+            mag: cp.mag ?? 2.0,
+            bv: 0.4,
+            koName: cp.name,
+            name: cp.name,
+            con: cp.constellation || '',
+          };
+          item = { kind: 'star', data: synthStar };
+        } else {
+          const synthDso: DeepSkyObject = {
+            id: cp.catalogId || cp.code,
+            type: 'DN',
+            ra: cp.ra,
+            dec: cp.dec,
+            mag: cp.mag ?? 7.0,
+            majAx: 20,
+            minAx: 15,
+            pa: 0,
+            koName: cp.name,
+            name: cp.name,
+            con: cp.constellation || '',
+          };
+          item = { kind: 'dso', data: synthDso };
+        }
+      }
+
+      if (item) {
+        selectedRef.current = item;
+        setSelected(item);
+        setOptics((prev) =>
+          prev.showSelectionMark ? prev : { ...prev, showSelectionMark: true }
+        );
+        centerLockedRef.current = false;
+        setCenterLocked(false);
+        lockedHzRef.current = null;
+        handleChangeView((p) => ({
+          ...p,
+          ra: ((item!.data.ra / 15) % 24 + 24) % 24,
+          dec: Math.max(-89.5, Math.min(89.5, item!.data.dec)),
+          fsz: Math.min(p.fsz, item!.kind === 'dso' ? 18 : 24),
+        }));
+      }
+    },
+    [handleChangeView]
+  );
+
   const handleCopyShareUrl = async () => {
     syncUrlState(view, theme);
     try {
@@ -1033,17 +1341,22 @@ export default function App() {
 
   const handleResetToDefaults = () => {
     lockedHzRef.current = null;
-    handleChangeView({ ...DEFAULT_VIEW });
+    const resetObs: ObserverConfig = {
+      ...DEFAULT_OBSERVER,
+      timestampMs: Date.now(),
+    };
+    const defaultHzCenter = getDefaultHorizontalCenter(resetObs);
+    handleChangeView({
+      ...DEFAULT_VIEW,
+      ra: defaultHzCenter.ra,
+      dec: defaultHzCenter.dec,
+    });
     setTheme(DEFAULT_THEME);
     setLayers({
       ...DEFAULT_LAYERS,
       dsoCategories: { ...DEFAULT_LAYERS.dsoCategories },
     });
     setOptics({ ...DEFAULT_OPTICS });
-    const resetObs: ObserverConfig = {
-      ...DEFAULT_OBSERVER,
-      timestampMs: Date.now(),
-    };
     observerRef.current = resetObs;
     setObserver(resetObs);
     setHips({ ...DEFAULT_HIPS });
@@ -1341,6 +1654,28 @@ export default function App() {
 
           <button
             type="button"
+            onClick={() => {
+              setInspectorTab('challenge');
+              setRightOpen((o) => (inspectorTab === 'challenge' ? !o : true));
+            }}
+            title="계절별 관측 투어 및 챌린지 트랙"
+            className={`px-2.5 py-1.5 border text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+              rightOpen && inspectorTab === 'challenge' ? ui.buttonActive : ui.buttonIdle
+            }`}
+            style={{ borderRadius: '4px' }}
+          >
+            <Trophy className="w-3.5 h-3.5" />
+            <span>챌린지</span>
+            {challenges.some((t) => t.activeOnChart) && (
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"
+                aria-hidden="true"
+              />
+            )}
+          </button>
+
+          <button
+            type="button"
             onClick={handleCopyShareUrl}
             title="현재 좌표·배율 URL 복사"
             className={`px-2.5 py-1.5 border text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
@@ -1394,6 +1729,7 @@ export default function App() {
             solarTrails={solarTrails}
             sessionIds={sessionIds}
             sessionPlan={sessionPlan}
+            challenges={challenges}
             leftDrawerOpen={leftOpen}
             rightDrawerOpen={rightOpen}
             onChangeView={handleChangeView}
@@ -1481,6 +1817,7 @@ export default function App() {
               optics={optics}
               catalogs={catalogs}
               sessionPlan={sessionPlan}
+              challenges={challenges}
               onTabChange={setInspectorTab}
               onClose={() => setRightOpen(false)}
               onSelect={handleSelect}
@@ -1495,6 +1832,16 @@ export default function App() {
               onAddRecommendedTonight={handleAddRecommendedTonight}
               onImportSkylist={handleImportSkylistSession}
               onExportSkylist={handleExportSkylistSession}
+              onToggleChallengeOnChart={handleToggleChallengeOnChart}
+              onToggleChallengeCheckpoint={handleToggleChallengeCheckpoint}
+              onUpdateChallengeCheckpointNote={handleUpdateChallengeCheckpointNote}
+              onSelectChallengeCheckpoint={handleSelectChallengeCheckpoint}
+              onFrameChallengeTrack={handleFrameChallengeTrack}
+              onPrintChallengeCertificate={handlePrintChallengeCertificate}
+              onSaveChallengeTrack={handleSaveChallengeTrack}
+              onDeleteChallengeTrack={handleDeleteChallengeTrack}
+              onResetBuiltInChallenge={handleResetBuiltInChallenge}
+              onImportChallenges={handleImportChallenges}
             />
           )}
         </div>

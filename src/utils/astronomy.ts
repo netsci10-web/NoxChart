@@ -742,6 +742,7 @@ export function findStarHopGuide(
 export function parseUrlState(): {
   view: ChartViewState;
   theme: ThemeMode;
+  hasExplicitCoords: boolean;
 } {
   const params = new URLSearchParams(window.location.search);
 
@@ -753,6 +754,7 @@ export function parseUrlState(): {
   const flipH = params.get('flipH') === '1';
   const flipV = params.get('flipV') === '1';
 
+  const hasExplicitCoords = Number.isFinite(rawRa) && Number.isFinite(rawDec);
   const ra = Number.isFinite(rawRa) ? ((rawRa % 24) + 24) % 24 : 5.58;
   const dec = Number.isFinite(rawDec) ? Math.max(-90, Math.min(90, rawDec)) : 4.5;
   const fsz = Number.isFinite(rawFsz) ? Math.max(0.008, Math.min(180, rawFsz)) : 95;
@@ -762,11 +764,12 @@ export function parseUrlState(): {
       ? rawMode
       : 'dark';
 
-  const coordSystem: CoordSystem = rawCoord === 'hz' ? 'horizontal' : 'equatorial';
+  const coordSystem: CoordSystem = rawCoord === 'eq' ? 'equatorial' : 'horizontal';
 
   return {
     view: { ra, dec, fsz, flipH, flipV, coordSystem },
     theme,
+    hasExplicitCoords,
   };
 }
 
@@ -779,7 +782,7 @@ export function syncUrlState(view: ChartViewState, theme: ThemeMode): void {
   params.set('dec', view.dec.toFixed(6));
   params.set('fsz', view.fsz < 1 ? view.fsz.toFixed(4) : view.fsz.toFixed(2));
   params.set('mode', theme);
-  if (view.coordSystem === 'horizontal') params.set('coord', 'hz');
+  if (view.coordSystem === 'equatorial') params.set('coord', 'eq');
   else params.delete('coord');
   if (view.flipH) params.set('flipH', '1');
   else params.delete('flipH');

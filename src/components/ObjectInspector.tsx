@@ -18,6 +18,8 @@ import {
 import { CALDWELL_CATALOG } from '../data/caldwell';
 import { CatalogSnapshot } from '../data/catalogLoader';
 import {
+  ChallengeCheckpoint,
+  ChallengeTrack,
   ChartViewState,
   ObserverConfig,
   ObservingSessionEntry,
@@ -40,18 +42,20 @@ import {
 import { computePlanetOrientation } from '../utils/planetRenderer';
 import { getSolarSystemBodies } from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
+import { ChallengePanel } from './ChallengePanel';
 
 interface ObjectInspectorProps {
   selected: SelectedItem | null;
   centerLocked: boolean;
   solarTrails: Record<string, number>;
-  activeTab: 'detail' | 'session';
+  activeTab: 'detail' | 'session' | 'challenge';
   theme: ThemeMode;
   observer: ObserverConfig;
   optics: OpticsSettings;
   catalogs: CatalogSnapshot;
   sessionPlan: ObservingSessionEntry[];
-  onTabChange: (tab: 'detail' | 'session') => void;
+  challenges: ChallengeTrack[];
+  onTabChange: (tab: 'detail' | 'session' | 'challenge') => void;
   onClose: () => void;
   onSelect: (item: SelectedItem | null) => void;
   onToggleCenterLock: () => void;
@@ -70,6 +74,16 @@ interface ObjectInspectorProps {
     unmatchedNames: string[];
   }>;
   onExportSkylist: () => void;
+  onToggleChallengeOnChart: (trackId: string) => void;
+  onToggleChallengeCheckpoint: (trackId: string, checkpointId: string) => void;
+  onUpdateChallengeCheckpointNote: (trackId: string, checkpointId: string, note: string) => void;
+  onSelectChallengeCheckpoint: (track: ChallengeTrack, checkpoint: ChallengeCheckpoint) => void;
+  onFrameChallengeTrack: (track: ChallengeTrack) => void;
+  onPrintChallengeCertificate: (track: ChallengeTrack) => void;
+  onSaveChallengeTrack: (track: ChallengeTrack) => void;
+  onDeleteChallengeTrack: (trackId: string) => void;
+  onResetBuiltInChallenge: (trackId: string) => void;
+  onImportChallenges: (tracks: ChallengeTrack[]) => { addedCount: number; updatedCount: number };
 }
 
 export function ObjectInspector({
@@ -82,6 +96,7 @@ export function ObjectInspector({
   optics,
   catalogs,
   sessionPlan,
+  challenges,
   onTabChange,
   onClose,
   onSelect,
@@ -96,6 +111,16 @@ export function ObjectInspector({
   onAddRecommendedTonight,
   onImportSkylist,
   onExportSkylist,
+  onToggleChallengeOnChart,
+  onToggleChallengeCheckpoint,
+  onUpdateChallengeCheckpointNote,
+  onSelectChallengeCheckpoint,
+  onFrameChallengeTrack,
+  onPrintChallengeCertificate,
+  onSaveChallengeTrack,
+  onDeleteChallengeTrack,
+  onResetBuiltInChallenge,
+  onImportChallenges,
 }: ObjectInspectorProps) {
   const ui = getUiTheme(theme);
   const skylistInputRef = useRef<HTMLInputElement>(null);
@@ -259,12 +284,12 @@ export function ObjectInspector({
       className={`no-print w-[270px] shrink-0 h-full border-l flex flex-col overflow-hidden ${ui.panel}`}
     >
       {/* Header Tabs */}
-      <div className={`flex items-center justify-between gap-1 border-b px-2 py-1.5 ${ui.divider}`}>
+      <div className={`flex items-center justify-between gap-1 border-b px-1.5 py-1.5 ${ui.divider}`}>
         <div className="flex items-center gap-1 min-w-0">
           <button
             type="button"
             onClick={() => onTabChange('detail')}
-            className={`px-2 py-1 text-[11px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-1.5 py-1 text-[10.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'detail' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
@@ -274,12 +299,28 @@ export function ObjectInspector({
           <button
             type="button"
             onClick={() => onTabChange('session')}
-            className={`px-2 py-1 text-[11px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-1.5 py-1 text-[10.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'session' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
-            관측 목록 ({sessionPlan.length})
+            관측 목록({sessionPlan.length})
+          </button>
+          <button
+            type="button"
+            onClick={() => onTabChange('challenge')}
+            className={`px-1.5 py-1 text-[10.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-1 ${
+              activeTab === 'challenge' ? ui.buttonActive : ui.buttonIdle
+            }`}
+            style={{ borderRadius: '4px' }}
+          >
+            <span>챌린지</span>
+            {challenges.some((t) => t.activeOnChart) && (
+              <span
+                className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"
+                aria-hidden="true"
+              />
+            )}
           </button>
         </div>
         <button
@@ -762,6 +803,23 @@ export function ObjectInspector({
               </p>
             </div>
           )
+        ) : activeTab === 'challenge' ? (
+          <ChallengePanel
+            tracks={challenges}
+            theme={theme}
+            observer={observer}
+            catalogs={catalogs}
+            onToggleTrackOnChart={onToggleChallengeOnChart}
+            onToggleCheckpoint={onToggleChallengeCheckpoint}
+            onUpdateCheckpointNote={onUpdateChallengeCheckpointNote}
+            onSelectCheckpoint={onSelectChallengeCheckpoint}
+            onFrameTrack={onFrameChallengeTrack}
+            onPrintCertificate={onPrintChallengeCertificate}
+            onSaveTrack={onSaveChallengeTrack}
+            onDeleteTrack={onDeleteChallengeTrack}
+            onResetBuiltInTrack={onResetBuiltInChallenge}
+            onImportTracks={onImportChallenges}
+          />
         ) : (
           /* Observing Session Plan Tab */
           <div className="space-y-2.5">
