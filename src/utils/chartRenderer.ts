@@ -7,6 +7,7 @@ import { getFieldStarsInBounds } from '../data/stars';
 import {
   ChartViewState,
   DeepSkyObject,
+  DoubleStarSystem,
   HipsSettings,
   LayerSettings,
   MilkyWayLayer,
@@ -66,6 +67,9 @@ export interface ThemePalette {
   dsoColor: Record<string, string>;
   dsoLabel: string;
   starLabel: string;
+  doubleStarStroke: string;
+  multipleStarStroke: string;
+  doubleStarLabel: string;
   reticleTelrad: string;
   reticleEyepiece: string;
   reticleSensor: string;
@@ -105,9 +109,9 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       horizonStroke: '#DC2626',
       horizonText: '#B91C1C',
       eclipticStroke: 'rgba(180, 83, 9, 0.48)',
-      constellationLine: 'rgba(30, 58, 138, 0.38)',
+      constellationLine: 'rgb(30, 58, 138)',
       constellationBoundary: 'rgba(71, 85, 105, 0.32)',
-      constellationName: 'rgba(30, 41, 59, 0.46)',
+      constellationName: 'rgb(30, 41, 59)',
       dsoColor: {
         GX: '#B91C1C',
         OC: '#B45309',
@@ -120,6 +124,9 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       },
       dsoLabel: '#0F172A',
       starLabel: '#334155',
+      doubleStarStroke: '#B45309',
+      multipleStarStroke: '#1D4ED8',
+      doubleStarLabel: '#92400E',
       reticleTelrad: '#DC2626',
       reticleEyepiece: '#2563EB',
       reticleSensor: '#059669',
@@ -156,9 +163,9 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       horizonStroke: 'rgba(239, 68, 68, 0.72)',
       horizonText: '#F87171',
       eclipticStroke: 'rgba(185, 28, 28, 0.40)',
-      constellationLine: 'rgba(220, 38, 38, 0.34)',
+      constellationLine: 'rgb(220, 38, 38)',
       constellationBoundary: 'rgba(153, 27, 27, 0.34)',
-      constellationName: 'rgba(239, 68, 68, 0.40)',
+      constellationName: 'rgb(239, 68, 68)',
       dsoColor: {
         GX: '#EF4444',
         OC: '#DC2626',
@@ -171,6 +178,9 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       },
       dsoLabel: '#EF4444',
       starLabel: '#DC2626',
+      doubleStarStroke: '#EF4444',
+      multipleStarStroke: '#FCA5A5',
+      doubleStarLabel: '#F87171',
       reticleTelrad: '#DC2626',
       reticleEyepiece: '#EF4444',
       reticleSensor: '#DC2626',
@@ -207,9 +217,9 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
     horizonStroke: 'rgba(245, 158, 11, 0.65)',
     horizonText: '#F59E0B',
     eclipticStroke: 'rgba(245, 158, 11, 0.32)',
-    constellationLine: 'rgba(100, 149, 237, 0.36)',
+    constellationLine: 'rgb(100, 149, 237)',
     constellationBoundary: 'rgba(148, 163, 184, 0.24)',
-    constellationName: 'rgba(148, 163, 184, 0.38)',
+    constellationName: 'rgb(148, 163, 184)',
     dsoColor: {
       GX: '#FB7185',
       OC: '#FBBF24',
@@ -222,6 +232,9 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
     },
     dsoLabel: '#E2E8F0',
     starLabel: '#94A3B8',
+    doubleStarStroke: '#FCD34D',
+    multipleStarStroke: '#38BDF8',
+    doubleStarLabel: '#FDE68A',
     reticleTelrad: '#EF4444',
     reticleEyepiece: '#06B6D4',
     reticleSensor: '#10B981',
@@ -1208,6 +1221,7 @@ export function renderStarChart(
   // 6. All 88 IAU Constellation Stick Figures (Modern IAU vs Traditional Classical) & Names
   if (layers.showConstellationLines) {
     ctx.save();
+    ctx.globalAlpha = Math.max(0.05, Math.min(1, layers.constellationLineOpacity ?? 0.35));
     ctx.strokeStyle = palette.constellationLine;
     ctx.lineWidth = view.fsz > 80 ? 1.0 : 1.25;
     const useTraditional = layers.constellationLineStyle === 'traditional';
@@ -1238,6 +1252,7 @@ export function renderStarChart(
 
   if (layers.showConstellationNames) {
     ctx.save();
+    ctx.globalAlpha = Math.max(0.05, Math.min(1, layers.constellationLineOpacity ?? 0.35));
     ctx.fillStyle = palette.constellationName;
     ctx.font =
       view.fsz > 90
@@ -1722,6 +1737,201 @@ export function renderStarChart(
     ctx.fill();
   }
   ctx.restore();
+
+  // 8f. WDS Double & Multiple Star Markers (─●─ for Double, ─(●)─ for Multiple) + Resolved Companions
+  if (
+    layers.showDoubleStars &&
+    (layers.showDoublePairs || layers.showMultipleStars) &&
+    catalogs.doubleStars.length > 0
+  ) {
+    interface PendingDouble {
+      sys: DoubleStarSystem;
+      pt: { x: number; y: number };
+      dimmed: boolean;
+      isSelected: boolean;
+      isOnScreen: boolean;
+    }
+
+    const doubleMagCutoff = Math.min(8.8, magLimit + 0.55);
+    const minSep = layers.doubleStarMinSepArcsec ?? 0;
+    const pendingDoubles: PendingDouble[] = [];
+    const onScreenNonDimmedDoubles: PendingDouble[] = [];
+
+    for (let i = 0; i < catalogs.doubleStars.length; i++) {
+      const sys = catalogs.doubleStars[i];
+      const isSelected = selected?.kind === 'double' && selected.data.id === sys.id;
+      if (sys.mag > doubleMagCutoff && !isSelected) {
+        if (!selected || selected.kind !== 'double') break;
+        continue;
+      }
+      if (!isSelected) {
+        if (sys.isMultiple && !layers.showMultipleStars) continue;
+        if (!sys.isMultiple && !layers.showDoublePairs) continue;
+        if (sys.sep < minSep) continue;
+      }
+      const pt = projectStereographic(sys.ra, sys.dec, proj, 24);
+      if (!pt) continue;
+      const altCheck = evalStarAltitude(sys.ra, sys.dec, isSelected);
+      if (altCheck.skip) continue;
+
+      const isOnScreen = pt.x >= 0 && pt.x <= width && pt.y >= 0 && pt.y <= height;
+      const entry: PendingDouble = {
+        sys,
+        pt,
+        dimmed: altCheck.dimmed,
+        isSelected,
+        isOnScreen,
+      };
+      pendingDoubles.push(entry);
+      if (isOnScreen && !altCheck.dimmed) {
+        onScreenNonDimmedDoubles.push(entry);
+      }
+    }
+
+    const densityPct = Math.max(0, Math.min(100, layers.doubleStarDensityPct ?? 30));
+    const allowedDoubles = new Set<PendingDouble>();
+    if (densityPct >= 100) {
+      for (const e of pendingDoubles) allowedDoubles.add(e);
+    } else {
+      onScreenNonDimmedDoubles.sort((a, b) => {
+        const scoreA = a.sys.mag - (a.sys.isMultiple ? 0.25 : 0) - (a.sys.koName ? 0.2 : 0);
+        const scoreB = b.sys.mag - (b.sys.isMultiple ? 0.25 : 0) - (b.sys.koName ? 0.2 : 0);
+        return scoreA - scoreB;
+      });
+      const quota =
+        densityPct <= 0 ? 0 : Math.ceil((onScreenNonDimmedDoubles.length * densityPct) / 100);
+      const maxDraw = Math.min(quota, 420);
+      for (let i = 0; i < onScreenNonDimmedDoubles.length; i++) {
+        if (i < maxDraw || onScreenNonDimmedDoubles[i].isSelected) {
+          allowedDoubles.add(onScreenNonDimmedDoubles[i]);
+        }
+      }
+      for (const e of pendingDoubles) {
+        if (e.isSelected) allowedDoubles.add(e);
+      }
+    }
+
+    const renderedOnScreenDoubles: { entry: PendingDouble; markerR: number }[] = [];
+
+    ctx.save();
+    for (const entry of pendingDoubles) {
+      if (!allowedDoubles.has(entry)) continue;
+      const { sys, pt, dimmed, isSelected } = entry;
+      const starR = getStarRadiusPogson(sys.mag, magLimit, view.fsz);
+      const barHalf = Math.max(5.5, starR + 3.8);
+      const ringR = Math.max(4.4, starR + 2.4);
+      const strokeCol = sys.isMultiple ? palette.multipleStarStroke : palette.doubleStarStroke;
+
+      ctx.globalAlpha = dimmed ? 0.2 : isSelected ? 1.0 : 0.88;
+      ctx.strokeStyle = strokeCol;
+      ctx.lineWidth = isSelected ? 1.55 : sys.isMultiple ? 1.2 : 1.1;
+
+      // Classic horizontal bisecting bar (─●─) for Double & Multiple Stars
+      ctx.beginPath();
+      ctx.moveTo(pt.x - barHalf, pt.y);
+      ctx.lineTo(pt.x + barHalf, pt.y);
+      ctx.stroke();
+
+      // Concentric companion ring (─(●)─) distinguishing Multiple Star systems (3+ components)
+      if (sys.isMultiple) {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      // Render resolved companion star(s) at real WDS PA & angular separation when zoomed in
+      const pairList =
+        sys.pairs && sys.pairs.length > 0
+          ? sys.pairs
+          : [{ comp: 'AB', sep: sys.sep, pa: sys.pa, mag1: sys.mag1, mag2: sys.mag2, disc: sys.disc }];
+      const cosDecSafe = Math.max(0.05, Math.cos(sys.dec * DEG2RAD));
+
+      for (let pIdx = 0; pIdx < pairList.length; pIdx++) {
+        const pair = pairList[pIdx];
+        // Only offset pairs anchored on primary 'A' (or single primary pair)
+        if (pIdx > 0 && !pair.comp.startsWith('A')) continue;
+        const sepPx = (pair.sep / 3600) * pxPerDeg;
+        if (sepPx < 4.2 || sepPx > Math.max(width, height) * 0.9) continue;
+
+        const sepDeg = pair.sep / 3600;
+        const paRad = pair.pa * DEG2RAD;
+        const compDec = Math.max(-89.999, Math.min(89.999, sys.dec + sepDeg * Math.cos(paRad)));
+        const compRa = ((sys.ra + (sepDeg * Math.sin(paRad)) / cosDecSafe) % 360 + 360) % 360;
+        const compPt = projectStereographic(compRa, compDec, proj, 24);
+        if (!compPt) continue;
+
+        const compR = Math.max(1.35, getStarRadiusPogson(pair.mag2, Math.max(magLimit, pair.mag2 + 1.2), view.fsz));
+        if (isSelected || hoveredId === sys.id || sepPx >= 9) {
+          ctx.save();
+          ctx.strokeStyle = strokeCol;
+          ctx.globalAlpha = dimmed ? 0.15 : isSelected ? 0.65 : 0.35;
+          ctx.lineWidth = 0.85;
+          ctx.setLineDash([2, 2]);
+          ctx.beginPath();
+          ctx.moveTo(pt.x, pt.y);
+          ctx.lineTo(compPt.x, compPt.y);
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        ctx.save();
+        ctx.globalAlpha = dimmed ? 0.2 : 0.96;
+        ctx.fillStyle = theme === 'white' ? '#1E293B' : theme === 'red' ? '#FCA5A5' : '#F8FAFC';
+        ctx.strokeStyle = strokeCol;
+        ctx.lineWidth = 0.9;
+        ctx.beginPath();
+        ctx.arc(compPt.x, compPt.y, compR, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      const hitR = Math.max(8, barHalf + 2);
+      targets.push({
+        kind: 'double',
+        id: sys.id,
+        x: pt.x,
+        y: pt.y,
+        radius: hitR,
+        mag: sys.mag,
+        item: { kind: 'double', data: sys },
+      });
+
+      if (entry.isOnScreen && !dimmed) {
+        renderedOnScreenDoubles.push({ entry, markerR: Math.max(barHalf, ringR) });
+      }
+    }
+    ctx.restore();
+
+    // Double & Multiple star labels
+    if (layers.showDoubleStarLabels && renderedOnScreenDoubles.length > 0) {
+      renderedOnScreenDoubles.sort((a, b) => a.entry.sys.mag - b.entry.sys.mag);
+      const lblPct = Math.max(0, Math.min(100, layers.doubleStarLabelDensityPct ?? 12));
+      const lblQuota =
+        lblPct <= 0 ? 0 : Math.ceil((renderedOnScreenDoubles.length * lblPct) / 100);
+      const maxLbl = Math.min(lblQuota, 220);
+
+      for (let i = 0; i < renderedOnScreenDoubles.length; i++) {
+        const { entry, markerR } = renderedOnScreenDoubles[i];
+        if (i >= maxLbl && !entry.isSelected) continue;
+        const { sys, pt, isSelected } = entry;
+        const baseName = sys.koName || sys.bayer || sys.name || sys.disc;
+        const sepTxt = sys.sep >= 10 ? `${sys.sep.toFixed(0)}″` : `${sys.sep.toFixed(1)}″`;
+        const tag = sys.isMultiple ? `(${sys.compCount}성)` : sepTxt;
+        const text = `${baseName} ${tag}`;
+
+        labelCandidates.push({
+          priority: isSelected ? -105 : sys.mag + 1.45,
+          x: pt.x,
+          y: pt.y,
+          radius: markerR + 2,
+          text,
+          color: sys.isMultiple ? palette.multipleStarStroke : palette.doubleStarLabel,
+          font: '500 9.5px "IBM Plex Mono", "Noto Sans KR", monospace',
+        });
+      }
+    }
+  }
 
   // 8b. Solar System Bodies (Sun, Moon, Mercury–Neptune) at real observation time
   if (layers.showSolarSystem) {
@@ -2302,6 +2512,8 @@ export function renderStarChart(
         ? selected.data.id
         : selected.kind === 'planet'
         ? selected.data.koName
+        : selected.kind === 'double'
+        ? selected.data.koName || selected.data.name || selected.data.bayer || selected.data.disc
         : selected.data.koName || selected.data.name || selected.data.bayer || selected.data.id;
 
     const hopGuides = findStarHopGuides(

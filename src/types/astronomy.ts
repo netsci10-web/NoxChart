@@ -69,6 +69,37 @@ export interface ChartViewState {
   coordSystem: CoordSystem; // 'equatorial' (RA/Dec North-up) | 'horizontal' (Alt/Az Zenith-up)
 }
 
+export interface DoubleStarPair {
+  comp: string; // e.g., "AB", "AC", "CD"
+  sep: number; // Angular separation in arcseconds
+  pa: number; // Position angle in degrees (0..360, N through E)
+  mag1: number;
+  mag2: number;
+  disc: string; // Discoverer designation
+}
+
+export interface DoubleStarSystem {
+  id: string; // Primary unique ID ("WDS 19307+2758")
+  wdsId: string; // 10-char WDS identifier ("19307+2758")
+  disc: string; // Primary discoverer + components (e.g., "STFA 43 AB")
+  ra: number; // J2000 Right Ascension in degrees (0..360)
+  dec: number; // J2000 Declination in degrees (-90..90)
+  mag: number; // Brightest visual magnitude for sorting/display
+  mag1: number; // Primary magnitude
+  mag2: number; // Secondary magnitude
+  sep: number; // Primary pair separation in arcseconds
+  pa: number; // Primary pair position angle in degrees
+  compCount: number; // 2 = double, >= 3 = multiple
+  isMultiple: boolean; // compCount >= 3
+  spec?: string; // Spectral type
+  lastYear: number; // Latest WDS observation epoch
+  name?: string; // Proper English name (matched to Hipparcos)
+  koName?: string; // Proper Korean name (matched to Hipparcos)
+  bayer?: string; // Bayer/Flamsteed designation
+  con: string; // IAU 3-letter constellation abbreviation
+  pairs?: DoubleStarPair[]; // Additional pairs in multiple star systems
+}
+
 export interface LayerSettings {
   showGridEq: boolean;
   showGridAltAz: boolean;
@@ -79,6 +110,7 @@ export interface LayerSettings {
   showNebulaContours: boolean;
   showConstellationLines: boolean;
   constellationLineStyle: ConstellationLineStyle;
+  constellationLineOpacity: number; // 0.05..1.0
   showConstellationBoundaries: boolean;
   showConstellationNames: boolean;
   showSolarSystem: boolean;
@@ -86,6 +118,13 @@ export interface LayerSettings {
   showSolarSystemOrbits: boolean;
   showSolarSystemLabels: boolean;
   showStarColors: boolean;
+  showDoubleStars: boolean;
+  showDoublePairs: boolean; // 이중성 (2성)
+  showMultipleStars: boolean; // 다중성 (3성 이상)
+  doubleStarDensityPct: number; // 0..100 (% of currently visible on-screen systems)
+  doubleStarMinSepArcsec: number; // Minimum separation filter in arcseconds
+  showDoubleStarLabels: boolean;
+  doubleStarLabelDensityPct: number; // 0..100
   showDso: boolean;
   dsoSymbolDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to render)
   showDsoLabels: boolean;
@@ -156,10 +195,11 @@ export interface SolarSystemBody {
 export type SelectedItem =
   | { kind: 'star'; data: Star }
   | { kind: 'dso'; data: DeepSkyObject }
-  | { kind: 'planet'; data: SolarSystemBody };
+  | { kind: 'planet'; data: SolarSystemBody }
+  | { kind: 'double'; data: DoubleStarSystem };
 
 export interface ScreenTarget {
-  kind: 'star' | 'dso' | 'planet';
+  kind: 'star' | 'dso' | 'planet' | 'double';
   id: string;
   x: number;
   y: number;
@@ -170,7 +210,7 @@ export interface ScreenTarget {
 
 export interface ObservingSessionEntry {
   id: string;
-  kind: 'star' | 'dso' | 'planet';
+  kind: 'star' | 'dso' | 'planet' | 'double';
   addedAt: number;
   observed: boolean;
   notes: string;

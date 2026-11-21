@@ -17,6 +17,7 @@ import {
   ChartViewState,
   Constellation,
   DeepSkyObject,
+  DoubleStarSystem,
   DsoType,
   HipsSettings,
   HipsSurveyId,
@@ -39,6 +40,7 @@ type GlobalSearchItem =
   | { kind: 'planet'; key: string; score: number; mag: number; body: SolarSystemBody }
   | { kind: 'constellation'; key: string; score: number; mag: number; con: Constellation }
   | { kind: 'star'; key: string; score: number; mag: number; star: Star }
+  | { kind: 'double'; key: string; score: number; mag: number; sys: DoubleStarSystem }
   | {
       kind: 'dso';
       key: string;
@@ -572,6 +574,40 @@ export function ControlSidebar({
       }
     }
 
+    // 5. WDS Double & Multiple Stars
+    const wantsDouble =
+      q.includes('이중') ||
+      q.includes('다중') ||
+      q.includes('double') ||
+      q.includes('multiple') ||
+      qCompact.startsWith('wds') ||
+      qCompact.startsWith('stf') ||
+      qCompact.startsWith('stt');
+    let doubleHits = 0;
+    for (const sys of catalogs.doubleStars) {
+      let score = scoreSearchMatch(
+        [sys.disc, sys.id, sys.wdsId, sys.koName, sys.name, sys.bayer],
+        [sys.con, sys.isMultiple ? '다중성 multiple' : '이중성 double'],
+        q,
+        qCompact
+      );
+      if (score === 0 && wantsDouble) {
+        if ((q.includes('다중') || q.includes('multiple')) && sys.isMultiple) score = 55;
+        else if ((q.includes('이중') || q.includes('double')) && !sys.isMultiple) score = 55;
+      }
+      if (score > 0) {
+        results.push({
+          kind: 'double',
+          key: `double:${sys.id}`,
+          score: score + (sys.isMultiple ? 1 : 0),
+          mag: sys.mag,
+          sys,
+        });
+        doubleHits++;
+        if (doubleHits >= 40) break;
+      }
+    }
+
     results.sort((a, b) => b.score - a.score || a.mag - b.mag);
     return {
       items: results.slice(0, 80),
@@ -585,6 +621,7 @@ export function ControlSidebar({
     messierList,
     catalogs.brightStars,
     catalogs.deepStars,
+    catalogs.doubleStars,
     catalogs.dsosBright,
     catalogs.darkNebulae,
     catalogs.dsosDeep,
@@ -629,6 +666,20 @@ export function ControlSidebar({
       fsz: 12,
     }));
     onSelect({ kind: 'star', data: star });
+  };
+
+  const jumpToDouble = (sys: DoubleStarSystem) => {
+    setActiveConAbbr(null);
+    onChangeLayers((p) =>
+      p.showDoubleStars ? p : { ...p, showDoubleStars: true }
+    );
+    onChangeView((p) => ({
+      ...p,
+      ra: ((sys.ra / 15) % 24 + 24) % 24,
+      dec: sys.dec,
+      fsz: Math.max(0.18, Math.min(8, (sys.sep / 3600) * 140)),
+    }));
+    onSelect({ kind: 'double', data: sys });
   };
 
   const jumpToConstellation = (con: Constellation) => {
@@ -978,6 +1029,39 @@ export function ControlSidebar({
                           <div className={`mt-0.5 font-mono text-[10px] tracking-[-0.05em] tabular-nums truncate ${ui.textMuted}`}>
                             {subInfo ? `${subInfo} · ` : ''}
                             {formatCompactRaDec(star.ra, star.dec)}
+                          </div>
+                        </button>
+                      );
+                    }
+
+                    if (item.kind === 'double') {
+                      const { sys } = item;
+                      const isActive = selected?.kind === 'double' && selected.data.id === sys.id;
+                      const title = sys.koName || sys.name || sys.bayer || sys.disc;
+                      return (
+                        <button
+                          key={item.key}
+                          type="button"
+                          onClick={() => jumpToDouble(sys)}
+                          className={`w-full text-left px-2 py-2 border rounded-lg transition-colors ${
+                            isActive ? cardActiveCls : cardIdleCls
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <div className="flex items-center gap-1 min-w-0">
+                              <span className={`px-1 py-[1px] border rounded text-[9px] leading-tight font-medium shrink-0 ${badgeCls}`}>
+                                {sys.isMultiple ? `다중 ${sys.compCount}성` : '이중성'}
+                              </span>
+                              <span className={`font-semibold truncate tracking-[-0.04em] ${ui.textPrimary}`}>
+                                {title}
+                              </span>
+                            </div>
+                            <span className={`font-mono text-[10px] tracking-[-0.04em] tabular-nums shrink-0 ${ui.textMuted}`}>
+                              {sys.mag1.toFixed(1)}/{sys.mag2.toFixed(1)}m
+                            </span>
+                          </div>
+                          <div className={`mt-0.5 font-mono text-[10px] tracking-[-0.05em] tabular-nums truncate ${ui.textMuted}`}>
+                            {sys.disc} · 이격 {sys.sep.toFixed(1)}″ · PA {sys.pa}°
                           </div>
                         </button>
                       );
@@ -1342,6 +1426,34 @@ export function ControlSidebar({
                 />
               </label>
 
+              {(layers.showConstellationLines || layers.showConstellationNames) && (
+                <div className="pl-2 pb-0.5 space-y-0.5">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                      별자리선 · 이름 진하기
+                    </span>
+                    <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                      {Math.round(layers.constellationLineOpacity * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.05}
+                    max={1}
+                    step={0.05}
+                    value={layers.constellationLineOpacity}
+                    onChange={(e) =>
+                      onChangeLayers((p) => ({
+                        ...p,
+                        constellationLineOpacity: Number(e.target.value),
+                      }))
+                    }
+                    aria-label="별자리선 및 이름 진하기"
+                    className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                  />
+                </div>
+              )}
+
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
                   별자리 경계선 (IAU Boundaries)
@@ -1553,6 +1665,205 @@ export function ControlSidebar({
 
               <p className={`pt-0.5 text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
                 시야각 5.5° 이하 확대 시 Gaia DR3 심층 별(최대 15.8m)이 화면 전체에 균일하게 로딩됩니다.
+              </p>
+            </div>
+
+            {/* 2.5. 이중성 · 다중성 (WDS Double & Multiple Stars) */}
+            <div className={`pt-3.5 border-t ${ui.divider} space-y-1.5`}>
+              <div className="flex items-center justify-between gap-1">
+                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                  이중성 · 다중성 (WDS)
+                </span>
+                <span className={`font-mono text-[9.5px] tracking-[-0.05em] tabular-nums whitespace-nowrap shrink-0 ${ui.textMuted}`}>
+                  {catalogs.doubleStarsLoaded
+                    ? `${catalogs.doubleStars.length.toLocaleString()}계`
+                    : '로딩 중...'}
+                </span>
+              </div>
+
+              <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
+                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                  이중성 · 다중성 표기
+                </span>
+                <input
+                  type="checkbox"
+                  checked={layers.showDoubleStars}
+                  onChange={(e) =>
+                    onChangeLayers((p) => ({ ...p, showDoubleStars: e.target.checked }))
+                  }
+                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                />
+              </label>
+
+              {layers.showDoubleStars && (
+                <div className="space-y-2 pt-0.5">
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onChangeLayers((p) => ({ ...p, showDoublePairs: !p.showDoublePairs }))
+                      }
+                      className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex items-center justify-center gap-1 whitespace-nowrap shrink-0 ${
+                        layers.showDoublePairs ? ui.buttonActive : ui.buttonIdle
+                      }`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      <svg viewBox="0 0 18 10" className="w-4 h-2.5 shrink-0" aria-hidden="true">
+                        <line
+                          x1="1"
+                          y1="5"
+                          x2="17"
+                          y2="5"
+                          stroke={theme === 'red' ? '#EF4444' : theme === 'white' ? '#B45309' : '#FCD34D'}
+                          strokeWidth="1.5"
+                        />
+                        <circle cx="9" cy="5" r="2.2" fill="currentColor" />
+                      </svg>
+                      <span>이중성 (2성)</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        onChangeLayers((p) => ({ ...p, showMultipleStars: !p.showMultipleStars }))
+                      }
+                      className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex items-center justify-center gap-1 whitespace-nowrap shrink-0 ${
+                        layers.showMultipleStars ? ui.buttonActive : ui.buttonIdle
+                      }`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      <svg viewBox="0 0 18 10" className="w-4 h-2.5 shrink-0" aria-hidden="true">
+                        <line
+                          x1="1"
+                          y1="5"
+                          x2="17"
+                          y2="5"
+                          stroke={theme === 'red' ? '#FCA5A5' : theme === 'white' ? '#1D4ED8' : '#38BDF8'}
+                          strokeWidth="1.4"
+                        />
+                        <circle
+                          cx="9"
+                          cy="5"
+                          r="3.8"
+                          fill="none"
+                          stroke={theme === 'red' ? '#FCA5A5' : theme === 'white' ? '#1D4ED8' : '#38BDF8'}
+                          strokeWidth="1.2"
+                        />
+                        <circle cx="9" cy="5" r="1.8" fill="currentColor" />
+                      </svg>
+                      <span>다중성 (3성+)</span>
+                    </button>
+                  </div>
+
+                  <div className="pl-2 space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        표시 밀도 (화면 밝기 상위)
+                      </span>
+                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                        {layers.doubleStarDensityPct}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={layers.doubleStarDensityPct}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          doubleStarDensityPct: Number(e.target.value),
+                        }))
+                      }
+                      aria-label="이중성 다중성 표시 밀도"
+                      className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                    />
+                  </div>
+
+                  <div className="space-y-1">
+                    <div className="flex items-center justify-between text-[10px] pl-2">
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        최소 이격각 (ρ)
+                      </span>
+                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                        {layers.doubleStarMinSepArcsec === 0
+                          ? '전체 (≥0.4″)'
+                          : `≥ ${layers.doubleStarMinSepArcsec}″`}
+                      </span>
+                    </div>
+                    <div className="grid grid-cols-5 gap-0.5">
+                      {(
+                        [
+                          [0, '전체'],
+                          [1, '1″+'],
+                          [2, '2″+'],
+                          [5, '5″+'],
+                          [10, '10″+'],
+                        ] as const
+                      ).map(([val, lbl]) => (
+                        <button
+                          key={val}
+                          type="button"
+                          onClick={() =>
+                            onChangeLayers((p) => ({ ...p, doubleStarMinSepArcsec: val }))
+                          }
+                          className={`py-1 px-0.5 border text-[9.5px] font-mono tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 ${
+                            layers.doubleStarMinSepArcsec === val ? ui.buttonActive : ui.buttonIdle
+                          }`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          {lbl}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
+                    <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                      이중성 · 다중성 라벨
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={layers.showDoubleStarLabels}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({ ...p, showDoubleStarLabels: e.target.checked }))
+                      }
+                      className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                    />
+                  </label>
+
+                  {layers.showDoubleStarLabels && (
+                    <div className="pl-2 pb-0.5 space-y-0.5">
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                          라벨 밀도 (화면 밝기 상위)
+                        </span>
+                        <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                          {layers.doubleStarLabelDensityPct}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        step={1}
+                        value={layers.doubleStarLabelDensityPct}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            doubleStarLabelDensityPct: Number(e.target.value),
+                          }))
+                        }
+                        aria-label="이중성 다중성 라벨 밀도"
+                        className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+
+              <p className={`pt-0.5 text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
+                고배율 확대 시 WDS 실측 이격각(ρ)·방위각(PA) 위치에 동반성이 분리 표기됩니다.
               </p>
             </div>
 

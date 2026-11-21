@@ -212,7 +212,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         for (const t of targetsRef.current) {
           const d = Math.hypot(t.x - x, t.y - y);
           if (d <= t.radius + extraPadding) {
-            const score = d + (t.kind === 'dso' ? -2 : 0) + t.mag * 0.25;
+            const kindBonus = t.kind === 'dso' ? -2 : t.kind === 'double' ? -1.5 : 0;
+            const score = d + kindBonus + t.mag * 0.25;
             if (score < bestScore) {
               bestScore = score;
               best = t;
@@ -631,6 +632,26 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                   {hoveredTarget.item.data.id === 'Moon'
                     ? `위상 ${hoveredTarget.item.data.phasePct}%`
                     : `${hoveredTarget.item.data.distAu.toFixed(2)} AU`}
+                </div>
+              </div>
+            ) : hoveredTarget.item.kind === 'double' ? (
+              <div>
+                <div className="font-semibold">
+                  {hoveredTarget.item.data.koName ||
+                    hoveredTarget.item.data.name ||
+                    hoveredTarget.item.data.bayer ||
+                    hoveredTarget.item.data.disc}
+                  {' · '}
+                  <span className={ui.accentText}>
+                    {hoveredTarget.item.data.isMultiple
+                      ? `다중성 (${hoveredTarget.item.data.compCount}성)`
+                      : '이중성'}
+                  </span>
+                </div>
+                <div className={`text-[11px] font-mono tabular-nums ${ui.textMuted}`}>
+                  {hoveredTarget.item.data.disc} · {hoveredTarget.item.data.mag1.toFixed(1)}/
+                  {hoveredTarget.item.data.mag2.toFixed(1)}m · {hoveredTarget.item.data.sep.toFixed(1)}″ · PA{' '}
+                  {hoveredTarget.item.data.pa}°
                 </div>
               </div>
             ) : (

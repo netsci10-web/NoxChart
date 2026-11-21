@@ -109,6 +109,8 @@ export function ObjectInspector({
         ? selected.data.id
         : selected.kind === 'planet'
         ? selected.data.koName
+        : selected.kind === 'double'
+        ? selected.data.koName || selected.data.name || selected.data.bayer || selected.data.disc
         : selected.data.koName || selected.data.name || selected.data.bayer || selected.data.id;
     return findStarHopGuides(
       selected.data.ra,
@@ -163,6 +165,9 @@ export function ObjectInspector({
         } else if (entry.kind === 'planet') {
           const found = solarBodies.find((b) => b.id === entry.id);
           if (found) item = { kind: 'planet', data: found };
+        } else if (entry.kind === 'double') {
+          const found = catalogs.doubleStars.find((d) => d.id === entry.id);
+          if (found) item = { kind: 'double', data: found };
         } else {
           const found = allStars.find((s) => s.id === entry.id);
           if (found) item = { kind: 'star', data: found };
@@ -270,6 +275,8 @@ export function ObjectInspector({
                     ? `${selected.data.id}${selected.data.altId ? ` · ${selected.data.altId}` : ''} · ${selected.data.con}`
                     : selected.kind === 'planet'
                     ? `${selected.data.symbol} ${selected.data.name} · 태양계`
+                    : selected.kind === 'double'
+                    ? `${selected.data.disc} · ${selected.data.id}${selected.data.con ? ` · ${selected.data.con}` : ''}`
                     : `${selected.data.bayer ?? selected.data.id}${selected.data.hip ? ` · HIP ${selected.data.hip}` : ''} · ${selected.data.con}`}
                 </div>
                 <h2
@@ -279,6 +286,8 @@ export function ObjectInspector({
                     ? selected.data.koName || selected.data.name || selected.data.id
                     : selected.kind === 'planet'
                     ? selected.data.koName
+                    : selected.kind === 'double'
+                    ? selected.data.koName || selected.data.name || selected.data.bayer || selected.data.disc
                     : selected.data.koName || selected.data.name || selected.data.bayer || selected.data.id}
                 </h2>
                 <div className={`text-[10.5px] tracking-[-0.04em] truncate ${ui.textSecondary}`}>
@@ -286,6 +295,10 @@ export function ObjectInspector({
                     ? getDsoTypeLabel(selected.data.type)
                     : selected.kind === 'planet'
                     ? selected.data.category
+                    : selected.kind === 'double'
+                    ? selected.data.isMultiple
+                      ? `다중성 (Multiple Star · ${selected.data.compCount}구성성)`
+                      : '이중성 (Double Star · 2구성성)'
                     : '항성 (Fixed Star)'}
                 </div>
               </div>
@@ -308,6 +321,8 @@ export function ObjectInspector({
                             : selected.data.group === 'planet'
                             ? 0.06
                             : 1.5
+                          : selected.kind === 'double'
+                          ? Math.max(0.05, Math.min(2.5, (selected.data.sep / 3600) * 80))
                           : 14,
                     }))
                   }
@@ -435,6 +450,36 @@ export function ObjectInspector({
                       </div>
                     )}
                   </>
+                ) : selected.kind === 'double' ? (
+                  <>
+                    <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+                      <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
+                        주성 / 동반성
+                      </span>
+                      <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
+                        {selected.data.mag1.toFixed(2)}m / {selected.data.mag2.toFixed(2)}m (Δ
+                        {Math.abs(selected.data.mag2 - selected.data.mag1).toFixed(1)})
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+                      <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
+                        이격각(ρ) / PA(θ)
+                      </span>
+                      <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
+                        {selected.data.sep.toFixed(1)}″ · {selected.data.pa}° ({selected.data.lastYear})
+                      </span>
+                    </div>
+                    {selected.data.spec && (
+                      <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+                        <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
+                          분광형
+                        </span>
+                        <span className="font-mono text-[10px] tracking-[-0.04em] text-right truncate">
+                          {selected.data.spec}
+                        </span>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <div className="flex items-center justify-between gap-1 px-2 py-1.5">
                     <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
@@ -446,6 +491,38 @@ export function ObjectInspector({
                   </div>
                 )}
               </div>
+
+              {/* Multiple Star Component Pairs Breakdown */}
+              {selected.kind === 'double' && selected.data.pairs && selected.data.pairs.length > 1 && (
+                <div className={`border p-2 space-y-1.5 ${ui.border}`} style={{ borderRadius: '6px' }}>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                      구성성 페어 목록 (WDS)
+                    </span>
+                    <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
+                      {selected.data.pairs.length}쌍
+                    </span>
+                  </div>
+                  <div className={`divide-y ${ui.divider} font-mono text-[10px] tabular-nums`}>
+                    {selected.data.pairs.map((pair, idx) => (
+                      <div
+                        key={`${pair.comp}-${idx}`}
+                        className="py-1 flex items-center justify-between gap-1"
+                      >
+                        <span className={`font-semibold shrink-0 ${ui.accentText}`}>
+                          {pair.comp}
+                        </span>
+                        <span className={`truncate ${ui.textSecondary}`}>
+                          {pair.mag1.toFixed(1)}/{pair.mag2.toFixed(1)}m
+                        </span>
+                        <span className={`shrink-0 ${ui.textMuted}`}>
+                          {pair.sep.toFixed(1)}″ · {pair.pa}°
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
 
               {/* 24-Hour Altitude Curve */}
               <div className={`border p-2 space-y-1.5 ${ui.border}`} style={{ borderRadius: '6px' }}>
@@ -656,6 +733,8 @@ export function ObjectInspector({
                   const title =
                     item.kind === 'dso'
                       ? `${item.data.id}${item.data.koName ? ` · ${item.data.koName}` : ''}`
+                      : item.kind === 'double'
+                      ? `${item.data.koName || item.data.name || item.data.bayer || item.data.disc} (${item.data.sep.toFixed(1)}″)`
                       : `${item.data.koName || item.data.name || item.data.id}`;
                   return (
                     <div key={entry.id} className="p-2 flex items-start gap-1.5">
@@ -680,7 +759,14 @@ export function ObjectInspector({
                             ...p,
                             ra: ((item.data.ra / 15) % 24 + 24) % 24,
                             dec: item.data.dec,
-                            fsz: item.kind === 'dso' ? 12 : item.kind === 'planet' ? 0.08 : 16,
+                            fsz:
+                              item.kind === 'dso'
+                                ? 12
+                                : item.kind === 'planet'
+                                ? 0.08
+                                : item.kind === 'double'
+                                ? Math.max(0.08, Math.min(2.5, (item.data.sep / 3600) * 80))
+                                : 16,
                           }));
                         }}
                         className="flex-1 text-left min-w-0"

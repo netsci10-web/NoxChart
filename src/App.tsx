@@ -64,6 +64,7 @@ const DEFAULT_LAYERS: LayerSettings = {
   showNebulaContours: false,
   showConstellationLines: true,
   constellationLineStyle: 'traditional',
+  constellationLineOpacity: 0.35,
   showConstellationBoundaries: false,
   showConstellationNames: true,
   showSolarSystem: true,
@@ -71,6 +72,13 @@ const DEFAULT_LAYERS: LayerSettings = {
   showSolarSystemOrbits: false,
   showSolarSystemLabels: true,
   showStarColors: true,
+  showDoubleStars: true,
+  showDoublePairs: true,
+  showMultipleStars: true,
+  doubleStarDensityPct: 30,
+  doubleStarMinSepArcsec: 1,
+  showDoubleStarLabels: true,
+  doubleStarLabelDensityPct: 12,
   showDso: true,
   dsoSymbolDensityPct: 30,
   showDsoLabels: true,
@@ -247,7 +255,8 @@ export default function App() {
     view.fsz,
     layers.magOffset,
     searchActive,
-    layers.enableGaiaLive
+    layers.enableGaiaLive,
+    layers.showDoubleStars
   );
 
   const [sessionPlan, setSessionPlan] = useState<ObservingSessionEntry[]>(() => {

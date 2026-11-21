@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import {
   Constellation,
   DeepSkyObject,
+  DoubleStarPair,
+  DoubleStarSystem,
   DsoType,
   MilkyWayLayer,
   NebulaContour,
@@ -55,6 +57,34 @@ type DsoTuple = [
   string   // con
 ];
 
+type DoubleStarPairTuple = [
+  string, // comp
+  number, // sep
+  number, // pa
+  number, // mag1
+  number, // mag2
+  string  // disc
+];
+
+type DoubleStarTuple = [
+  string, // wdsId
+  string, // disc + comp
+  number, // ra
+  number, // dec
+  number, // mag1
+  number, // mag2
+  number, // sep
+  number, // pa
+  number, // compCount
+  string, // spec
+  number, // lastYear
+  string, // name
+  string, // koName
+  string, // bayer
+  string, // con
+  DoubleStarPairTuple[]?
+];
+
 export interface GaiaPatchMeta {
   centerRa: number;
   centerDec: number;
@@ -68,6 +98,7 @@ export interface CatalogSnapshot {
   gaiaStars: Star[];
   gaiaPatch: GaiaPatchMeta | null;
   gaiaLoading: boolean;
+  doubleStars: DoubleStarSystem[];
   dsosBright: DeepSkyObject[];
   dsosDeep: DeepSkyObject[];
   darkNebulae: DeepSkyObject[];
@@ -78,6 +109,7 @@ export interface CatalogSnapshot {
   coreLoaded: boolean;
   deepStarsLoaded: boolean;
   deepDsosLoaded: boolean;
+  doubleStarsLoaded: boolean;
 }
 
 const cache: CatalogSnapshot = {
@@ -87,6 +119,7 @@ const cache: CatalogSnapshot = {
   gaiaStars: [],
   gaiaPatch: null,
   gaiaLoading: false,
+  doubleStars: [],
   dsosBright: FALLBACK_DSOS,
   dsosDeep: [],
   darkNebulae: [],
@@ -97,11 +130,13 @@ const cache: CatalogSnapshot = {
   coreLoaded: false,
   deepStarsLoaded: false,
   deepDsosLoaded: false,
+  doubleStarsLoaded: false,
 };
 
 let corePromise: Promise<void> | null = null;
 let deepStarsPromise: Promise<void> | null = null;
 let deepDsosPromise: Promise<void> | null = null;
+let doubleStarsPromise: Promise<void> | null = null;
 const ultraTilePromises = new Map<string, Promise<void>>();
 const gaiaPatchCache = new Map<string, { stars: Star[]; patch: GaiaPatchMeta }>();
 
@@ -162,6 +197,56 @@ function mapDso(t: DsoTuple): DeepSkyObject {
     name: name || undefined,
     koName: koName || undefined,
     con,
+  };
+}
+
+function mapDoubleStar(t: DoubleStarTuple): DoubleStarSystem {
+  const [
+    wdsId,
+    disc,
+    ra,
+    dec,
+    mag1,
+    mag2,
+    sep,
+    pa,
+    compCount,
+    spec,
+    lastYear,
+    name,
+    koName,
+    bayer,
+    con,
+    rawPairs,
+  ] = t;
+  const pairs: DoubleStarPair[] | undefined = rawPairs?.map(([comp, pSep, pPa, pM1, pM2, pDisc]) => ({
+    comp,
+    sep: pSep,
+    pa: pPa,
+    mag1: pM1,
+    mag2: pM2,
+    disc: pDisc,
+  }));
+  return {
+    id: `WDS ${wdsId}`,
+    wdsId,
+    disc,
+    ra,
+    dec,
+    mag: Math.min(mag1, mag2),
+    mag1,
+    mag2,
+    sep,
+    pa,
+    compCount,
+    isMultiple: compCount >= 3,
+    spec: spec || undefined,
+    lastYear,
+    name: name || undefined,
+    koName: koName || undefined,
+    bayer: bayer || undefined,
+    con,
+    pairs,
   };
 }
 
@@ -355,12 +440,30 @@ export async function ensureDeepDsos(): Promise<void> {
   return deepDsosPromise;
 }
 
+export async function ensureDoubleStars(): Promise<void> {
+  if (cache.doubleStarsLoaded) return;
+  if (doubleStarsPromise) return doubleStarsPromise;
+
+  doubleStarsPromise = (async () => {
+    const raw = await safeFetchJson<DoubleStarTuple[]>(`${DATA_BASE}/double-stars.json`, 2);
+    if (raw) {
+      cache.doubleStars = raw.map(mapDoubleStar);
+      cache.doubleStarsLoaded = true;
+    } else {
+      doubleStarsPromise = null;
+    }
+  })();
+
+  return doubleStarsPromise;
+}
+
 export const GAIA_LIVE_MAX_FSZ = 5.5;
 
 /**
  * React hook providing reactive LoD access to:
  * - 118,216 Hipparcos stars (up to 13.78m) via 36 spatial tiles
  * - Live ESA Gaia DR3 stars (8.3m–15.8m) when zoomed into eyepiece/finder FOV (<= 5.5°)
+ * - 8,260 Washington Double Star (WDS) visual double & multiple systems
  * - 12,344 OpenNGC/Messier/IC DSOs + 391 Barnard/LDN Dark Nebulae
  * - 513 FChart3 multi-level Nebula Contours + 782 IAU Constellation Boundaries
  */
@@ -370,7 +473,8 @@ export function useCatalogData(
   fsz: number,
   magOffset: number,
   searchActive: boolean,
-  enableGaiaLive: boolean
+  enableGaiaLive: boolean,
+  loadDoubleStars = true
 ): CatalogSnapshot {
   const [tick, setTick] = useState(0);
   const [gaiaStars, setGaiaStars] = useState<Star[]>([]);
@@ -444,6 +548,20 @@ export function useCatalogData(
       };
     }
   }, [fsz, searchActive, tick]);
+
+  // Lazy-load WDS visual double & multiple star catalog (~8.2k systems) after core bundle completes
+  useEffect(() => {
+    if (!cache.coreLoaded) return;
+    if ((loadDoubleStars || searchActive) && !cache.doubleStarsLoaded) {
+      let mounted = true;
+      ensureDoubleStars().then(() => {
+        if (mounted) setTick((t) => t + 1);
+      });
+      return () => {
+        mounted = false;
+      };
+    }
+  }, [loadDoubleStars, searchActive, tick]);
 
   // Live ESA Gaia DR3 faint star streaming ONLY at narrow eyepiece/finder FOV (<= 5.5°)
   // Uses debounce + stale-response ignore (never aborts in-flight HTTP requests mid-stream)
@@ -528,6 +646,7 @@ export function useCatalogData(
     gaiaStars,
     gaiaPatch,
     gaiaLoading,
+    doubleStars: cache.doubleStars,
     dsosBright: cache.dsosBright,
     dsosDeep: cache.dsosDeep,
     darkNebulae: cache.darkNebulae,
@@ -538,5 +657,6 @@ export function useCatalogData(
     coreLoaded: cache.coreLoaded,
     deepStarsLoaded: cache.deepStarsLoaded,
     deepDsosLoaded: cache.deepDsosLoaded,
+    doubleStarsLoaded: cache.doubleStarsLoaded,
   };
 }
