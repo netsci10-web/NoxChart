@@ -18,6 +18,9 @@ export interface ProjectionParams {
   height: number;
   flipH: boolean;
   flipV: boolean;
+  rotationDeg: number; // Clockwise screen rotation in degrees (0..360)
+  cosRot: number;
+  sinRot: number;
   coordSystem: CoordSystem;
   lstDeg: number;
   latDeg: number;
@@ -39,18 +42,32 @@ export interface ProjectedPoint {
  * Create precomputed ProjectionParams supporting both Equatorial (North-up)
  * and Horizontal (Alt-Az, Zenith-up) stereographic projections.
  */
+export function getStereographicRadiusPx(
+  diameterDeg: number,
+  fovDeg: number,
+  width: number,
+  height: number
+): number {
+  const viewRadiusRad = (fovDeg / 2) * DEG2RAD;
+  const scale = (Math.min(width, height) / 2) / (2 * Math.tan(viewRadiusRad / 2));
+  return 2 * scale * Math.tan((diameterDeg * DEG2RAD) / 4);
+}
+
 export function createProjectionParams(
   view: ChartViewState,
   width: number,
   height: number,
   lstDeg: number,
-  latDeg: number
+  latDeg: number,
+  rotationDeg = 0
 ): ProjectionParams {
   const ra0Deg = view.ra * 15;
   const dec0Deg = view.dec;
   const viewRadiusRad = (view.fsz / 2) * DEG2RAD;
   const scale = (Math.min(width, height) / 2) / (2 * Math.tan(viewRadiusRad / 2));
   const hz0 = equatorialToHorizontal(ra0Deg, dec0Deg, lstDeg, latDeg);
+  const normRot = ((rotationDeg % 360) + 360) % 360;
+  const rotRad = normRot * DEG2RAD;
 
   const base: ProjectionParams = {
     ra0Deg,
@@ -60,6 +77,9 @@ export function createProjectionParams(
     height,
     flipH: view.flipH,
     flipV: view.flipV,
+    rotationDeg: normRot,
+    cosRot: Math.cos(rotRad),
+    sinRot: Math.sin(rotRad),
     coordSystem: view.coordSystem,
     lstDeg,
     latDeg,
@@ -71,7 +91,14 @@ export function createProjectionParams(
 
   if (view.coordSystem === 'horizontal') {
     // Compute exact clockwise angle of Celestial North relative to Zenith-up
-    const unflipped: ProjectionParams = { ...base, flipH: false, flipV: false };
+    const unflipped: ProjectionParams = {
+      ...base,
+      flipH: false,
+      flipV: false,
+      rotationDeg: 0,
+      cosRot: 1,
+      sinRot: 0,
+    };
     const delta = dec0Deg > 89.5 ? -0.1 : 0.1;
     const pN = projectStereographicRaw(ra0Deg, dec0Deg + delta, unflipped);
     if (pN) {
@@ -144,10 +171,14 @@ export function projectStereographicRaw(
 
   const dirX = p.flipH ? 1 : -1;
   const dirY = p.flipV ? 1 : -1;
+  const u = projX * p.scale * dirX;
+  const v = projY * p.scale * dirY;
+  const rx = p.rotationDeg !== 0 ? u * p.cosRot - v * p.sinRot : u;
+  const ry = p.rotationDeg !== 0 ? u * p.sinRot + v * p.cosRot : v;
 
   return {
-    x: p.width / 2 + projX * p.scale * dirX,
-    y: p.height / 2 + projY * p.scale * dirY,
+    x: p.width / 2 + rx,
+    y: p.height / 2 + ry,
     cosC,
     scale: p.scale,
   };
@@ -185,10 +216,14 @@ export function projectHorizontalRaw(
   // Facing sky: increasing Azimuth is to the RIGHT (+X) by default; Zenith is UP (-Y)
   const dirX = p.flipH ? -1 : 1;
   const dirY = p.flipV ? 1 : -1;
+  const u = projX * p.scale * dirX;
+  const v = projY * p.scale * dirY;
+  const rx = p.rotationDeg !== 0 ? u * p.cosRot - v * p.sinRot : u;
+  const ry = p.rotationDeg !== 0 ? u * p.sinRot + v * p.cosRot : v;
 
   return {
-    x: p.width / 2 + projX * p.scale * dirX,
-    y: p.height / 2 + projY * p.scale * dirY,
+    x: p.width / 2 + rx,
+    y: p.height / 2 + ry,
     cosC,
     scale: p.scale,
   };
@@ -203,12 +238,17 @@ export function unprojectStereographic(
   y: number,
   p: ProjectionParams
 ): { raDeg: number; decDeg: number } | null {
+  const dx = x - p.width / 2;
+  const dy = y - p.height / 2;
+  const u = p.rotationDeg !== 0 ? dx * p.cosRot + dy * p.sinRot : dx;
+  const v = p.rotationDeg !== 0 ? -dx * p.sinRot + dy * p.cosRot : dy;
+
   if (p.coordSystem === 'horizontal') {
     const dirX = p.flipH ? -1 : 1;
     const dirY = p.flipV ? 1 : -1;
 
-    const px = (x - p.width / 2) / (p.scale * dirX);
-    const py = (y - p.height / 2) / (p.scale * dirY);
+    const px = u / (p.scale * dirX);
+    const py = v / (p.scale * dirY);
     const rho = Math.hypot(px, py);
 
     if (rho === 0) {
@@ -237,8 +277,8 @@ export function unprojectStereographic(
   const dirX = p.flipH ? 1 : -1;
   const dirY = p.flipV ? 1 : -1;
 
-  const px = (x - p.width / 2) / (p.scale * dirX);
-  const py = (y - p.height / 2) / (p.scale * dirY);
+  const px = u / (p.scale * dirX);
+  const py = v / (p.scale * dirY);
 
   const rho = Math.hypot(px, py);
   if (rho === 0) {
@@ -529,6 +569,15 @@ export function bvToStarColor(
 export function getLimitingMagnitude(fszDeg: number, magOffset: number): number {
   const base = 13.4 - 3.65 * Math.log10(Math.max(0.35, fszDeg));
   return Math.max(3.0, Math.min(15.8, base + magOffset));
+}
+
+/**
+ * Compute dynamic DSO limiting magnitude independently from the star offset.
+ * Default baseline is +3.5m deeper than the FOV star baseline.
+ */
+export function getDsoLimitingMagnitude(fszDeg: number, dsoMagOffset: number): number {
+  const base = 13.4 - 3.65 * Math.log10(Math.max(0.35, fszDeg)) + 3.5;
+  return Math.max(4.0, Math.min(17.5, base + dsoMagOffset));
 }
 
 export function getDsoTypeLabel(type: DsoType): string {

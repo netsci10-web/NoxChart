@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
   BookmarkCheck,
   BookmarkPlus,
@@ -6,12 +6,16 @@ import {
   Circle,
   Compass,
   Crosshair,
+  Download,
   Navigation,
+  Route,
   Sparkles,
   Target,
   Trash2,
+  Upload,
   X,
 } from 'lucide-react';
+import { CALDWELL_CATALOG } from '../data/caldwell';
 import { CatalogSnapshot } from '../data/catalogLoader';
 import {
   ChartViewState,
@@ -39,6 +43,8 @@ import { getUiTheme } from '../utils/themeClasses';
 
 interface ObjectInspectorProps {
   selected: SelectedItem | null;
+  centerLocked: boolean;
+  solarTrails: Record<string, number>;
   activeTab: 'detail' | 'session';
   theme: ThemeMode;
   observer: ObserverConfig;
@@ -48,16 +54,28 @@ interface ObjectInspectorProps {
   onTabChange: (tab: 'detail' | 'session') => void;
   onClose: () => void;
   onSelect: (item: SelectedItem | null) => void;
+  onToggleCenterLock: () => void;
+  onToggleSolarTrail: (bodyId: string) => void;
+  onClearSolarTrails: () => void;
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
   onChangeOptics: (updater: (prev: OpticsSettings) => OpticsSettings) => void;
   onToggleSessionItem: (item: SelectedItem) => void;
   onToggleObserved: (id: string) => void;
   onUpdateNotes: (id: string, notes: string) => void;
   onAddRecommendedTonight: (items: SelectedItem[]) => void;
+  onImportSkylist: (text: string) => Promise<{
+    matchedCount: number;
+    addedCount: number;
+    totalCount: number;
+    unmatchedNames: string[];
+  }>;
+  onExportSkylist: () => void;
 }
 
 export function ObjectInspector({
   selected,
+  centerLocked,
+  solarTrails,
   activeTab,
   theme,
   observer,
@@ -67,14 +85,22 @@ export function ObjectInspector({
   onTabChange,
   onClose,
   onSelect,
+  onToggleCenterLock,
+  onToggleSolarTrail,
+  onClearSolarTrails,
   onChangeView,
   onChangeOptics,
   onToggleSessionItem,
   onToggleObserved,
   onUpdateNotes,
   onAddRecommendedTonight,
+  onImportSkylist,
+  onExportSkylist,
 }: ObjectInspectorProps) {
   const ui = getUiTheme(theme);
+  const skylistInputRef = useRef<HTMLInputElement>(null);
+  const [skylistBusy, setSkylistBusy] = useState(false);
+  const [skylistNotice, setSkylistNotice] = useState<string | null>(null);
   const obsTimeMs = observer.useLiveTime ? Date.now() : observer.timestampMs;
   const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
 
@@ -153,7 +179,12 @@ export function ObjectInspector({
     : undefined;
 
   const resolvedSessionItems = useMemo(() => {
-    const allDsos = [...catalogs.dsosBright, ...catalogs.darkNebulae, ...catalogs.dsosDeep];
+    const allDsos = [
+      ...catalogs.dsosBright,
+      ...catalogs.darkNebulae,
+      ...catalogs.dsosDeep,
+      ...CALDWELL_CATALOG,
+    ];
     const allStars = [...catalogs.brightStars, ...catalogs.deepStars, ...catalogs.gaiaStars];
     const solarBodies = getSolarSystemBodies(obsTimeMs);
     return sessionPlan
@@ -307,26 +338,15 @@ export function ObjectInspector({
               <div className="grid grid-cols-3 gap-1">
                 <button
                   type="button"
-                  onClick={() =>
-                    onChangeView((p) => ({
-                      ...p,
-                      ra: ((selected.data.ra / 15) % 24 + 24) % 24,
-                      dec: selected.data.dec,
-                      fsz:
-                        selected.kind === 'dso'
-                          ? Math.max(2.5, Math.min(20, (selected.data.majAx / 60) * 6))
-                          : selected.kind === 'planet'
-                          ? selected.data.id === 'Moon' || selected.data.id === 'Sun'
-                            ? 1.8
-                            : selected.data.group === 'planet'
-                            ? 0.06
-                            : 1.5
-                          : selected.kind === 'double'
-                          ? Math.max(0.05, Math.min(2.5, (selected.data.sep / 3600) * 80))
-                          : 14,
-                    }))
+                  onClick={onToggleCenterLock}
+                  title={
+                    centerLocked
+                      ? '시야 중심 추적 중 (클릭 또는 하늘 배경 클릭 시 해제)'
+                      : '시야 중심 고정 (시간 가속 시 자동 추적)'
                   }
-                  className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
+                  className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${
+                    centerLocked ? ui.buttonActive : ui.buttonIdle
+                  }`}
                   style={{ borderRadius: '5px' }}
                 >
                   <Crosshair className="w-3 h-3 shrink-0" />
@@ -367,6 +387,52 @@ export function ObjectInspector({
                   )}
                 </button>
               </div>
+
+              {/* Solar System 10-Day Forward Trajectory Button */}
+              {selected.kind === 'planet' && (() => {
+                const trailStartMs = solarTrails[selected.data.id];
+                const isTrailActive = trailStartMs !== undefined;
+                const activeTrailCount = Object.keys(solarTrails).length;
+                const rangeText = (() => {
+                  const baseMs = isTrailActive ? trailStartMs : Date.now();
+                  const d0 = new Date(baseMs);
+                  const d10 = new Date(baseMs + 10 * 86400000);
+                  return `${d0.getMonth() + 1}/${d0.getDate()}~${d10.getMonth() + 1}/${d10.getDate()}`;
+                })();
+                return (
+                  <div className="flex items-center gap-1">
+                    <button
+                      type="button"
+                      onClick={() => onToggleSolarTrail(selected.data.id)}
+                      title={
+                        isTrailActive
+                          ? `오늘 기준 10일간 궤적(${rangeText}) 숨기기`
+                          : `오늘 날짜 기준으로 앞으로 10일간(${rangeText})의 궤적과 매일 날짜 라벨 표시`
+                      }
+                      className={`flex-1 py-1.5 px-2 border text-[10.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors ${
+                        isTrailActive ? ui.buttonActive : ui.buttonIdle
+                      }`}
+                      style={{ borderRadius: '5px' }}
+                    >
+                      <Route className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        {isTrailActive ? `궤적 표시 중 (${rangeText})` : `궤적 그리기 (10일 · ${rangeText})`}
+                      </span>
+                    </button>
+                    {activeTrailCount > 0 && (
+                      <button
+                        type="button"
+                        onClick={onClearSolarTrails}
+                        title="표시된 모든 궤적 지우기"
+                        className={`py-1.5 px-2 border text-[10px] tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 transition-colors ${ui.buttonIdle}`}
+                        style={{ borderRadius: '5px' }}
+                      >
+                        지우기
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
 
               {/* Precision Telemetry Grid */}
               <div
@@ -713,6 +779,93 @@ export function ObjectInspector({
                 <span>25°+ 추천</span>
               </button>
             </div>
+
+            {/* Unified SkySafari .skylist Import / Export Controls */}
+            <div className="grid grid-cols-2 gap-1">
+              <input
+                ref={skylistInputRef}
+                type="file"
+                accept=".skylist,.txt"
+                className="hidden"
+                onChange={async (e) => {
+                  const file = e.target.files?.[0];
+                  e.target.value = '';
+                  if (!file) return;
+                  setSkylistBusy(true);
+                  setSkylistNotice('카탈로그 로딩 및 .skylist 분석 중...');
+                  try {
+                    const text = await file.text();
+                    const res = await onImportSkylist(text);
+                    if (res.totalCount === 0) {
+                      setSkylistNotice('SkySafari 관측 대상(SkyObject)이 없는 파일입니다.');
+                    } else {
+                      const extra =
+                        res.unmatchedNames.length > 0
+                          ? ` · 미일치 ${res.unmatchedNames.length}개 (${res.unmatchedNames
+                              .slice(0, 2)
+                              .join(', ')}${res.unmatchedNames.length > 2 ? '…' : ''})`
+                          : '';
+                      setSkylistNotice(
+                        `${res.matchedCount}/${res.totalCount}개 일치 (신규 ${res.addedCount}개 추가${extra})`
+                      );
+                    }
+                  } catch {
+                    setSkylistNotice('.skylist 파일을 읽는 중 오류가 발생했습니다.');
+                  } finally {
+                    setSkylistBusy(false);
+                  }
+                }}
+              />
+              <button
+                type="button"
+                disabled={skylistBusy}
+                onClick={() => skylistInputRef.current?.click()}
+                title="SkySafari .skylist 관측 목록 불러오기"
+                className={`py-1 px-1.5 border text-[10px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap ${ui.buttonIdle} ${
+                  skylistBusy ? 'opacity-50 cursor-wait' : ''
+                }`}
+                style={{ borderRadius: '4px' }}
+              >
+                <Upload className="w-3 h-3 shrink-0" />
+                <span>.skylist 불러오기</span>
+              </button>
+              <button
+                type="button"
+                disabled={sessionPlan.length === 0}
+                onClick={() => {
+                  onExportSkylist();
+                  setSkylistNotice(
+                    `SkySafari 호환 .skylist 저장 완료 (${sessionPlan.length}개 대상)`
+                  );
+                }}
+                title="현재 관측 목록을 SkySafari 호환 .skylist 파일로 내보내기"
+                className={`py-1 px-1.5 border text-[10px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap ${
+                  sessionPlan.length === 0
+                    ? `${ui.buttonIdle} opacity-45 cursor-not-allowed`
+                    : ui.buttonIdle
+                }`}
+                style={{ borderRadius: '4px' }}
+              >
+                <Download className="w-3 h-3 shrink-0" />
+                <span>.skylist 내보내기</span>
+              </button>
+            </div>
+
+            {skylistNotice && (
+              <div
+                className={`px-2 py-1.5 border text-[10px] tracking-[-0.04em] leading-snug break-keep flex items-start justify-between gap-1 ${ui.border} ${ui.accentText}`}
+                style={{ borderRadius: '4px' }}
+              >
+                <span>{skylistNotice}</span>
+                <button
+                  type="button"
+                  onClick={() => setSkylistNotice(null)}
+                  className="shrink-0 opacity-70 hover:opacity-100"
+                >
+                  <X className="w-3 h-3" />
+                </button>
+              </div>
+            )}
 
             {resolvedSessionItems.length === 0 ? (
               <div

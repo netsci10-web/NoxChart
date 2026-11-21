@@ -9,7 +9,7 @@ import {
   NebulaContour,
   Star,
 } from '../types/astronomy';
-import { DEG2RAD, getLimitingMagnitude } from '../utils/astronomy';
+import { DEG2RAD, getDsoLimitingMagnitude, getLimitingMagnitude } from '../utils/astronomy';
 import { CONSTELLATIONS as FALLBACK_CONSTELLATIONS } from './constellations';
 import { DSO_CATALOG as FALLBACK_DSOS } from './dso';
 import { BRIGHT_STARS as FALLBACK_STARS } from './stars';
@@ -139,6 +139,13 @@ let deepDsosPromise: Promise<void> | null = null;
 let doubleStarsPromise: Promise<void> | null = null;
 const ultraTilePromises = new Map<string, Promise<void>>();
 const gaiaPatchCache = new Map<string, { stars: Star[]; patch: GaiaPatchMeta }>();
+const catalogListeners = new Set<() => void>();
+
+function notifyCatalogListeners(): void {
+  for (const fn of catalogListeners) {
+    fn();
+  }
+}
 
 function mapBrightStar(t: BrightStarTuple): Star {
   const [hip, ra, dec, mag, bv, name, koName, bayer, con] = t;
@@ -324,7 +331,7 @@ interface CoreCatalogBundle {
   constellationBoundaries?: [number, number][][];
 }
 
-async function ensureCoreCatalogs(): Promise<void> {
+export async function ensureCoreCatalogs(): Promise<void> {
   if (cache.coreLoaded) return;
   if (corePromise) return corePromise;
 
@@ -397,6 +404,7 @@ export async function ensureDeepStars(): Promise<void> {
     if (raw) {
       cache.deepStars = raw.map(mapDeepStar).sort((a, b) => a.mag - b.mag);
       cache.deepStarsLoaded = true;
+      notifyCatalogListeners();
     } else {
       deepStarsPromise = null;
     }
@@ -432,6 +440,7 @@ export async function ensureDeepDsos(): Promise<void> {
     if (raw) {
       cache.dsosDeep = raw.map(mapDso).sort((a, b) => a.mag - b.mag);
       cache.deepDsosLoaded = true;
+      notifyCatalogListeners();
     } else {
       deepDsosPromise = null;
     }
@@ -449,12 +458,19 @@ export async function ensureDoubleStars(): Promise<void> {
     if (raw) {
       cache.doubleStars = raw.map(mapDoubleStar);
       cache.doubleStarsLoaded = true;
+      notifyCatalogListeners();
     } else {
       doubleStarsPromise = null;
     }
   })();
 
   return doubleStarsPromise;
+}
+
+export function getCatalogSnapshot(): CatalogSnapshot {
+  return {
+    ...cache,
+  };
 }
 
 export const GAIA_LIVE_MAX_FSZ = 5.5;
@@ -474,7 +490,8 @@ export function useCatalogData(
   magOffset: number,
   searchActive: boolean,
   enableGaiaLive: boolean,
-  loadDoubleStars = true
+  loadDoubleStars = true,
+  dsoMagOffset = 0
 ): CatalogSnapshot {
   const [tick, setTick] = useState(0);
   const [gaiaStars, setGaiaStars] = useState<Star[]>([]);
@@ -483,11 +500,16 @@ export function useCatalogData(
 
   useEffect(() => {
     let mounted = true;
+    const onUpdate = () => {
+      if (mounted) setTick((t) => t + 1);
+    };
+    catalogListeners.add(onUpdate);
     ensureCoreCatalogs().then(() => {
       if (mounted) setTick((t) => t + 1);
     });
     return () => {
       mounted = false;
+      catalogListeners.delete(onUpdate);
     };
   }, []);
 
@@ -538,7 +560,8 @@ export function useCatalogData(
   // Lazy-load deep NGC/IC catalog (~10.8k DSOs) after core bundle completes
   useEffect(() => {
     if (!cache.coreLoaded) return;
-    if ((fsz <= 45 || searchActive) && !cache.deepDsosLoaded) {
+    const dsoMagLimit = getDsoLimitingMagnitude(fsz, dsoMagOffset);
+    if ((fsz <= 45 || searchActive || dsoMagLimit > 10.5) && !cache.deepDsosLoaded) {
       let mounted = true;
       ensureDeepDsos().then(() => {
         if (mounted) setTick((t) => t + 1);
@@ -547,7 +570,7 @@ export function useCatalogData(
         mounted = false;
       };
     }
-  }, [fsz, searchActive, tick]);
+  }, [fsz, searchActive, dsoMagOffset, tick]);
 
   // Lazy-load WDS visual double & multiple star catalog (~8.2k systems) after core bundle completes
   useEffect(() => {

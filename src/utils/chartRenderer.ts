@@ -1,8 +1,10 @@
+import { CALDWELL_CATALOG } from '../data/caldwell';
 import {
   CatalogSnapshot,
   GAIA_LIVE_MAX_FSZ,
   getVisibleUltraTileKeys,
 } from '../data/catalogLoader';
+import { DSO_CATALOG } from '../data/dso';
 import { getFieldStarsInBounds } from '../data/stars';
 import {
   ChartViewState,
@@ -13,6 +15,7 @@ import {
   MilkyWayLayer,
   NebulaContour,
   ObserverConfig,
+  ObservingSessionEntry,
   OpticsSettings,
   ScreenTarget,
   SelectedItem,
@@ -27,10 +30,12 @@ import {
   DEG2RAD,
   equatorialToHorizontal,
   findStarHopGuides,
+  getDsoLimitingMagnitude,
   getLimitingMagnitude,
   getLSTDeg,
   getPixelsPerDeg,
   getStarRadiusPogson,
+  getStereographicRadiusPx,
   horizontalToEquatorial,
   projectHorizontalRaw,
   projectStereographic,
@@ -40,7 +45,11 @@ import {
 } from './astronomy';
 import { LabelPlacer } from './labelPlacer';
 import { getPlanetRenderer } from './planetRenderer';
-import { getSolarSystemBodies, getSolarSystemOrbitTracks } from './solarSystem';
+import {
+  getSolarSystemBodies,
+  getSolarSystemDailyTrail,
+  getSolarSystemOrbitTracks,
+} from './solarSystem';
 
 export interface ThemePalette {
   bg: string;
@@ -541,7 +550,7 @@ function drawDsoSymbol(
   if (dso.type === 'GX') {
     ctx.translate(x, y);
     const flipSign = (proj.flipH ? -1 : 1) * (proj.flipV ? -1 : 1);
-    const rotDeg = (90 - dso.pa) * flipSign + proj.northAngleDeg;
+    const rotDeg = (90 - dso.pa) * flipSign + proj.northAngleDeg + proj.rotationDeg;
     ctx.rotate(rotDeg * DEG2RAD);
     ctx.beginPath();
     ctx.ellipse(0, 0, majPx, Math.min(majPx, Math.max(2.4, minPx)), 0, 0, Math.PI * 2);
@@ -555,7 +564,7 @@ function drawDsoSymbol(
     const ry = Math.max(4.0, Math.min(80, Math.min(rx, minPx)));
     ctx.translate(x, y);
     const flipSign = (proj.flipH ? -1 : 1) * (proj.flipV ? -1 : 1);
-    ctx.rotate(((90 - dso.pa) * flipSign + proj.northAngleDeg) * DEG2RAD);
+    ctx.rotate(((90 - dso.pa) * flipSign + proj.northAngleDeg + proj.rotationDeg) * DEG2RAD);
     ctx.fillStyle = palette.darkNebulaFill;
     ctx.strokeStyle = palette.darkNebulaStroke;
     ctx.lineWidth = 1.1;
@@ -934,7 +943,209 @@ interface DrawableStar {
   dimmed: boolean;
 }
 
-export function renderStarChart(
+function getOpticalFlipTag(flipH: boolean, flipV: boolean): string {
+  if (flipH && flipV) return '상하·좌우반전';
+  if (flipH) return '좌우반전';
+  if (flipV) return '상하반전';
+  return '';
+}
+
+function drawOpticalReticles(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  view: ChartViewState,
+  theme: ThemeMode,
+  optics: OpticsSettings,
+  proj: ProjectionParams,
+  palette: ThemePalette,
+  eyepieceFlipActive: boolean
+) {
+  const cx = width / 2;
+  const cy = height / 2;
+
+  if (optics.showCrosshair) {
+    ctx.save();
+    const crossColor =
+      theme === 'white' ? '#0369A1' : theme === 'red' ? '#EF4444' : '#06B6D4';
+    const gap = 8;
+    const armOuter = Math.min(width, height) * 0.45;
+    const armInner = 34;
+
+    ctx.strokeStyle = crossColor;
+    ctx.globalAlpha = 0.34;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(cx - armOuter, cy);
+    ctx.lineTo(cx - gap, cy);
+    ctx.moveTo(cx + gap, cy);
+    ctx.lineTo(cx + armOuter, cy);
+    ctx.moveTo(cx, cy - armOuter);
+    ctx.lineTo(cx, cy - gap);
+    ctx.moveTo(cx, cy + gap);
+    ctx.lineTo(cx, cy + armOuter);
+    ctx.stroke();
+
+    ctx.globalAlpha = 0.85;
+    ctx.lineWidth = 1.25;
+    ctx.beginPath();
+    ctx.arc(cx, cy, gap, 0, Math.PI * 2);
+    ctx.moveTo(cx - armInner, cy);
+    ctx.lineTo(cx - gap, cy);
+    ctx.moveTo(cx + gap, cy);
+    ctx.lineTo(cx + armInner, cy);
+    ctx.moveTo(cx, cy - armInner);
+    ctx.lineTo(cx, cy - gap);
+    ctx.moveTo(cx, cy + gap);
+    ctx.lineTo(cx, cy + armInner);
+    ctx.stroke();
+    ctx.restore();
+  }
+
+  const stereoRadiusPx = (diameterDeg: number) =>
+    2 * proj.scale * Math.tan((diameterDeg * DEG2RAD) / 4);
+
+  if (optics.showTelrad) {
+    ctx.save();
+    ctx.strokeStyle = palette.reticleTelrad;
+    ctx.globalAlpha = 0.82;
+    ctx.lineWidth = 1.25;
+    for (const deg of [0.5, 2.0, 4.0]) {
+      const rPx = stereoRadiusPx(deg);
+      if (rPx >= 3 && rPx < Math.max(width, height)) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    ctx.font = '500 10px "IBM Plex Mono", monospace';
+    ctx.fillStyle = palette.reticleTelrad;
+    const outerR = stereoRadiusPx(4.0);
+    if (outerR > 12 && outerR < Math.min(width, height) * 0.48) {
+      ctx.fillText('Telrad 4°', cx + 4, cy - outerR - 4);
+    }
+    ctx.restore();
+  }
+
+  if (optics.showFinder7x50) {
+    const finderR = stereoRadiusPx(7.0);
+    if (finderR >= 4 && finderR < Math.max(width, height) * 1.6) {
+      ctx.save();
+      const finderColor =
+        theme === 'white' ? '#0284C7' : theme === 'red' ? '#EF4444' : '#22D3EE';
+      ctx.strokeStyle = finderColor;
+      ctx.globalAlpha = 0.82;
+      ctx.lineWidth = 1.35;
+      ctx.beginPath();
+      ctx.arc(cx, cy, finderR, 0, Math.PI * 2);
+      const tk = 6;
+      ctx.moveTo(cx - finderR - tk, cy);
+      ctx.lineTo(cx - finderR + tk, cy);
+      ctx.moveTo(cx + finderR - tk, cy);
+      ctx.lineTo(cx + finderR + tk, cy);
+      ctx.moveTo(cx, cy - finderR - tk);
+      ctx.lineTo(cx, cy - finderR + tk);
+      ctx.moveTo(cx, cy + finderR - tk);
+      ctx.lineTo(cx, cy + finderR + tk);
+      ctx.stroke();
+      if (finderR > 14 && finderR < Math.min(width, height) * 0.5) {
+        ctx.fillStyle = finderColor;
+        ctx.font = '500 10px "IBM Plex Mono", monospace';
+        ctx.fillText('7×50 파인더 (7.0°)', cx + 6, cy - finderR - 5);
+      }
+      ctx.restore();
+    }
+  }
+
+  if (optics.showEyepiece) {
+    const rPx = stereoRadiusPx(optics.eyepieceFovDeg);
+    if (rPx >= 3 && rPx < Math.max(width, height) * 1.6) {
+      ctx.save();
+      const epColor =
+        theme === 'white' ? '#D97706' : theme === 'red' ? '#DC2626' : '#F59E0B';
+
+      // Subtle optical bezel casing when eyepiece-only flip is active so the seam reads cleanly
+      if (eyepieceFlipActive) {
+        ctx.strokeStyle =
+          theme === 'white'
+            ? 'rgba(255, 255, 255, 0.85)'
+            : theme === 'red'
+            ? 'rgba(20, 0, 0, 0.85)'
+            : 'rgba(6, 10, 20, 0.85)';
+        ctx.lineWidth = 3.8;
+        ctx.beginPath();
+        ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.strokeStyle = epColor;
+      ctx.globalAlpha = eyepieceFlipActive ? 0.96 : 0.9;
+      ctx.lineWidth = eyepieceFlipActive ? 1.85 : 1.5;
+      ctx.beginPath();
+      ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
+      ctx.stroke();
+
+      const normRot = ((optics.eyepieceRotationDeg % 360) + 360) % 360;
+      const rotActive = normRot > 0.05 && normRot < 359.95;
+      // Directional index tick on eyepiece bezel showing current rotation orientation
+      if (rotActive && rPx >= 14) {
+        const tickAngle = -Math.PI / 2 + normRot * DEG2RAD;
+        const cosT = Math.cos(tickAngle);
+        const sinT = Math.sin(tickAngle);
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        ctx.moveTo(cx + cosT * (rPx - 4), cy + sinT * (rPx - 4));
+        ctx.lineTo(cx + cosT * (rPx + 6), cy + sinT * (rPx + 6));
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = epColor;
+      ctx.font = '500 10px "IBM Plex Mono", "Pretendard", monospace';
+      const magText =
+        optics.eyepieceInputMode === 'calc' && optics.eyepieceFocalLengthMm > 0
+          ? ` · ${(optics.telescopeFocalLengthMm / optics.eyepieceFocalLengthMm).toFixed(0)}×`
+          : '';
+      const flipTag = eyepieceFlipActive ? getOpticalFlipTag(view.flipH, view.flipV) : '';
+      const rotTag = rotActive ? `회전 ${Math.round(normRot)}°` : '';
+      const extraTags = [flipTag, rotTag].filter(Boolean).join(' · ');
+      const extraSuffix = extraTags ? ` · ${extraTags}` : '';
+      ctx.fillText(
+        `아이피스 (${optics.eyepieceFovDeg.toFixed(2)}°${magText}${extraSuffix})`,
+        cx + 4,
+        cy + rPx + 12
+      );
+      ctx.restore();
+    }
+  }
+
+  if (optics.showSensorBox) {
+    const wPx = stereoRadiusPx(optics.sensorWidthDeg) * 2;
+    const hPx = stereoRadiusPx(optics.sensorHeightDeg) * 2;
+    if (wPx >= 6 && hPx >= 6) {
+      ctx.save();
+      ctx.strokeStyle = palette.reticleSensor;
+      ctx.lineWidth = 1.3;
+      ctx.strokeRect(cx - wPx / 2, cy - hPx / 2, wPx, hPx);
+      ctx.fillStyle = palette.reticleSensor;
+      ctx.font = '500 10px "IBM Plex Mono", monospace';
+      ctx.fillText(
+        `FOV ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°`,
+        cx - wPx / 2,
+        cy - hPx / 2 - 5
+      );
+      ctx.restore();
+    }
+  }
+}
+
+interface PassOptions {
+  skipReticles?: boolean;
+  isInnerClip?: boolean;
+  eyepieceFlipActive?: boolean;
+  rotationDeg?: number;
+}
+
+function renderStarChartPass(
   ctx: CanvasRenderingContext2D,
   width: number,
   height: number,
@@ -947,23 +1158,35 @@ export function renderStarChart(
   catalogs: CatalogSnapshot,
   selected: SelectedItem | null,
   hoveredId: string | null,
-  sessionIds: Set<string>
+  sessionIds: Set<string>,
+  solarTrails?: Record<string, number>,
+  passOptions?: PassOptions,
+  sessionPlan?: ObservingSessionEntry[]
 ): RenderResult {
   const palette = getThemePalette(theme);
   const obsTimeMs = observer.timestampMs;
   const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
-  const proj = createProjectionParams(view, width, height, lstDeg, observer.lat);
+  const proj = createProjectionParams(
+    view,
+    width,
+    height,
+    lstDeg,
+    observer.lat,
+    passOptions?.rotationDeg ?? 0
+  );
+  const isInnerClip = Boolean(passOptions?.isInnerClip);
 
   const pxPerDeg = getPixelsPerDeg(view.fsz, width, height);
   const magLimit = getLimitingMagnitude(view.fsz, layers.magOffset);
   const hipsVisible = hips.enabled && hips.opacity > 0.02;
   const altFilterActive = observer.minAltitudeDeg > -90;
 
-  // 1. Background Fill (Transparent when Aladin Lite v3 HiPS survey is active behind canvas)
+  // 1. Background Fill (Transparent when HiPS survey is active behind canvas)
   const halfSkyRadius = (Math.min(width, height) / 2) / Math.tan((view.fsz / 4) * DEG2RAD);
+  const applySkyCircleClip = !isInnerClip && view.fsz >= 145;
   if (hipsVisible) {
     ctx.clearRect(0, 0, width, height);
-    if (view.fsz >= 145) {
+    if (applySkyCircleClip) {
       ctx.save();
       ctx.beginPath();
       ctx.arc(width / 2, height / 2, halfSkyRadius, 0, Math.PI * 2);
@@ -972,7 +1195,7 @@ export function renderStarChart(
   } else {
     ctx.fillStyle = palette.bg;
     ctx.fillRect(0, 0, width, height);
-    if (view.fsz >= 145) {
+    if (applySkyCircleClip) {
       ctx.save();
       ctx.beginPath();
       ctx.arc(width / 2, height / 2, halfSkyRadius, 0, Math.PI * 2);
@@ -1281,24 +1504,21 @@ export function renderStarChart(
   };
   const labelCandidates: LabelCandidate[] = [];
 
-  // 7. Deep Sky Objects (Messier + OpenNGC NGC/IC + Barnard/LDN Dark Nebulae)
-  const dsoMagCutoff = Math.min(16.8, magLimit + 3.5);
+  // 7. Deep Sky Objects (Messier + Caldwell + OpenNGC NGC/IC + Barnard/LDN Dark Nebulae)
+  const dsoMagCutoff = getDsoLimitingMagnitude(view.fsz, layers.dsoMagOffset);
+  const showKnownMessier = Boolean(layers.showMessierCatalog);
+  const showKnownCaldwell = Boolean(layers.showCaldwellCatalog);
+  const renderAnyDso = layers.showDso || showKnownMessier || showKnownCaldwell;
   let visibleDsoCount = 0;
-  if (layers.showDso) {
-    const dsoLists: DeepSkyObject[][] = [catalogs.dsosBright];
-    if (view.fsz <= 45 && catalogs.dsosDeep.length > 0) {
-      dsoLists.push(catalogs.dsosDeep);
-    }
-    if (layers.dsoCategories.DARK && catalogs.darkNebulae.length > 0 && view.fsz <= 70) {
-      dsoLists.push(catalogs.darkNebulae);
-    }
-
+  if (renderAnyDso) {
     interface PendingDso {
       dso: DeepSkyObject;
       pt: { x: number; y: number };
       belowMinAlt: boolean;
       isSelected: boolean;
       isOnScreen: boolean;
+      isKnownForced: boolean;
+      labelPrefix?: string;
     }
 
     const normDsoId = (s?: string) => (s ? s.replace(/\s+/g, '').toUpperCase() : '');
@@ -1310,43 +1530,141 @@ export function renderStarChart(
       if (k2) selectedDsoKeys.add(k2);
     }
 
+    const caldwellByNormKey = new Map<string, (typeof CALDWELL_CATALOG)[number]>();
+    for (const c of CALDWELL_CATALOG) {
+      caldwellByNormKey.set(normDsoId(c.id), c);
+      caldwellByNormKey.set(normDsoId(c.caldwellId), c);
+    }
+
     const pendingDsos: PendingDso[] = [];
     const onScreenNonDimmed: PendingDso[] = [];
+    const seenDsoKeys = new Set<string>();
 
-    for (const list of dsoLists) {
-      for (let i = 0; i < list.length; i++) {
-        const dso = list[i];
-        const isSelected =
-          selected?.kind === 'dso' &&
-          (selectedDsoKeys.has(normDsoId(dso.id)) ||
-            (dso.altId ? selectedDsoKeys.has(normDsoId(dso.altId)) : false) ||
-            (Math.abs(dso.dec - selected.data.dec) < 0.03 &&
-              angularDistanceDeg(dso.ra, dso.dec, selected.data.ra, selected.data.dec) < 0.03));
-        if (dso.mag > dsoMagCutoff && !isSelected) {
-          if (list === catalogs.dsosDeep || list === catalogs.darkNebulae) break;
-          continue;
+    const checkSelectedDso = (dso: DeepSkyObject) =>
+      selected?.kind === 'dso' &&
+      (selectedDsoKeys.has(normDsoId(dso.id)) ||
+        (dso.altId ? selectedDsoKeys.has(normDsoId(dso.altId)) : false) ||
+        (Math.abs(dso.dec - selected.data.dec) < 0.03 &&
+          angularDistanceDeg(dso.ra, dso.dec, selected.data.ra, selected.data.dec) < 0.03));
+
+    const markSeenDso = (dso: DeepSkyObject, extraKey?: string) => {
+      const k1 = normDsoId(dso.id);
+      if (k1) seenDsoKeys.add(k1);
+      if (dso.altId) seenDsoKeys.add(normDsoId(dso.altId));
+      if (extraKey) seenDsoKeys.add(normDsoId(extraKey));
+    };
+
+    const isSeenDso = (dso: DeepSkyObject, extraKey?: string) => {
+      const k1 = normDsoId(dso.id);
+      if (k1 && seenDsoKeys.has(k1)) return true;
+      if (dso.altId && seenDsoKeys.has(normDsoId(dso.altId))) return true;
+      if (extraKey && seenDsoKeys.has(normDsoId(extraKey))) return true;
+      return false;
+    };
+
+    const pushPendingDso = (
+      dso: DeepSkyObject,
+      isSelected: boolean,
+      isKnownForced: boolean,
+      labelPrefix?: string,
+      extraSeenKey?: string
+    ) => {
+      const pt = projectStereographic(dso.ra, dso.dec, proj, 40);
+      if (!pt) return;
+
+      let belowMinAlt = false;
+      if (altFilterActive) {
+        const { altDeg } = equatorialToHorizontal(dso.ra, dso.dec, lstDeg, observer.lat);
+        belowMinAlt = altDeg < observer.minAltitudeDeg;
+        if (belowMinAlt && !observer.highlightAboveMinAlt && !isSelected) {
+          return;
         }
-        if (!layers.dsoCategories[dso.type]) continue;
-        if (!matchesCatalogFilter(dso, layers.catalogFilter)) continue;
+      }
 
-        const pt = projectStereographic(dso.ra, dso.dec, proj, 40);
-        if (!pt) continue;
+      markSeenDso(dso, extraSeenKey);
+      const isOnScreen = pt.x >= 0 && pt.x <= width && pt.y >= 0 && pt.y <= height;
+      const entry: PendingDso = {
+        dso,
+        pt,
+        belowMinAlt,
+        isSelected,
+        isOnScreen,
+        isKnownForced,
+        labelPrefix,
+      };
+      pendingDsos.push(entry);
+      if (isOnScreen && !belowMinAlt && !isKnownForced) {
+        onScreenNonDimmed.push(entry);
+      }
+    };
 
-        let belowMinAlt = false;
-        if (altFilterActive) {
-          const { altDeg } = equatorialToHorizontal(dso.ra, dso.dec, lstDeg, observer.lat);
-          belowMinAlt = altDeg < observer.minAltitudeDeg;
-          if (belowMinAlt && !observer.highlightAboveMinAlt && !isSelected) {
-            continue;
+    // 7a. Standard Deep Sky Objects when general DSO layer is enabled
+    if (layers.showDso) {
+      const dsoLists: DeepSkyObject[][] = [catalogs.dsosBright];
+      if ((view.fsz <= 45 || dsoMagCutoff > 10.5) && catalogs.dsosDeep.length > 0) {
+        dsoLists.push(catalogs.dsosDeep);
+      }
+      if (layers.dsoCategories.DARK && catalogs.darkNebulae.length > 0 && view.fsz <= 70) {
+        dsoLists.push(catalogs.darkNebulae);
+      }
+
+      for (const list of dsoLists) {
+        for (let i = 0; i < list.length; i++) {
+          const dso = list[i];
+          const isMessier = /^M\d+$/i.test(dso.id);
+          const caldwellMatch =
+            caldwellByNormKey.get(normDsoId(dso.id)) ??
+            (dso.altId ? caldwellByNormKey.get(normDsoId(dso.altId)) : undefined);
+          const isKnownForced =
+            (showKnownMessier && isMessier) || (showKnownCaldwell && Boolean(caldwellMatch));
+          const isSelected = checkSelectedDso(dso);
+
+          if (!isKnownForced) {
+            if (dso.mag > dsoMagCutoff && !isSelected) {
+              if (list === catalogs.dsosDeep || list === catalogs.darkNebulae) break;
+              continue;
+            }
+            if (!layers.dsoCategories[dso.type]) continue;
+            if (!matchesCatalogFilter(dso, layers.catalogFilter)) continue;
           }
-        }
+          if (isSeenDso(dso, caldwellMatch?.caldwellId)) continue;
 
-        const isOnScreen = pt.x >= 0 && pt.x <= width && pt.y >= 0 && pt.y <= height;
-        const entry: PendingDso = { dso, pt, belowMinAlt, isSelected, isOnScreen };
-        pendingDsos.push(entry);
-        if (isOnScreen && !belowMinAlt) {
-          onScreenNonDimmed.push(entry);
+          pushPendingDso(
+            dso,
+            isSelected,
+            isKnownForced,
+            showKnownCaldwell && caldwellMatch ? caldwellMatch.caldwellId : undefined,
+            caldwellMatch?.caldwellId
+          );
         }
+      }
+    }
+
+    // 7b. Known DSO Override: Messier Catalog (M1–M110) — visible even when showDso is OFF
+    if (showKnownMessier) {
+      const messierSource =
+        catalogs.dsosBright.length > 0 ? catalogs.dsosBright : DSO_CATALOG;
+      for (let i = 0; i < messierSource.length; i++) {
+        const dso = messierSource[i];
+        if (!/^M\d+$/i.test(dso.id)) continue;
+        if (isSeenDso(dso)) continue;
+        pushPendingDso(dso, checkSelectedDso(dso), true);
+      }
+      // Fallback for any Messier entries present in bundled DSO_CATALOG not yet in dsosBright
+      for (let i = 0; i < DSO_CATALOG.length; i++) {
+        const dso = DSO_CATALOG[i];
+        if (!/^M\d+$/i.test(dso.id)) continue;
+        if (isSeenDso(dso)) continue;
+        pushPendingDso(dso, checkSelectedDso(dso), true);
+      }
+    }
+
+    // 7c. Known DSO Override: Caldwell Catalog (C1–C109) — visible even when showDso is OFF
+    if (showKnownCaldwell) {
+      for (let i = 0; i < CALDWELL_CATALOG.length; i++) {
+        const c = CALDWELL_CATALOG[i];
+        if (isSeenDso(c, c.caldwellId)) continue;
+        pushPendingDso(c, checkSelectedDso(c), true, c.caldwellId, c.caldwellId);
       }
     }
 
@@ -1361,19 +1679,20 @@ export function renderStarChart(
         allowedDsoSet.add(onScreenNonDimmed[i]);
       }
       for (const entry of pendingDsos) {
-        if (entry.isSelected) allowedDsoSet.add(entry);
+        if (entry.isSelected || entry.isKnownForced) allowedDsoSet.add(entry);
       }
     }
 
     const onScreenDsoItems: {
       mag: number;
       isSelected: boolean;
+      isKnownForced: boolean;
       candidate: LabelCandidate;
     }[] = [];
 
     for (const entry of pendingDsos) {
       if (!allowedDsoSet.has(entry)) continue;
-      const { dso, pt, belowMinAlt, isSelected, isOnScreen } = entry;
+      const { dso, pt, belowMinAlt, isSelected, isOnScreen, isKnownForced, labelPrefix } = entry;
 
       visibleDsoCount++;
       const hideSelectedOverlay = isSelected && !optics.showSelectionMark;
@@ -1407,37 +1726,45 @@ export function renderStarChart(
         item: { kind: 'dso', data: dso },
       });
 
-      if (layers.showDsoLabels && !belowMinAlt && isOnScreen && !hideSelectedOverlay) {
+      if ((layers.showDsoLabels || isKnownForced) && !belowMinAlt && isOnScreen && !hideSelectedOverlay) {
         const showCommon = view.fsz < 42 && dso.koName;
-        const text = showCommon ? `${dso.id} ${dso.koName}` : dso.id;
+        const primaryCode = labelPrefix && labelPrefix !== dso.id ? labelPrefix : dso.id;
+        const text = showCommon ? `${primaryCode} ${dso.koName}` : primaryCode;
         onScreenDsoItems.push({
           mag: dso.mag,
           isSelected,
+          isKnownForced,
           candidate: {
             priority: isSelected
               ? -100
-              : dso.mag - (dso.id.startsWith('M') ? 0.5 : 0),
+              : isKnownForced
+              ? -10 + dso.mag * 0.25
+              : dso.mag - (dso.id.startsWith('M') || labelPrefix ? 0.8 : 0),
             x: pt.x,
             y: pt.y,
             radius: Math.min(24, symR),
             text,
             color: dso.type === 'DARK' ? palette.darkNebulaStroke : palette.dsoLabel,
-            font: isSelected
-              ? '600 11px "IBM Plex Mono", monospace'
-              : '500 10.5px "IBM Plex Mono", monospace',
+            font:
+              isSelected || isKnownForced
+                ? '600 10.5px "IBM Plex Mono", monospace'
+                : '500 10.5px "IBM Plex Mono", monospace',
           },
         });
       }
     }
 
-    if (layers.showDsoLabels && onScreenDsoItems.length > 0) {
+    if (onScreenDsoItems.length > 0) {
       onScreenDsoItems.sort((a, b) => a.mag - b.mag);
       const dsoPct = Math.max(0, Math.min(100, layers.dsoLabelDensityPct ?? 10));
       const dsoQuota = dsoPct <= 0 ? 0 : Math.ceil((onScreenDsoItems.length * dsoPct) / 100);
       const maxDsoCandidates = Math.min(dsoQuota, 650);
       for (let i = 0; i < onScreenDsoItems.length; i++) {
-        if (i < maxDsoCandidates || onScreenDsoItems[i].isSelected) {
-          labelCandidates.push(onScreenDsoItems[i].candidate);
+        const item = onScreenDsoItems[i];
+        const includeGeneral =
+          layers.showDsoLabels && (i < maxDsoCandidates || item.isSelected);
+        if (includeGeneral || item.isKnownForced) {
+          labelCandidates.push(item.candidate);
         }
       }
     }
@@ -1993,6 +2320,210 @@ export function renderStarChart(
       ctx.restore();
     }
 
+    // 8b-0b. Explicit 10-Day Forward Ephemeris Trails with daily markers & date labels
+    const activeTrailEntries = solarTrails ? Object.entries(solarTrails) : [];
+    const trailLabelDraws: {
+      trailColor: string;
+      textColor: string;
+      haloColor: string;
+      bodyKoName: string;
+      pts: {
+        dayOffset: number;
+        dateLabel: string;
+        x: number;
+        y: number;
+        nx: number;
+        ny: number;
+      }[];
+    }[] = [];
+
+    if (activeTrailEntries.length > 0) {
+      const trailMargin = Math.max(80, Math.min(width, height) * 0.48);
+      ctx.save();
+      for (const [bodyId, startMs] of activeTrailEntries) {
+        const trail = getSolarSystemDailyTrail(bodyId, startMs, 10);
+        if (!trail || trail.curvePoints.length < 2) continue;
+
+        const trailColor =
+          theme === 'red'
+            ? '#F87171'
+            : theme === 'white'
+            ? bodyId === 'Sun'
+              ? '#B45309'
+              : '#1D4ED8'
+            : bodyId === 'Moon' || bodyId === 'Mercury' || bodyId === 'Europa' || bodyId === 'Callisto' || bodyId === 'Rhea' || bodyId === 'Enceladus'
+            ? '#38BDF8'
+            : trail.color;
+
+        const textColor =
+          theme === 'red'
+            ? '#FCA5A5'
+            : theme === 'white'
+            ? bodyId === 'Sun'
+              ? '#92400E'
+              : '#1E3A8A'
+            : '#F8FAFC';
+
+        const haloColor =
+          theme === 'white'
+            ? 'rgba(255, 255, 255, 0.92)'
+            : theme === 'red'
+            ? 'rgba(10, 0, 0, 0.88)'
+            : 'rgba(6, 11, 22, 0.88)';
+
+        // Subtle outer glow casing for legibility over Milky Way / HiPS imagery
+        ctx.strokeStyle = haloColor;
+        ctx.globalAlpha = 0.65;
+        ctx.lineWidth = 4.2;
+        ctx.setLineDash([]);
+        drawProjectedCurve(ctx, trail.curvePoints, proj, false);
+
+        // Crisp foreground trajectory curve
+        ctx.strokeStyle = trailColor;
+        ctx.globalAlpha = 0.92;
+        ctx.lineWidth = 1.9;
+        ctx.setLineDash([]);
+        drawProjectedCurve(ctx, trail.curvePoints, proj, false);
+
+        // Project daily points (day 0 through +10)
+        const projectedDays: {
+          dayOffset: number;
+          dateLabel: string;
+          x: number;
+          y: number;
+        }[] = [];
+        for (const dp of trail.dailyPoints) {
+          const pt = projectStereographic(dp.raDeg, dp.decDeg, proj, trailMargin);
+          if (!pt) continue;
+          projectedDays.push({
+            dayOffset: dp.dayOffset,
+            dateLabel: dp.dateLabel,
+            x: pt.x,
+            y: pt.y,
+          });
+        }
+
+        // Draw directional arrowhead at final curve segment
+        if (trail.curvePoints.length >= 2) {
+          const pLast = projectStereographic(
+            trail.curvePoints[trail.curvePoints.length - 1].raDeg,
+            trail.curvePoints[trail.curvePoints.length - 1].decDeg,
+            proj,
+            trailMargin
+          );
+          const pPrev = projectStereographic(
+            trail.curvePoints[trail.curvePoints.length - 2].raDeg,
+            trail.curvePoints[trail.curvePoints.length - 2].decDeg,
+            proj,
+            trailMargin
+          );
+          if (pLast && pPrev) {
+            const dx = pLast.x - pPrev.x;
+            const dy = pLast.y - pPrev.y;
+            const segLen = Math.hypot(dx, dy);
+            if (segLen > 1.5 && segLen < 250) {
+              const ang = Math.atan2(dy, dx);
+              const headLen = 8.5;
+              const spread = 0.48;
+              ctx.globalAlpha = 0.95;
+              ctx.fillStyle = trailColor;
+              ctx.beginPath();
+              ctx.moveTo(pLast.x, pLast.y);
+              ctx.lineTo(
+                pLast.x - headLen * Math.cos(ang - spread),
+                pLast.y - headLen * Math.sin(ang - spread)
+              );
+              ctx.lineTo(
+                pLast.x - headLen * Math.cos(ang + spread),
+                pLast.y - headLen * Math.sin(ang + spread)
+              );
+              ctx.closePath();
+              ctx.fill();
+            }
+          }
+        }
+
+        // Draw per-day markers and compute outward normals for crisp date label placement
+        const labelPts: {
+          dayOffset: number;
+          dateLabel: string;
+          x: number;
+          y: number;
+          nx: number;
+          ny: number;
+        }[] = [];
+
+        for (let i = 0; i < projectedDays.length; i++) {
+          const cur = projectedDays[i];
+          const prev = projectedDays[Math.max(0, i - 1)];
+          const next = projectedDays[Math.min(projectedDays.length - 1, i + 1)];
+          let tx = next.x - prev.x;
+          let ty = next.y - prev.y;
+          const tLen = Math.hypot(tx, ty);
+          if (tLen > 0.001) {
+            tx /= tLen;
+            ty /= tLen;
+          } else {
+            tx = 1;
+            ty = 0;
+          }
+          // Prefer upper normal (-ty, tx) oriented toward top of screen (ny <= 0)
+          let nx = -ty;
+          let ny = tx;
+          if (ny > 0) {
+            nx = -nx;
+            ny = -ny;
+          }
+
+          const isStart = cur.dayOffset === 0;
+          const isEnd = cur.dayOffset === trail.days;
+          const dotR = isStart ? 4.0 : isEnd ? 3.4 : 3.0;
+
+          // Contrasting ring halo
+          ctx.globalAlpha = 0.95;
+          ctx.fillStyle = haloColor;
+          ctx.beginPath();
+          ctx.arc(cur.x, cur.y, dotR + 1.6, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Daily dot marker
+          ctx.fillStyle = trailColor;
+          ctx.beginPath();
+          ctx.arc(cur.x, cur.y, dotR, 0, Math.PI * 2);
+          ctx.fill();
+
+          // Start day (today) outer emphasis ring
+          if (isStart) {
+            ctx.strokeStyle = trailColor;
+            ctx.lineWidth = 1.25;
+            ctx.beginPath();
+            ctx.arc(cur.x, cur.y, dotR + 3.4, 0, Math.PI * 2);
+            ctx.stroke();
+          }
+
+          labelPts.push({
+            dayOffset: cur.dayOffset,
+            dateLabel: cur.dateLabel,
+            x: cur.x,
+            y: cur.y,
+            nx,
+            ny,
+          });
+        }
+
+        if (labelPts.length > 0) {
+          trailLabelDraws.push({
+            trailColor,
+            textColor,
+            haloColor,
+            bodyKoName: trail.koName,
+            pts: labelPts,
+          });
+        }
+      }
+      ctx.restore();
+    }
+
     const solarBodies = getSolarSystemBodies(obsTimeMs);
     const sunBody = solarBodies.find((b) => b.id === 'Sun');
     const planetRenderer = getPlanetRenderer();
@@ -2030,13 +2561,19 @@ export function renderStarChart(
         Saturn: 60268,
         Uranus: 25559,
         Neptune: 24764,
+        Phobos: 11.27,
+        Deimos: 6.2,
         Io: 1821.6,
         Europa: 1560.8,
         Ganymede: 2634.1,
         Callisto: 2410.3,
         Titan: 2574.7,
         Rhea: 763.8,
+        Enceladus: 252.1,
+        Titania: 788.4,
+        Oberon: 761.4,
         Triton: 1353.4,
+        Charon: 606.0,
       };
       const kmRad = BODY_RADIUS_KM[body.id] ?? 0;
       const distKm = Math.max(1e5, body.distAu * 149597870.7);
@@ -2500,6 +3037,115 @@ export function renderStarChart(
       }
     }
     ctx.restore();
+
+    // 8b-1. Daily date labels for active 10-day trajectories (rendered cleanly above markers)
+    if (trailLabelDraws.length > 0) {
+      ctx.save();
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.lineJoin = 'round';
+      const placedBoxes: { x1: number; y1: number; x2: number; y2: number }[] = [];
+
+      const boxesOverlap = (
+        a: { x1: number; y1: number; x2: number; y2: number },
+        b: { x1: number; y1: number; x2: number; y2: number }
+      ) => !(a.x2 < b.x1 || a.x1 > b.x2 || a.y2 < b.y1 || a.y1 > b.y2);
+
+      for (const group of trailLabelDraws) {
+        // Prioritize start day (0) and end day (last), then intermediate days in chronological order
+        const indices: number[] = [];
+        if (group.pts.length > 0) indices.push(0);
+        if (group.pts.length > 1) indices.push(group.pts.length - 1);
+        for (let i = 1; i < group.pts.length - 1; i++) indices.push(i);
+
+        for (const idx of indices) {
+          const p = group.pts[idx];
+          if (p.x < -30 || p.x > width + 30 || p.y < -20 || p.y > height + 20) continue;
+
+          const isStart = p.dayOffset === 0;
+          const labelText = isStart ? `${group.bodyKoName} ${p.dateLabel}` : p.dateLabel;
+          ctx.font = isStart
+            ? '700 10.5px "IBM Plex Mono", "Pretendard", monospace'
+            : '600 10px "IBM Plex Mono", "Pretendard", monospace';
+          const textW = ctx.measureText(labelText).width;
+          const textH = 12;
+
+          // Candidate offset vectors: alternate preferred normal side by parity to keep dense tracks tidy
+          const prefSign = idx % 2 === 0 ? 1 : -1;
+          const candidates: [number, number][] = [
+            [p.nx * prefSign * 14, p.ny * prefSign * 14],
+            [-p.nx * prefSign * 14, -p.ny * prefSign * 14],
+            [p.nx * prefSign * 24, p.ny * prefSign * 24],
+            [-p.nx * prefSign * 24, -p.ny * prefSign * 24],
+            [0, -16],
+            [0, 16],
+            [18, -14],
+            [-18, 14],
+          ];
+
+          let chosen: { lx: number; ly: number; box: { x1: number; y1: number; x2: number; y2: number } } | null =
+            null;
+          for (const [ox, oy] of candidates) {
+            const lx = p.x + ox;
+            const ly = p.y + oy;
+            const box = {
+              x1: lx - textW / 2 - 2,
+              y1: ly - textH / 2 - 1,
+              x2: lx + textW / 2 + 2,
+              y2: ly + textH / 2 + 1,
+            };
+            if (!placedBoxes.some((b) => boxesOverlap(b, box))) {
+              chosen = { lx, ly, box };
+              break;
+            }
+          }
+
+          // Always render day 0 even if extremely zoomed out; skip colliding intermediate labels only if no slot fits
+          if (!chosen) {
+            if (!isStart) continue;
+            const lx = p.x + p.nx * 14;
+            const ly = p.y + p.ny * 14;
+            chosen = {
+              lx,
+              ly,
+              box: {
+                x1: lx - textW / 2 - 2,
+                y1: ly - textH / 2 - 1,
+                x2: lx + textW / 2 + 2,
+                y2: ly + textH / 2 + 1,
+              },
+            };
+          }
+
+          placedBoxes.push(chosen.box);
+
+          // Crisp short leader tick from daily dot to label
+          const dx = chosen.lx - p.x;
+          const dy = chosen.ly - p.y;
+          const dist = Math.hypot(dx, dy);
+          if (dist > 6) {
+            const ux = dx / dist;
+            const uy = dy / dist;
+            ctx.strokeStyle = group.trailColor;
+            ctx.globalAlpha = 0.6;
+            ctx.lineWidth = 0.9;
+            ctx.beginPath();
+            ctx.moveTo(p.x + ux * 4.5, p.y + uy * 4.5);
+            ctx.lineTo(chosen.lx - ux * 6.5, chosen.ly - uy * 6.5);
+            ctx.stroke();
+          }
+
+          // Halo stroke + crisp foreground text
+          ctx.globalAlpha = 0.96;
+          ctx.strokeStyle = group.haloColor;
+          ctx.lineWidth = 3.2;
+          ctx.strokeText(labelText, chosen.lx, chosen.ly);
+          ctx.fillStyle = isStart ? group.trailColor : group.textColor;
+          ctx.fillText(labelText, chosen.lx, chosen.ly);
+        }
+      }
+      ctx.restore();
+    }
   }
 
   // 9. Star-Hopping Guide Path(s) — supports multi-route pointers (e.g., Dubhe & Navi -> Polaris)
@@ -2637,150 +3283,167 @@ export function renderStarChart(
   }
 
   // 10. Optical Reticles (multi-select overlapping rings)
-  const cx = width / 2;
-  const cy = height / 2;
-
-  if (optics.showCrosshair) {
-    ctx.save();
-    const crossColor =
-      theme === 'white' ? '#0369A1' : theme === 'red' ? '#EF4444' : '#06B6D4';
-    const gap = 8;
-    const armOuter = Math.min(width, height) * 0.45;
-    const armInner = 34;
-
-    // Subtle full-field crosshair lines
-    ctx.strokeStyle = crossColor;
-    ctx.globalAlpha = 0.34;
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    ctx.moveTo(cx - armOuter, cy);
-    ctx.lineTo(cx - gap, cy);
-    ctx.moveTo(cx + gap, cy);
-    ctx.lineTo(cx + armOuter, cy);
-    ctx.moveTo(cx, cy - armOuter);
-    ctx.lineTo(cx, cy - gap);
-    ctx.moveTo(cx, cy + gap);
-    ctx.lineTo(cx, cy + armOuter);
-    ctx.stroke();
-
-    // Crisp center precision ticks + center gap ring
-    ctx.globalAlpha = 0.85;
-    ctx.lineWidth = 1.25;
-    ctx.beginPath();
-    ctx.arc(cx, cy, gap, 0, Math.PI * 2);
-    ctx.moveTo(cx - armInner, cy);
-    ctx.lineTo(cx - gap, cy);
-    ctx.moveTo(cx + gap, cy);
-    ctx.lineTo(cx + armInner, cy);
-    ctx.moveTo(cx, cy - armInner);
-    ctx.lineTo(cx, cy - gap);
-    ctx.moveTo(cx, cy + gap);
-    ctx.lineTo(cx, cy + armInner);
-    ctx.stroke();
-    ctx.restore();
+  if (!passOptions?.skipReticles) {
+    drawOpticalReticles(
+      ctx,
+      width,
+      height,
+      view,
+      theme,
+      optics,
+      proj,
+      palette,
+      Boolean(passOptions?.eyepieceFlipActive)
+    );
   }
 
-  // Exact stereographic radius (px) from chart center for an angular diameter (deg)
-  const stereoRadiusPx = (diameterDeg: number) =>
-    2 * proj.scale * Math.tan((diameterDeg * DEG2RAD) / 4);
+  // 11.5. Observing Session Plan Highlight Mode (관측 목록 강조 모드)
+  if (layers.highlightSessionPlan && sessionPlan && sessionPlan.length > 0) {
+    const allDsos: DeepSkyObject[] = [
+      ...catalogs.dsosBright,
+      ...catalogs.darkNebulae,
+      ...catalogs.dsosDeep,
+      ...CALDWELL_CATALOG,
+    ];
+    const allStars = [...catalogs.brightStars, ...catalogs.deepStars, ...catalogs.gaiaStars];
+    const sessionSolarBodies = getSolarSystemBodies(obsTimeMs);
+    const existingTargetIds = new Set(targets.map((t) => `${t.kind}:${t.id}`));
 
-  if (optics.showTelrad) {
+    const pendingColor =
+      theme === 'white' ? '#D97706' : theme === 'red' ? '#FF3B3B' : '#F59E0B';
+    const doneColor =
+      theme === 'white' ? '#059669' : theme === 'red' ? '#B91C1C' : '#10B981';
+    const pillBg =
+      theme === 'white'
+        ? 'rgba(255, 255, 255, 0.92)'
+        : theme === 'red'
+        ? 'rgba(22, 2, 2, 0.90)'
+        : 'rgba(10, 15, 28, 0.88)';
+
     ctx.save();
-    ctx.strokeStyle = palette.reticleTelrad;
-    ctx.globalAlpha = 0.82;
-    ctx.lineWidth = 1.25;
-    for (const deg of [0.5, 2.0, 4.0]) {
-      const rPx = stereoRadiusPx(deg);
-      if (rPx >= 3 && rPx < Math.max(width, height)) {
+    ctx.font = '600 10.5px "IBM Plex Mono", "Pretendard", monospace';
+
+    sessionPlan.forEach((entry, idx) => {
+      let item: SelectedItem | null = null;
+      let labelName = entry.id;
+      if (entry.kind === 'dso') {
+        const found = allDsos.find((d) => d.id === entry.id);
+        if (found) {
+          item = { kind: 'dso', data: found };
+          labelName =
+            view.fsz < 75 && found.koName ? `${found.id} ${found.koName}` : found.id;
+        }
+      } else if (entry.kind === 'planet') {
+        const found = sessionSolarBodies.find((b) => b.id === entry.id);
+        if (found) {
+          item = { kind: 'planet', data: found };
+          labelName = found.koName || found.name;
+        }
+      } else if (entry.kind === 'double') {
+        const found = catalogs.doubleStars.find((d) => d.id === entry.id);
+        if (found) {
+          item = { kind: 'double', data: found };
+          labelName = found.koName || found.name || found.bayer || found.disc;
+        }
+      } else {
+        const found = allStars.find((s) => s.id === entry.id);
+        if (found) {
+          item = { kind: 'star', data: found };
+          labelName = found.koName || found.name || found.bayer || found.id;
+        }
+      }
+      if (!item) return;
+
+      const pt = projectStereographic(item.data.ra, item.data.dec, proj, 36);
+      if (!pt) return;
+
+      const key = `${item.kind}:${item.data.id}`;
+      if (!existingTargetIds.has(key)) {
+        existingTargetIds.add(key);
+        targets.push({
+          kind: item.kind,
+          id: item.data.id,
+          x: pt.x,
+          y: pt.y,
+          radius: 16,
+          mag: item.data.mag,
+          item,
+        });
+      }
+
+      const accent = entry.observed ? doneColor : pendingColor;
+
+      // Translucent highlight halo
+      ctx.save();
+      ctx.fillStyle = accent;
+      ctx.globalAlpha = entry.observed ? 0.1 : 0.17;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, entry.observed ? 14 : 18, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Concentric reticle ring + cardinal ticks
+      ctx.strokeStyle = accent;
+      ctx.globalAlpha = entry.observed ? 0.85 : 0.98;
+      if (entry.observed) {
+        ctx.lineWidth = 1.4;
+        ctx.setLineDash([4, 3]);
         ctx.beginPath();
-        ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
+        ctx.arc(pt.x, pt.y, 13, 0, Math.PI * 2);
+        ctx.stroke();
+      } else {
+        ctx.lineWidth = 1.65;
+        ctx.setLineDash([5, 3]);
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 15.5, 0, Math.PI * 2);
+        ctx.stroke();
+
+        ctx.setLineDash([]);
+        ctx.lineWidth = 1.2;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, 10.5, 0, Math.PI * 2);
+        ctx.moveTo(pt.x - 20, pt.y);
+        ctx.lineTo(pt.x - 14.5, pt.y);
+        ctx.moveTo(pt.x + 14.5, pt.y);
+        ctx.lineTo(pt.x + 20, pt.y);
+        ctx.moveTo(pt.x, pt.y - 20);
+        ctx.lineTo(pt.x, pt.y - 14.5);
+        ctx.moveTo(pt.x, pt.y + 14.5);
+        ctx.lineTo(pt.x, pt.y + 20);
         ctx.stroke();
       }
-    }
-    ctx.font = '500 10px "IBM Plex Mono", monospace';
-    ctx.fillStyle = palette.reticleTelrad;
-    const outerR = stereoRadiusPx(4.0);
-    if (outerR > 12 && outerR < Math.min(width, height) * 0.48) {
-      ctx.fillText('Telrad 4°', cx + 4, cy - outerR - 4);
-    }
-    ctx.restore();
-  }
+      ctx.restore();
 
-  if (optics.showFinder7x50) {
-    const finderR = stereoRadiusPx(7.0);
-    if (finderR >= 4 && finderR < Math.max(width, height) * 1.6) {
-      ctx.save();
-      const finderColor =
-        theme === 'white' ? '#0284C7' : theme === 'red' ? '#EF4444' : '#22D3EE';
-      ctx.strokeStyle = finderColor;
-      ctx.globalAlpha = 0.82;
-      ctx.lineWidth = 1.35;
-      ctx.beginPath();
-      ctx.arc(cx, cy, finderR, 0, Math.PI * 2);
-      // 4 subtle rim ticks
-      const tk = 6;
-      ctx.moveTo(cx - finderR - tk, cy);
-      ctx.lineTo(cx - finderR + tk, cy);
-      ctx.moveTo(cx + finderR - tk, cy);
-      ctx.lineTo(cx + finderR + tk, cy);
-      ctx.moveTo(cx, cy - finderR - tk);
-      ctx.lineTo(cx, cy - finderR + tk);
-      ctx.moveTo(cx, cy + finderR - tk);
-      ctx.lineTo(cx, cy + finderR + tk);
-      ctx.stroke();
-      if (finderR > 14 && finderR < Math.min(width, height) * 0.5) {
-        ctx.fillStyle = finderColor;
-        ctx.font = '500 10px "IBM Plex Mono", monospace';
-        ctx.fillText('7×50 파인더 (7.0°)', cx + 6, cy - finderR - 5);
+      // Upright numbered badge pill next to the target
+      if (pt.x >= -20 && pt.x <= width + 20 && pt.y >= -20 && pt.y <= height + 20) {
+        const badgeText = entry.observed
+          ? `✓ #${idx + 1} ${labelName}`
+          : `#${idx + 1} ${labelName}`;
+        const tw = ctx.measureText(badgeText).width;
+        const padX = 5;
+        const pillH = 16;
+        const pillW = tw + padX * 2;
+        let bx = pt.x + 17;
+        let by = pt.y - pillH / 2 - 8;
+        if (bx + pillW > width - 8) bx = pt.x - 17 - pillW;
+        if (by < 8) by = pt.y + 12;
+
+        ctx.save();
+        ctx.fillStyle = pillBg;
+        ctx.strokeStyle = accent;
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.roundRect(bx, by, pillW, pillH, 4);
+        ctx.fill();
+        ctx.stroke();
+        ctx.fillStyle = accent;
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(badgeText, bx + padX, by + pillH / 2 + 0.5);
+        ctx.restore();
       }
-      ctx.restore();
-    }
-  }
+    });
 
-  if (optics.showEyepiece) {
-    const rPx = stereoRadiusPx(optics.eyepieceFovDeg);
-    if (rPx >= 3 && rPx < Math.max(width, height) * 1.6) {
-      ctx.save();
-      const epColor =
-        theme === 'white' ? '#D97706' : theme === 'red' ? '#DC2626' : '#F59E0B';
-      ctx.strokeStyle = epColor;
-      ctx.globalAlpha = 0.9;
-      ctx.lineWidth = 1.5;
-      ctx.beginPath();
-      ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
-      ctx.stroke();
-      ctx.fillStyle = epColor;
-      ctx.font = '500 10px "IBM Plex Mono", monospace';
-      const magText =
-        optics.eyepieceInputMode === 'calc' && optics.eyepieceFocalLengthMm > 0
-          ? ` · ${(optics.telescopeFocalLengthMm / optics.eyepieceFocalLengthMm).toFixed(0)}×`
-          : '';
-      ctx.fillText(
-        `아이피스 (${optics.eyepieceFovDeg.toFixed(2)}°${magText})`,
-        cx + 4,
-        cy + rPx + 12
-      );
-      ctx.restore();
-    }
-  }
-
-  if (optics.showSensorBox) {
-    const wPx = stereoRadiusPx(optics.sensorWidthDeg) * 2;
-    const hPx = stereoRadiusPx(optics.sensorHeightDeg) * 2;
-    if (wPx >= 6 && hPx >= 6) {
-      ctx.save();
-      ctx.strokeStyle = palette.reticleSensor;
-      ctx.lineWidth = 1.3;
-      ctx.strokeRect(cx - wPx / 2, cy - hPx / 2, wPx, hPx);
-      ctx.fillStyle = palette.reticleSensor;
-      ctx.font = '500 10px "IBM Plex Mono", monospace';
-      ctx.fillText(
-        `FOV ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°`,
-        cx - wPx / 2,
-        cy - hPx / 2 - 5
-      );
-      ctx.restore();
-    }
+    ctx.restore();
   }
 
   // 11. Selection & Hover Reticles
@@ -2874,7 +3537,7 @@ export function renderStarChart(
     );
   }
 
-  if (view.fsz >= 145) {
+  if (applySkyCircleClip) {
     ctx.restore();
     if (hipsVisible) {
       ctx.save();
@@ -2904,3 +3567,130 @@ export function renderStarChart(
     northAngleDeg: proj.northAngleDeg,
   };
 }
+
+export function renderStarChart(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  view: ChartViewState,
+  theme: ThemeMode,
+  layers: LayerSettings,
+  optics: OpticsSettings,
+  observer: ObserverConfig,
+  hips: HipsSettings,
+  catalogs: CatalogSnapshot,
+  selected: SelectedItem | null,
+  hoveredId: string | null,
+  sessionIds: Set<string>,
+  solarTrails?: Record<string, number>,
+  sessionPlan?: ObservingSessionEntry[]
+): RenderResult {
+  const rawFlipActive = view.flipH || view.flipV;
+  const normEpRot = optics.showEyepiece
+    ? ((optics.eyepieceRotationDeg % 360) + 360) % 360
+    : 0;
+  const epRotActive = normEpRot > 0.05 && normEpRot < 359.95;
+  const epTransformActive = rawFlipActive || epRotActive;
+  const epRadiusPx = optics.showEyepiece
+    ? getStereographicRadiusPx(optics.eyepieceFovDeg, view.fsz, width, height)
+    : 0;
+  const diagHalf = Math.hypot(width / 2, height / 2);
+  const eyepieceSplitActive =
+    optics.showEyepiece && epTransformActive && epRadiusPx >= 3 && epRadiusPx < diagHalf + 2;
+  const fullFlipActive = rawFlipActive && (!optics.showEyepiece || epRadiusPx >= diagHalf + 2);
+  const fullRotDeg = optics.showEyepiece && epRotActive && epRadiusPx >= diagHalf + 2 ? normEpRot : 0;
+
+  if (!eyepieceSplitActive) {
+    const effectiveView = fullFlipActive ? view : { ...view, flipH: false, flipV: false };
+    return renderStarChartPass(
+      ctx,
+      width,
+      height,
+      effectiveView,
+      theme,
+      layers,
+      optics,
+      observer,
+      hips,
+      catalogs,
+      selected,
+      hoveredId,
+      sessionIds,
+      solarTrails,
+      {
+        skipReticles: false,
+        isInnerClip: false,
+        eyepieceFlipActive: optics.showEyepiece && (fullFlipActive || fullRotDeg > 0),
+        rotationDeg: fullRotDeg,
+      },
+      sessionPlan
+    );
+  }
+
+  // Dual-pass Eyepiece-Only Optical Flip & Rotation:
+  // Pass 1 renders unflipped/unrotated full sky outside eyepiece;
+  // Pass 2 clips to eyepiece circle and renders flipped+rotated sky with upright labels.
+  const outerView: ChartViewState = { ...view, flipH: false, flipV: false };
+  const outerRes = renderStarChartPass(
+    ctx,
+    width,
+    height,
+    outerView,
+    theme,
+    layers,
+    optics,
+    observer,
+    hips,
+    catalogs,
+    selected,
+    hoveredId,
+    sessionIds,
+    solarTrails,
+    { skipReticles: true, isInnerClip: false, rotationDeg: 0 },
+    sessionPlan
+  );
+
+  const cx = width / 2;
+  const cy = height / 2;
+  const halfSkyRadius = (Math.min(width, height) / 2) / Math.tan((view.fsz / 4) * DEG2RAD);
+  const clipR = view.fsz >= 145 ? Math.min(epRadiusPx, halfSkyRadius) : epRadiusPx;
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(cx, cy, clipR, 0, Math.PI * 2);
+  ctx.clip();
+  const innerRes = renderStarChartPass(
+    ctx,
+    width,
+    height,
+    view,
+    theme,
+    layers,
+    optics,
+    observer,
+    hips,
+    catalogs,
+    selected,
+    hoveredId,
+    sessionIds,
+    solarTrails,
+    { skipReticles: true, isInnerClip: true, rotationDeg: normEpRot },
+    sessionPlan
+  );
+  ctx.restore();
+
+  // Draw optical reticles (Crosshair, Telrad, Finder, Eyepiece rim + flip/rotation badge, Sensor Box) cleanly on top
+  const lstDeg = getLSTDeg(observer.timestampMs, observer.lon);
+  const proj = createProjectionParams(outerView, width, height, lstDeg, observer.lat, 0);
+  const palette = getThemePalette(theme);
+  drawOpticalReticles(ctx, width, height, view, theme, optics, proj, palette, true);
+
+  const outerTargets = outerRes.targets.filter((t) => Math.hypot(t.x - cx, t.y - cy) > clipR);
+  const innerTargets = innerRes.targets.filter((t) => Math.hypot(t.x - cx, t.y - cy) <= clipR);
+
+  return {
+    ...outerRes,
+    targets: [...outerTargets, ...innerTargets],
+  };
+}
+

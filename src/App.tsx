@@ -19,10 +19,20 @@ import { ControlSidebar } from './components/ControlSidebar';
 import { ObjectInspector } from './components/ObjectInspector';
 import { StarChartCanvas, StarChartCanvasHandle } from './components/StarChartCanvas';
 import { TimeControlBar } from './components/TimeControlBar';
-import { useCatalogData } from './data/catalogLoader';
+import {
+  ensureCoreCatalogs,
+  ensureDeepDsos,
+  ensureDeepStars,
+  ensureDoubleStars,
+  getCatalogSnapshot,
+  useCatalogData,
+} from './data/catalogLoader';
 import {
   ChartViewState,
   CoordSystem,
+  EquipmentCategory,
+  EquipmentItem,
+  EquipmentLockerState,
   HipsSettings,
   LayerSettings,
   ObserverConfig,
@@ -33,15 +43,73 @@ import {
 } from './types/astronomy';
 import {
   equatorialToHorizontal,
+  getDsoLimitingMagnitude,
   getLimitingMagnitude,
   getLSTDeg,
   horizontalToEquatorial,
   parseUrlState,
+  RAD2DEG,
   syncUrlState,
 } from './utils/astronomy';
+import {
+  downloadSkylistFile,
+  exportObservingListToSkylist,
+  parseSkylistObjects,
+  resolveSkylistObjects,
+} from './utils/skylist';
+import { getSolarSystemBodies, getSolarSystemDailyTrail } from './utils/solarSystem';
 import { getUiTheme } from './utils/themeClasses';
 
 const SESSION_STORAGE_KEY = 'sidereal_atlas_session_v1';
+const EQUIPMENT_STORAGE_KEY = 'noxchart_equipment_v1';
+
+const DEFAULT_EQUIPMENT_LOCKER: EquipmentLockerState = {
+  items: [
+    {
+      id: 'eq_default_scope_102',
+      category: 'telescope',
+      name: '102mm F7 ED 굴절',
+      apertureMm: 102,
+      focalLengthMm: 714,
+      opticalType: '굴절',
+    },
+    {
+      id: 'eq_default_ep_25',
+      category: 'eyepiece',
+      name: '25mm 광시야 아이피스',
+      focalLengthMm: 25,
+      afovDeg: 68,
+    },
+    {
+      id: 'eq_default_ep_10',
+      category: 'eyepiece',
+      name: '10mm 초광시야 아이피스',
+      focalLengthMm: 10,
+      afovDeg: 82,
+    },
+    {
+      id: 'eq_default_barlow_2x',
+      category: 'barlow',
+      name: '2× APO 바로우',
+      factor: 2.0,
+    },
+    {
+      id: 'eq_default_filter_uhc',
+      category: 'filter',
+      name: '2" UHC 성운 필터',
+      filterType: 'UHC',
+    },
+    {
+      id: 'eq_default_cam_533',
+      category: 'camera',
+      name: 'IMX533 냉각 카메라',
+      sensorWidthMm: 11.31,
+      sensorHeightMm: 11.31,
+      pixelSizeUm: 3.76,
+    },
+  ],
+  activeIds: {},
+};
 
 const DEFAULT_VIEW: ChartViewState = {
   ra: 5.58,
@@ -80,6 +148,8 @@ const DEFAULT_LAYERS: LayerSettings = {
   showDoubleStarLabels: true,
   doubleStarLabelDensityPct: 12,
   showDso: true,
+  showMessierCatalog: false,
+  showCaldwellCatalog: false,
   dsoSymbolDensityPct: 30,
   showDsoLabels: true,
   dsoLabelDensityPct: 7,
@@ -88,6 +158,7 @@ const DEFAULT_LAYERS: LayerSettings = {
   showFieldStars: true,
   enableGaiaLive: true,
   magOffset: 0,
+  dsoMagOffset: 0,
   catalogFilter: 'all',
   dsoCategories: {
     GX: true,
@@ -99,6 +170,7 @@ const DEFAULT_LAYERS: LayerSettings = {
     SNR: true,
     AST: true,
   },
+  highlightSessionPlan: false,
 };
 
 const DEFAULT_HIPS: HipsSettings = {
@@ -113,6 +185,7 @@ const DEFAULT_OPTICS: OpticsSettings = {
   showFinder7x50: false,
   showEyepiece: false,
   eyepieceFovDeg: 1.7,
+  eyepieceRotationDeg: 0,
   eyepieceLabel: '망원경 아이피스',
   eyepieceInputMode: 'calc',
   telescopeFocalLengthMm: 1000,
@@ -154,7 +227,9 @@ export default function App() {
   const [hips, setHips] = useState<HipsSettings>(DEFAULT_HIPS);
 
   const [selected, setSelected] = useState<SelectedItem | null>(null);
-  const [leftOpen, setLeftOpen] = useState(true);
+  const [centerLocked, setCenterLocked] = useState(false);
+  const [solarTrails, setSolarTrails] = useState<Record<string, number>>({});
+  const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<'detail' | 'session'>('detail');
   const [copiedUrl, setCopiedUrl] = useState(false);
@@ -165,6 +240,12 @@ export default function App() {
   viewRef.current = view;
   const observerRef = useRef<ObserverConfig>(observer);
   observerRef.current = observer;
+  const selectedRef = useRef<SelectedItem | null>(selected);
+  selectedRef.current = selected;
+  const centerLockedRef = useRef<boolean>(centerLocked);
+  centerLockedRef.current = centerLocked;
+  const solarTrailsRef = useRef<Record<string, number>>(solarTrails);
+  solarTrailsRef.current = solarTrails;
   const lockedHzRef = useRef<{
     altDeg: number;
     azDeg: number;
@@ -192,6 +273,44 @@ export default function App() {
       const nextObs = updater(prevObs);
       observerRef.current = nextObs;
       setObserver(nextObs);
+
+      // Keep selected Solar System body's live ephemeris synchronized as time advances
+      let activeSelected = selectedRef.current;
+      if (
+        activeSelected?.kind === 'planet' &&
+        nextObs.timestampMs !== prevObs.timestampMs
+      ) {
+        const freshBody = getSolarSystemBodies(nextObs.timestampMs).find(
+          (b) => b.id === activeSelected!.data.id
+        );
+        if (freshBody) {
+          activeSelected = { kind: 'planet', data: freshBody };
+          selectedRef.current = activeSelected;
+          setSelected(activeSelected);
+        }
+      }
+
+      // If Center-Lock Tracking is active, keep the tracked object locked to viewport center
+      // across time acceleration in BOTH Horizontal (Alt/Az) and Equatorial (RA/Dec) modes
+      if (centerLockedRef.current && activeSelected) {
+        lockedHzRef.current = null;
+        const targetRa = ((activeSelected.data.ra / 15) % 24 + 24) % 24;
+        const targetDec = Math.max(-89.999, Math.min(89.999, activeSelected.data.dec));
+        const curView = viewRef.current;
+        if (
+          Math.abs(curView.ra - targetRa) > 1e-7 ||
+          Math.abs(curView.dec - targetDec) > 1e-7
+        ) {
+          const nextView: ChartViewState = {
+            ...curView,
+            ra: targetRa,
+            dec: targetDec,
+          };
+          viewRef.current = nextView;
+          setView(nextView);
+        }
+        return;
+      }
 
       const curView = viewRef.current;
       if (
@@ -256,7 +375,8 @@ export default function App() {
     layers.magOffset,
     searchActive,
     layers.enableGaiaLive,
-    layers.showDoubleStars
+    layers.showDoubleStars,
+    layers.dsoMagOffset
   );
 
   const [sessionPlan, setSessionPlan] = useState<ObservingSessionEntry[]>(() => {
@@ -268,6 +388,40 @@ export default function App() {
     }
     return [];
   });
+  const sessionPlanRef = useRef<ObservingSessionEntry[]>(sessionPlan);
+  sessionPlanRef.current = sessionPlan;
+
+  const [equipmentLocker, setEquipmentLocker] = useState<EquipmentLockerState>(() => {
+    try {
+      const raw = localStorage.getItem(EQUIPMENT_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as EquipmentLockerState;
+        if (parsed && Array.isArray(parsed.items)) {
+          return {
+            items: parsed.items,
+            activeIds: parsed.activeIds ?? {},
+          };
+        }
+      }
+    } catch {
+      // Ignore storage parse failure
+    }
+    return DEFAULT_EQUIPMENT_LOCKER;
+  });
+
+  // Ensure deep catalogs are loaded if saved observing list contains NGC/IC/HIP/WDS objects
+  useEffect(() => {
+    if (sessionPlan.length === 0) return;
+    if (sessionPlan.some((e) => e.kind === 'dso')) {
+      void ensureDeepDsos();
+    }
+    if (sessionPlan.some((e) => e.kind === 'star')) {
+      void ensureDeepStars();
+    }
+    if (sessionPlan.some((e) => e.kind === 'double')) {
+      void ensureDoubleStars();
+    }
+  }, [sessionPlan]);
 
   // Sync URL query params continuously using History API replaceState
   useEffect(() => {
@@ -285,6 +439,15 @@ export default function App() {
       // Ignore storage quota errors
     }
   }, [sessionPlan]);
+
+  // Persist Equipment Locker locally
+  useEffect(() => {
+    try {
+      localStorage.setItem(EQUIPMENT_STORAGE_KEY, JSON.stringify(equipmentLocker));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [equipmentLocker]);
 
   // Refresh live clock every 10s when live time is enabled (and not in time-lapse playback)
   useEffect(() => {
@@ -357,7 +520,112 @@ export default function App() {
     );
   };
 
+  const handleUnlockCenter = useCallback(() => {
+    if (centerLockedRef.current) {
+      centerLockedRef.current = false;
+      setCenterLocked(false);
+    }
+  }, []);
+
+  const handleToggleCenterLock = useCallback(() => {
+    const curSel = selectedRef.current;
+    if (!curSel) {
+      centerLockedRef.current = false;
+      setCenterLocked(false);
+      return;
+    }
+    if (centerLockedRef.current) {
+      centerLockedRef.current = false;
+      setCenterLocked(false);
+      return;
+    }
+
+    // Activate center-lock tracking and immediately center on the target
+    let targetItem = curSel;
+    if (curSel.kind === 'planet') {
+      const obsMs = observerRef.current.useLiveTime
+        ? Date.now()
+        : observerRef.current.timestampMs;
+      const freshBody = getSolarSystemBodies(obsMs).find((b) => b.id === curSel.data.id);
+      if (freshBody) {
+        targetItem = { kind: 'planet', data: freshBody };
+        selectedRef.current = targetItem;
+        setSelected(targetItem);
+      }
+    }
+
+    centerLockedRef.current = true;
+    setCenterLocked(true);
+    lockedHzRef.current = null;
+
+    const targetFsz =
+      targetItem.kind === 'dso'
+        ? Math.max(2.5, Math.min(20, (targetItem.data.majAx / 60) * 6))
+        : targetItem.kind === 'planet'
+        ? targetItem.data.id === 'Moon' || targetItem.data.id === 'Sun'
+          ? 1.8
+          : targetItem.data.group === 'planet'
+          ? 0.06
+          : 1.5
+        : targetItem.kind === 'double'
+        ? Math.max(0.05, Math.min(2.5, (targetItem.data.sep / 3600) * 80))
+        : 14;
+
+    handleChangeView((p) => ({
+      ...p,
+      ra: ((targetItem.data.ra / 15) % 24 + 24) % 24,
+      dec: Math.max(-89.999, Math.min(89.999, targetItem.data.dec)),
+      fsz: Math.min(p.fsz, targetFsz),
+    }));
+  }, [handleChangeView]);
+
+  const handleToggleSolarTrail = useCallback(
+    (bodyId: string) => {
+      const cur = solarTrailsRef.current;
+      if (cur[bodyId] !== undefined) {
+        const next = { ...cur };
+        delete next[bodyId];
+        solarTrailsRef.current = next;
+        setSolarTrails(next);
+        return;
+      }
+
+      const startMs = Date.now();
+      const next = { ...cur, [bodyId]: startMs };
+      solarTrailsRef.current = next;
+      setSolarTrails(next);
+      setLayers((l) => (l.showSolarSystem ? l : { ...l, showSolarSystem: true }));
+
+      const trail = getSolarSystemDailyTrail(bodyId, startMs, 10);
+      if (trail) {
+        centerLockedRef.current = false;
+        setCenterLocked(false);
+        lockedHzRef.current = null;
+        const targetFsz = Math.max(0.05, Math.min(155, Math.max(trail.spanDeg * 1.75, 0.08)));
+        handleChangeView((p) => ({
+          ...p,
+          ra: ((trail.centerRaDeg / 15) % 24 + 24) % 24,
+          dec: Math.max(-89.5, Math.min(89.5, trail.centerDecDeg)),
+          fsz: targetFsz,
+        }));
+      }
+    },
+    [handleChangeView]
+  );
+
+  const handleClearSolarTrails = useCallback(() => {
+    solarTrailsRef.current = {};
+    setSolarTrails({});
+  }, []);
+
   const handleSelect = (item: SelectedItem | null) => {
+    const prevId = selectedRef.current?.data.id;
+    const nextId = item?.data.id;
+    if (!item || nextId !== prevId) {
+      centerLockedRef.current = false;
+      setCenterLocked(false);
+    }
+    selectedRef.current = item;
     setSelected(item);
     if (item) {
       setOptics((prev) =>
@@ -417,6 +685,213 @@ export default function App() {
     });
   };
 
+  const applyEquipmentToOptics = useCallback(
+    (nextLocker: EquipmentLockerState, triggeredCat?: EquipmentCategory) => {
+      const byId = new Map(nextLocker.items.map((it) => [it.id, it]));
+      const scope = nextLocker.activeIds.telescope
+        ? byId.get(nextLocker.activeIds.telescope)
+        : undefined;
+      const eyepiece = nextLocker.activeIds.eyepiece
+        ? byId.get(nextLocker.activeIds.eyepiece)
+        : undefined;
+      const barlow = nextLocker.activeIds.barlow
+        ? byId.get(nextLocker.activeIds.barlow)
+        : undefined;
+      const camera = nextLocker.activeIds.camera
+        ? byId.get(nextLocker.activeIds.camera)
+        : undefined;
+
+      const factor = barlow?.factor && barlow.factor > 0 ? barlow.factor : 1;
+
+      setOptics((prev) => {
+        const baseFl =
+          scope?.focalLengthMm && scope.focalLengthMm > 0
+            ? scope.focalLengthMm
+            : prev.telescopeFocalLengthMm;
+        const effFl = Math.max(30, baseFl * factor);
+        const epFl =
+          eyepiece?.focalLengthMm && eyepiece.focalLengthMm > 0
+            ? eyepiece.focalLengthMm
+            : prev.eyepieceFocalLengthMm;
+        const epAfov =
+          eyepiece?.afovDeg && eyepiece.afovDeg > 0 ? eyepiece.afovDeg : prev.eyepieceAfovDeg;
+        const mag = effFl / Math.max(1, epFl);
+        const tfov = Math.max(0.05, Math.min(20, epAfov / mag));
+
+        let sensorW = prev.sensorWidthDeg;
+        let sensorH = prev.sensorHeightDeg;
+        if (camera?.sensorWidthMm && camera?.sensorHeightMm) {
+          sensorW = Number(
+            Math.max(
+              0.05,
+              Math.min(45, 2 * Math.atan(camera.sensorWidthMm / (2 * effFl)) * RAD2DEG)
+            ).toFixed(2)
+          );
+          sensorH = Number(
+            Math.max(
+              0.05,
+              Math.min(45, 2 * Math.atan(camera.sensorHeightMm / (2 * effFl)) * RAD2DEG)
+            ).toFixed(2)
+          );
+        }
+
+        const shouldShowEyepiece =
+          triggeredCat === 'eyepiece'
+            ? Boolean(eyepiece)
+            : (triggeredCat === 'telescope' || triggeredCat === 'barlow') && Boolean(eyepiece)
+            ? true
+            : prev.showEyepiece;
+
+        const shouldShowSensor =
+          triggeredCat === 'camera'
+            ? Boolean(camera)
+            : (triggeredCat === 'telescope' || triggeredCat === 'barlow') && Boolean(camera)
+            ? true
+            : prev.showSensorBox;
+
+        const labelParts = [
+          eyepiece?.name || prev.eyepieceLabel,
+          barlow?.factor && barlow.factor !== 1 ? `${barlow.factor}×` : '',
+        ].filter(Boolean);
+
+        return {
+          ...prev,
+          eyepieceInputMode: 'calc',
+          telescopeFocalLengthMm: Math.round(effFl),
+          eyepieceFocalLengthMm: epFl,
+          eyepieceAfovDeg: epAfov,
+          eyepieceFovDeg: Number(tfov.toFixed(2)),
+          eyepieceLabel: eyepiece ? labelParts.join(' · ') : prev.eyepieceLabel,
+          showEyepiece: shouldShowEyepiece,
+          sensorWidthDeg: sensorW,
+          sensorHeightDeg: sensorH,
+          showSensorBox: shouldShowSensor,
+        };
+      });
+    },
+    []
+  );
+
+  const handleAddOrUpdateEquipment = useCallback(
+    (item: EquipmentItem) => {
+      setEquipmentLocker((prev) => {
+        const exists = prev.items.some((it) => it.id === item.id);
+        const items = exists
+          ? prev.items.map((it) => (it.id === item.id ? item : it))
+          : [...prev.items, item];
+        const next: EquipmentLockerState = {
+          items,
+          activeIds: prev.activeIds,
+        };
+        if (prev.activeIds[item.category] === item.id) {
+          applyEquipmentToOptics(next, item.category);
+        }
+        return next;
+      });
+    },
+    [applyEquipmentToOptics]
+  );
+
+  const handleDeleteEquipment = useCallback(
+    (id: string) => {
+      setEquipmentLocker((prev) => {
+        const target = prev.items.find((it) => it.id === id);
+        const items = prev.items.filter((it) => it.id !== id);
+        const activeIds = { ...prev.activeIds };
+        if (target && activeIds[target.category] === id) {
+          delete activeIds[target.category];
+        }
+        const next: EquipmentLockerState = { items, activeIds };
+        if (target && prev.activeIds[target.category] === id) {
+          applyEquipmentToOptics(next, target.category);
+        }
+        return next;
+      });
+    },
+    [applyEquipmentToOptics]
+  );
+
+  const handleToggleActiveEquipment = useCallback(
+    (category: EquipmentCategory, id: string) => {
+      setEquipmentLocker((prev) => {
+        const activeIds = { ...prev.activeIds };
+        if (activeIds[category] === id) {
+          delete activeIds[category];
+        } else {
+          activeIds[category] = id;
+        }
+        const next: EquipmentLockerState = { ...prev, activeIds };
+        applyEquipmentToOptics(next, category);
+        return next;
+      });
+    },
+    [applyEquipmentToOptics]
+  );
+
+  const handleImportEquipmentLocker = useCallback(
+    (imported: EquipmentLockerState) => {
+      setEquipmentLocker(imported);
+      applyEquipmentToOptics(imported);
+    },
+    [applyEquipmentToOptics]
+  );
+
+  const handleImportSkylistSession = useCallback(async (fileText: string) => {
+    await Promise.all([
+      ensureCoreCatalogs(),
+      ensureDeepDsos(),
+      ensureDeepStars(),
+      ensureDoubleStars(),
+    ]);
+    const parsed = parseSkylistObjects(fileText);
+    const snap = getCatalogSnapshot();
+    const obsMs = observerRef.current.useLiveTime
+      ? Date.now()
+      : observerRef.current.timestampMs;
+    const resolved = resolveSkylistObjects(parsed, snap, obsMs);
+
+    const prev = sessionPlanRef.current;
+    const existingMap = new Map(prev.map((e) => [e.id, e]));
+    const next = [...prev];
+    let addedCount = 0;
+    for (const entry of resolved.entries) {
+      const existing = existingMap.get(entry.id);
+      if (!existing) {
+        next.push(entry);
+        existingMap.set(entry.id, entry);
+        addedCount++;
+      } else {
+        const idx = next.findIndex((x) => x.id === entry.id);
+        if (idx >= 0) {
+          next[idx] = {
+            ...existing,
+            observed: existing.observed || entry.observed,
+            notes: existing.notes || entry.notes,
+          };
+        }
+      }
+    }
+    sessionPlanRef.current = next;
+    setSessionPlan(next);
+
+    return {
+      matchedCount: resolved.matchedCount,
+      addedCount,
+      totalCount: resolved.totalCount,
+      unmatchedNames: resolved.unmatchedNames,
+    };
+  }, []);
+
+  const handleExportSkylistSession = useCallback(() => {
+    const obsMs = observerRef.current.useLiveTime
+      ? Date.now()
+      : observerRef.current.timestampMs;
+    const snap = getCatalogSnapshot();
+    const content = exportObservingListToSkylist(sessionPlan, snap, obsMs);
+    const today = new Date().toISOString().slice(0, 10);
+    downloadSkylistFile(content, `noxchart-observing-list-${today}.skylist`);
+  }, [sessionPlan]);
+
   const handleCopyShareUrl = async () => {
     syncUrlState(view, theme);
     try {
@@ -453,9 +928,14 @@ export default function App() {
     observerRef.current = resetObs;
     setObserver(resetObs);
     setHips({ ...DEFAULT_HIPS });
+    centerLockedRef.current = false;
+    setCenterLocked(false);
+    solarTrailsRef.current = {};
+    setSolarTrails({});
+    selectedRef.current = null;
     setSelected(null);
     setRightOpen(false);
-    setLeftOpen(true);
+    setLeftOpen(false);
     setInspectorTab('detail');
     setSearchActive(false);
     setResetCount((c) => c + 1);
@@ -463,7 +943,7 @@ export default function App() {
 
   const ui = getUiTheme(theme);
   const magLimit = getLimitingMagnitude(view.fsz, layers.magOffset);
-  const dsoMagLimit = Math.min(16.8, magLimit + 3.5);
+  const dsoMagLimit = getDsoLimitingMagnitude(view.fsz, layers.dsoMagOffset);
 
   return (
     <div
@@ -661,25 +1141,35 @@ export default function App() {
             <div className="flex items-center gap-1.5 pl-1">
               <input
                 type="range"
-                min={-2.0}
-                max={2.5}
+                min={-3.0}
+                max={3.0}
                 step={0.2}
                 value={layers.magOffset}
-                onChange={(e) =>
-                  setLayers((p) => ({ ...p, magOffset: Number(e.target.value) }))
-                }
+                onChange={(e) => {
+                  const nextMag = Number(e.target.value);
+                  setLayers((p) => {
+                    const delta = nextMag - p.magOffset;
+                    const nextDso = Math.max(
+                      -4.0,
+                      Math.min(4.0, Number((p.dsoMagOffset + delta).toFixed(1)))
+                    );
+                    return { ...p, magOffset: nextMag, dsoMagOffset: nextDso };
+                  });
+                }}
                 aria-label="한계 등급 보정"
-                title="한계 등급 보정 (-2.0m ~ +2.5m)"
+                title="한계 등급 보정 (-3.0m ~ +3.0m)"
                 className={`w-16 lg:w-20 h-1.5 cursor-pointer ${
                   theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
                 }`}
               />
               <button
                 type="button"
-                onClick={() => setLayers((p) => ({ ...p, magOffset: 0 }))}
+                onClick={() =>
+                  setLayers((p) => ({ ...p, magOffset: 0, dsoMagOffset: 0 }))
+                }
                 title="클릭하여 한계 등급 보정 초기화 (0.0m)"
                 className={`font-mono text-[10.5px] tabular-nums whitespace-nowrap w-10 text-right hover:opacity-100 transition-opacity ${
-                  layers.magOffset !== 0
+                  layers.magOffset !== 0 || layers.dsoMagOffset !== 0
                     ? theme === 'white'
                       ? 'text-sky-700 font-semibold'
                       : theme === 'red'
@@ -765,11 +1255,15 @@ export default function App() {
             hips={hips}
             catalogs={catalogs}
             selected={selected}
+            centerLocked={centerLocked}
+            solarTrails={solarTrails}
             sessionIds={sessionIds}
+            sessionPlan={sessionPlan}
             leftDrawerOpen={leftOpen}
             rightDrawerOpen={rightOpen}
             onChangeView={handleChangeView}
             onSelect={handleSelect}
+            onUnlockCenter={handleUnlockCenter}
           />
           <TimeControlBar
             theme={theme}
@@ -794,6 +1288,8 @@ export default function App() {
             hips={hips}
             catalogs={catalogs}
             selected={selected}
+            equipmentLocker={equipmentLocker}
+            sessionPlanCount={sessionPlan.length}
             onChangeView={handleChangeView}
             onChangeLayers={setLayers}
             onChangeOptics={setOptics}
@@ -801,6 +1297,10 @@ export default function App() {
             onChangeHips={setHips}
             onSelect={(item) => handleSelect(item)}
             onSearchActiveChange={setSearchActive}
+            onAddOrUpdateEquipment={handleAddOrUpdateEquipment}
+            onDeleteEquipment={handleDeleteEquipment}
+            onToggleActiveEquipment={handleToggleActiveEquipment}
+            onImportEquipmentLocker={handleImportEquipmentLocker}
           />
         </div>
 
@@ -833,6 +1333,8 @@ export default function App() {
           {rightOpen && (
             <ObjectInspector
               selected={selected}
+              centerLocked={centerLocked}
+              solarTrails={solarTrails}
               activeTab={inspectorTab}
               theme={theme}
               observer={observer}
@@ -842,12 +1344,17 @@ export default function App() {
               onTabChange={setInspectorTab}
               onClose={() => setRightOpen(false)}
               onSelect={handleSelect}
+              onToggleCenterLock={handleToggleCenterLock}
+              onToggleSolarTrail={handleToggleSolarTrail}
+              onClearSolarTrails={handleClearSolarTrails}
               onChangeView={handleChangeView}
               onChangeOptics={setOptics}
               onToggleSessionItem={handleToggleSessionItem}
               onToggleObserved={handleToggleObserved}
               onUpdateNotes={handleUpdateNotes}
               onAddRecommendedTonight={handleAddRecommendedTonight}
+              onImportSkylist={handleImportSkylistSession}
+              onExportSkylist={handleExportSkylistSession}
             />
           )}
         </div>

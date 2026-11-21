@@ -251,26 +251,26 @@ const MINOR_BODY_ELEMENTS: OrbitalElements[] = [
     epochJd: 2457000.5, // 2014 Dec 9.0 TT (MPC/JPL standard epoch)
   },
   {
-    id: 'Eris',
-    name: '136199 Eris',
-    koName: '에리스',
-    symbol: '⯰',
-    color: '#A5B4FC',
+    id: 'Haumea',
+    name: '136108 Haumea',
+    koName: '하우메아',
+    symbol: '✧',
+    color: '#E9D5FF',
     group: 'dwarf',
-    category: '왜행성 (산란원반)',
-    N0: 35.951,
+    category: '왜행성 (카이퍼대)',
+    N0: 122.167,
     Nd: 0,
-    i0: 44.04,
+    i0: 28.2137,
     id_: 0,
-    w0: 151.639,
+    w0: 239.041,
     wd: 0,
-    a0: 67.864,
+    a0: 43.116,
     ad: 0,
-    e0: 0.43607,
+    e0: 0.19642,
     ed: 0,
-    M0: 205.989,
-    Md: 0.0017629,
-    H0: -1.17,
+    M0: 218.205,
+    Md: 0.0034812,
+    H0: 0.2,
     slopeG: 0.15,
     epochJd: 2458600.5,
   },
@@ -299,26 +299,26 @@ const MINOR_BODY_ELEMENTS: OrbitalElements[] = [
     epochJd: 2458600.5,
   },
   {
-    id: 'Haumea',
-    name: '136108 Haumea',
-    koName: '하우메아',
-    symbol: '✧',
-    color: '#E9D5FF',
+    id: 'Eris',
+    name: '136199 Eris',
+    koName: '에리스',
+    symbol: '⯰',
+    color: '#A5B4FC',
     group: 'dwarf',
-    category: '왜행성 (카이퍼대)',
-    N0: 122.167,
+    category: '왜행성 (산란원반)',
+    N0: 35.951,
     Nd: 0,
-    i0: 28.2137,
+    i0: 44.04,
     id_: 0,
-    w0: 239.041,
+    w0: 151.639,
     wd: 0,
-    a0: 43.116,
+    a0: 67.864,
     ad: 0,
-    e0: 0.19642,
+    e0: 0.43607,
     ed: 0,
-    M0: 218.205,
-    Md: 0.0034812,
-    H0: 0.2,
+    M0: 205.989,
+    Md: 0.0017629,
+    H0: -1.17,
     slopeG: 0.15,
     epochJd: 2458600.5,
   },
@@ -498,7 +498,7 @@ interface PlanetaryMoonDef {
   id: string;
   name: string;
   koName: string;
-  parentId: 'Jupiter' | 'Saturn' | 'Neptune';
+  parentId: 'Mars' | 'Jupiter' | 'Saturn' | 'Uranus' | 'Neptune' | 'Pluto';
   category: string;
   color: string;
   semiMajorKm: number; // Orbital radius around host planet (km)
@@ -511,6 +511,38 @@ interface PlanetaryMoonDef {
 }
 
 const PLANETARY_MOONS: PlanetaryMoonDef[] = [
+  // Mars Moons (화성 위성)
+  {
+    id: 'Phobos',
+    name: 'Phobos (M I)',
+    koName: '포보스',
+    parentId: 'Mars',
+    category: '화성 위성',
+    color: '#FDBA74',
+    semiMajorKm: 9376,
+    periodDays: 0.31891,
+    phaseJ2000Deg: 92.4,
+    paDeg: 35,
+    tiltFrac: 0.35,
+    baseMag: 11.4,
+    refDistAu: 0.52,
+  },
+  {
+    id: 'Deimos',
+    name: 'Deimos (M II)',
+    koName: '데이모스',
+    parentId: 'Mars',
+    category: '화성 위성',
+    color: '#FED7AA',
+    semiMajorKm: 23463,
+    periodDays: 1.263,
+    phaseJ2000Deg: 214.1,
+    paDeg: 35,
+    tiltFrac: 0.35,
+    baseMag: 12.45,
+    refDistAu: 0.52,
+  },
+  // Jupiter Moons (목성 갈릴레이 위성)
   {
     id: 'Io',
     name: 'Io (J I)',
@@ -571,6 +603,7 @@ const PLANETARY_MOONS: PlanetaryMoonDef[] = [
     baseMag: 5.65,
     refDistAu: 4.2,
   },
+  // Saturn Moons (토성 위성)
   {
     id: 'Titan',
     name: 'Titan (S VI)',
@@ -602,6 +635,53 @@ const PLANETARY_MOONS: PlanetaryMoonDef[] = [
     refDistAu: 8.5,
   },
   {
+    id: 'Enceladus',
+    name: 'Enceladus (S II)',
+    koName: '엔셀라두스',
+    parentId: 'Saturn',
+    category: '토성 위성',
+    color: '#F8FAFC',
+    semiMajorKm: 238020,
+    periodDays: 1.370218,
+    phaseJ2000Deg: 112.5,
+    paDeg: 21,
+    tiltFrac: 0.22,
+    baseMag: 11.7,
+    refDistAu: 8.5,
+  },
+  // Uranus Moons (천왕성 위성)
+  {
+    id: 'Titania',
+    name: 'Titania (U III)',
+    koName: '티타니아',
+    parentId: 'Uranus',
+    category: '천왕성 위성',
+    color: '#A5F3FC',
+    semiMajorKm: 435910,
+    periodDays: 8.706234,
+    phaseJ2000Deg: 64.2,
+    paDeg: 82,
+    tiltFrac: 0.65,
+    baseMag: 13.9,
+    refDistAu: 18.2,
+  },
+  {
+    id: 'Oberon',
+    name: 'Oberon (U IV)',
+    koName: '오베론',
+    parentId: 'Uranus',
+    category: '천왕성 위성',
+    color: '#CFFAFE',
+    semiMajorKm: 583520,
+    periodDays: 13.463234,
+    phaseJ2000Deg: 198.7,
+    paDeg: 82,
+    tiltFrac: 0.65,
+    baseMag: 14.1,
+    refDistAu: 18.2,
+  },
+  // Neptune Moon (해왕성 위성)
+  {
     id: 'Triton',
     name: 'Triton (N I)',
     koName: '트리톤',
@@ -615,6 +695,22 @@ const PLANETARY_MOONS: PlanetaryMoonDef[] = [
     tiltFrac: 0.38,
     baseMag: 13.47,
     refDistAu: 29.0,
+  },
+  // Pluto Moon (명왕성 위성)
+  {
+    id: 'Charon',
+    name: 'Charon (P I)',
+    koName: '카론',
+    parentId: 'Pluto',
+    category: '명왕성 위성',
+    color: '#E9D5FF',
+    semiMajorKm: 19591,
+    periodDays: 6.38723,
+    phaseJ2000Deg: 141.0,
+    paDeg: 48,
+    tiltFrac: 0.55,
+    baseMag: 16.8,
+    refDistAu: 33.0,
   },
 ];
 
@@ -768,9 +864,14 @@ export function getSolarSystemBodies(timestampMs: number): SolarSystemBody[] {
   const Ms = norm360(316.967 + 0.0334442282 * d);
   const Mu = norm360(142.5905 + 0.011725806 * d);
 
-  const planetMap = new Map<string, SolarSystemBody>();
+  const moonsByParent = new Map<string, PlanetaryMoonDef[]>();
+  for (const m of PLANETARY_MOONS) {
+    const list = moonsByParent.get(m.parentId);
+    if (list) list.push(m);
+    else moonsByParent.set(m.parentId, [m]);
+  }
 
-  // 3. Planets, Dwarf Planets, and Asteroids
+  // 3. Planets, Dwarf Planets, Asteroids — with each planet's moons immediately following their host
   const allKeplerBodies = [...PLANET_ELEMENTS, ...MINOR_BODY_ELEMENTS];
   for (const el of allKeplerBodies) {
     const dt = el.epochJd ? jd - el.epochJd : d;
@@ -878,49 +979,46 @@ export function getSolarSystemBodies(timestampMs: number): SolarSystemBody[] {
       elongationDeg: Number(elong.toFixed(1)),
     };
     bodies.push(body);
-    if (el.group === 'planet') {
-      planetMap.set(el.id, body);
+
+    // Emit this host body's moons right after it (e.g. Mars -> Phobos/Deimos -> Jupiter -> Io/Europa/...)
+    const hostMoons = moonsByParent.get(el.id);
+    if (hostMoons) {
+      for (const m of hostMoons) {
+        const angRad = (m.phaseJ2000Deg + (dJ2000 / m.periodDays) * 360) * DEG2RAD;
+        const maxSepDeg = ((m.semiMajorKm / KM_PER_AU) / Math.max(0.3, body.distAu)) * RAD2DEG;
+
+        // Projected offset in equatorial plane (x along orbit line, y perpendicular)
+        const xOrb = Math.sin(angRad) * maxSepDeg;
+        const yOrb = Math.cos(angRad) * maxSepDeg * m.tiltFrac;
+        const paRad = m.paDeg * DEG2RAD;
+
+        // Rotate by equatorial PA into sky East/North offsets
+        const dEastDeg = xOrb * Math.cos(paRad) - yOrb * Math.sin(paRad);
+        const dNorthDeg = xOrb * Math.sin(paRad) + yOrb * Math.cos(paRad);
+
+        const cosDec = Math.max(0.15, Math.cos(body.dec * DEG2RAD));
+        const ra = norm360(body.ra + dEastDeg / cosDec);
+        const dec = Math.max(-89.9, Math.min(89.9, body.dec + dNorthDeg));
+        const moonMag = m.baseMag + 5 * Math.log10(Math.max(0.25, body.distAu / m.refDistAu));
+
+        bodies.push({
+          id: m.id,
+          name: m.name,
+          koName: m.koName,
+          symbol: '•',
+          color: m.color,
+          group: 'moon',
+          parentId: m.parentId,
+          category: m.category,
+          ra,
+          dec,
+          mag: Number(moonMag.toFixed(1)),
+          distAu: body.distAu,
+          phasePct: body.phasePct,
+          elongationDeg: body.elongationDeg,
+        });
+      }
     }
-  }
-
-  // 4. Major Planetary Moons (Galilean moons, Titan, Rhea, Triton)
-  for (const m of PLANETARY_MOONS) {
-    const parent = planetMap.get(m.parentId);
-    if (!parent) continue;
-
-    const angRad = ((m.phaseJ2000Deg + (dJ2000 / m.periodDays) * 360) * DEG2RAD);
-    const maxSepDeg = ((m.semiMajorKm / KM_PER_AU) / Math.max(0.5, parent.distAu)) * RAD2DEG;
-
-    // Projected offset in equatorial plane (x along orbit line, y perpendicular)
-    const xOrb = Math.sin(angRad) * maxSepDeg;
-    const yOrb = Math.cos(angRad) * maxSepDeg * m.tiltFrac;
-    const paRad = m.paDeg * DEG2RAD;
-
-    // Rotate by equatorial PA into sky East/North offsets
-    const dEastDeg = xOrb * Math.cos(paRad) - yOrb * Math.sin(paRad);
-    const dNorthDeg = xOrb * Math.sin(paRad) + yOrb * Math.cos(paRad);
-
-    const cosDec = Math.max(0.15, Math.cos(parent.dec * DEG2RAD));
-    const ra = norm360(parent.ra + dEastDeg / cosDec);
-    const dec = Math.max(-89.9, Math.min(89.9, parent.dec + dNorthDeg));
-    const mag = m.baseMag + 5 * Math.log10(Math.max(0.5, parent.distAu / m.refDistAu));
-
-    bodies.push({
-      id: m.id,
-      name: m.name,
-      koName: m.koName,
-      symbol: '•',
-      color: m.color,
-      group: 'moon',
-      parentId: m.parentId,
-      category: m.category,
-      ra,
-      dec,
-      mag: Number(mag.toFixed(1)),
-      distAu: parent.distAu,
-      phasePct: parent.phasePct,
-      elongationDeg: parent.elongationDeg,
-    });
   }
 
   return bodies;
@@ -1006,7 +1104,7 @@ export function getSolarSystemOrbitTracks(timestampMs: number): SolarSystemOrbit
   for (const m of PLANETARY_MOONS) {
     const parent = bodyById.get(m.parentId);
     if (!parent) continue;
-    const maxSepDeg = ((m.semiMajorKm / KM_PER_AU) / Math.max(0.5, parent.distAu)) * RAD2DEG;
+    const maxSepDeg = ((m.semiMajorKm / KM_PER_AU) / Math.max(0.3, parent.distAu)) * RAD2DEG;
     const paRad = m.paDeg * DEG2RAD;
     const cosDec = Math.max(0.15, Math.cos(parent.dec * DEG2RAD));
     const curAngDeg = m.phaseJ2000Deg + (dJ2000 / m.periodDays) * 360;
@@ -1038,4 +1136,135 @@ export function getSolarSystemOrbitTracks(timestampMs: number): SolarSystemOrbit
   cachedOrbitTracks = tracks;
   return tracks;
 }
+
+export interface SolarTrailDayPoint {
+  dayOffset: number;
+  timestampMs: number;
+  dateLabel: string;
+  raDeg: number;
+  decDeg: number;
+}
+
+export interface SolarSystemDailyTrail {
+  bodyId: string;
+  koName: string;
+  name: string;
+  symbol: string;
+  color: string;
+  startMs: number;
+  days: number;
+  curvePoints: { raDeg: number; decDeg: number }[];
+  dailyPoints: SolarTrailDayPoint[];
+  centerRaDeg: number;
+  centerDecDeg: number;
+  spanDeg: number;
+}
+
+const dailyTrailCache = new Map<string, SolarSystemDailyTrail>();
+
+function formatMonthDayLabel(timestampMs: number): string {
+  const dt = new Date(timestampMs);
+  return `${dt.getMonth() + 1}/${dt.getDate()}`;
+}
+
+/**
+ * Compute a forward daily trajectory (day 0 through +days) for any Solar System body
+ * anchored at startMs (e.g. today's date), with smooth sub-daily curve points and exact daily date markers.
+ */
+export function getSolarSystemDailyTrail(
+  bodyId: string,
+  startMs: number,
+  days = 10
+): SolarSystemDailyTrail | null {
+  const minuteBucket = Math.floor(startMs / 60000);
+  const cacheKey = `${bodyId}:${minuteBucket}:${days}`;
+  const cached = dailyTrailCache.get(cacheKey);
+  if (cached) return cached;
+
+  const anchorMs = minuteBucket * 60000;
+  const startBody = getSolarSystemBodies(anchorMs).find((b) => b.id === bodyId);
+  if (!startBody) return null;
+
+  const DAY_MS = 86400000;
+  const isPlanetaryMoon = startBody.group === 'moon' && startBody.id !== 'Moon';
+  const subStepsPerDay = isPlanetaryMoon ? 24 : 6;
+  const totalSubSteps = days * subStepsPerDay;
+
+  const curvePoints: { raDeg: number; decDeg: number }[] = [];
+  const dailyPoints: SolarTrailDayPoint[] = [];
+
+  for (let s = 0; s <= totalSubSteps; s++) {
+    const tMs = anchorMs + (s / subStepsPerDay) * DAY_MS;
+    const sample = getSolarSystemBodies(tMs).find((b) => b.id === bodyId);
+    if (!sample) continue;
+
+    curvePoints.push({ raDeg: sample.ra, decDeg: sample.dec });
+
+    if (s % subStepsPerDay === 0) {
+      const dayOffset = Math.round(s / subStepsPerDay);
+      dailyPoints.push({
+        dayOffset,
+        timestampMs: tMs,
+        dateLabel: formatMonthDayLabel(tMs),
+        raDeg: sample.ra,
+        decDeg: sample.dec,
+      });
+    }
+  }
+
+  if (dailyPoints.length === 0) return null;
+
+  // Spherical centroid (handles RA 0h/24h wrap-around cleanly)
+  let sx = 0;
+  let sy = 0;
+  let sz = 0;
+  const unitPts: [number, number, number][] = [];
+  for (const p of dailyPoints) {
+    const a = p.raDeg * DEG2RAD;
+    const d = p.decDeg * DEG2RAD;
+    const ux = Math.cos(d) * Math.cos(a);
+    const uy = Math.cos(d) * Math.sin(a);
+    const uz = Math.sin(d);
+    sx += ux;
+    sy += uy;
+    sz += uz;
+    unitPts.push([ux, uy, uz]);
+  }
+  const norm = Math.hypot(sx, sy, sz) || 1;
+  const cx = sx / norm;
+  const cy = sy / norm;
+  const cz = sz / norm;
+  const centerRaDeg = norm360(Math.atan2(cy, cx) * RAD2DEG);
+  const centerDecDeg = Math.asin(Math.max(-1, Math.min(1, cz))) * RAD2DEG;
+
+  let maxRadFromCenter = 0;
+  for (const [ux, uy, uz] of unitPts) {
+    const dot = Math.max(-1, Math.min(1, ux * cx + uy * cy + uz * cz));
+    const ang = Math.acos(dot) * RAD2DEG;
+    if (ang > maxRadFromCenter) maxRadFromCenter = ang;
+  }
+
+  const trail: SolarSystemDailyTrail = {
+    bodyId: startBody.id,
+    koName: startBody.koName,
+    name: startBody.name,
+    symbol: startBody.symbol,
+    color: startBody.color,
+    startMs: anchorMs,
+    days,
+    curvePoints,
+    dailyPoints,
+    centerRaDeg,
+    centerDecDeg,
+    spanDeg: maxRadFromCenter * 2,
+  };
+
+  if (dailyTrailCache.size > 40) {
+    const oldestKey = dailyTrailCache.keys().next().value;
+    if (oldestKey) dailyTrailCache.delete(oldestKey);
+  }
+  dailyTrailCache.set(cacheKey, trail);
+  return trail;
+}
+
 

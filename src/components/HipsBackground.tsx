@@ -4,13 +4,16 @@ import {
   HipsSettings,
   HipsSurveyId,
   ObserverConfig,
+  OpticsSettings,
   ThemeMode,
 } from '../types/astronomy';
 import {
   createProjectionParams,
   DEG2RAD,
   getLSTDeg,
+  getStereographicRadiusPx,
   projectStereographicRaw,
+  ProjectionParams,
   RAD2DEG,
   unprojectStereographic,
 } from '../utils/astronomy';
@@ -137,6 +140,8 @@ uniform float uLat;
 uniform float uIsHorizontal;
 uniform float uFlipH;
 uniform float uFlipV;
+uniform float uRotationRad;
+uniform float uEyepieceRadius;
 uniform float uOpacity;
 uniform float uThemeMode; // 0 = dark, 1 = white, 2 = red
 
@@ -165,16 +170,27 @@ void main() {
   float sx = gl_FragCoord.x;
   float sy = uResolution.y - gl_FragCoord.y;
 
+  float distFromCenter = length(vec2(sx, sy) - uResolution * 0.5);
+  float inEyepiece = (uEyepieceRadius > 0.5) ? step(distFromCenter, uEyepieceRadius) : 1.0;
+  float effFlipH = uFlipH * inEyepiece;
+  float effFlipV = uFlipV * inEyepiece;
+  float effRot = uRotationRad * inEyepiece;
+
   float dirX;
-  float dirY = (uFlipV > 0.5) ? 1.0 : -1.0;
+  float dirY = (effFlipV > 0.5) ? 1.0 : -1.0;
   if (uIsHorizontal > 0.5) {
-    dirX = (uFlipH > 0.5) ? -1.0 : 1.0;
+    dirX = (effFlipH > 0.5) ? -1.0 : 1.0;
   } else {
-    dirX = (uFlipH > 0.5) ? 1.0 : -1.0;
+    dirX = (effFlipH > 0.5) ? 1.0 : -1.0;
   }
 
-  float px = (sx - uResolution.x * 0.5) / (uScale * dirX);
-  float py = (sy - uResolution.y * 0.5) / (uScale * dirY);
+  vec2 rel = vec2(sx, sy) - uResolution * 0.5;
+  float cosR = cos(effRot);
+  float sinR = sin(effRot);
+  vec2 unrot = vec2(rel.x * cosR + rel.y * sinR, -rel.x * sinR + rel.y * cosR);
+
+  float px = unrot.x / (uScale * dirX);
+  float py = unrot.y / (uScale * dirY);
   float rho = length(vec2(px, py));
   float c = 2.0 * atan(rho * 0.5);
 
@@ -317,6 +333,9 @@ void main() {
 const TILE_FS = `
 precision highp float;
 uniform sampler2D uTile;
+uniform vec2 uResolution;
+uniform float uEyepieceRadius;
+uniform float uClipMode; // 0 = full, 1 = outside eyepiece only, 2 = inside eyepiece only
 uniform float uOpacity;
 uniform float uThemeMode;
 varying vec2 vUv;
@@ -335,6 +354,13 @@ vec3 applyTheme(vec3 col, float mode) {
 }
 
 void main() {
+  if (uClipMode > 0.5 && uEyepieceRadius > 0.5) {
+    float sx = gl_FragCoord.x;
+    float sy = uResolution.y - gl_FragCoord.y;
+    float dist = length(vec2(sx, sy) - uResolution * 0.5);
+    if (uClipMode < 1.5 && dist <= uEyepieceRadius) discard;
+    if (uClipMode > 1.5 && dist > uEyepieceRadius) discard;
+  }
   vec3 bgCol = (uThemeMode > 1.5)
     ? vec3(0.024, 0.0, 0.0)
     : (uThemeMode > 0.5 ? vec3(1.0) : vec3(0.027, 0.039, 0.071));
@@ -407,6 +433,7 @@ interface GlState {
 interface HipsBackgroundProps {
   hips: HipsSettings;
   view: ChartViewState;
+  optics: OpticsSettings;
   observer: ObserverConfig;
   theme: ThemeMode;
   width: number;
@@ -423,6 +450,7 @@ const MAX_CACHED_TILES = 72;
 export function HipsBackground({
   hips,
   view,
+  optics,
   observer,
   theme,
   width,
@@ -545,8 +573,53 @@ export function HipsBackground({
 
       const allskyTex = st.allskyTextures[hips.survey];
       const lstDeg = getLSTDeg(observer.timestampMs, observer.lon);
-      const proj = createProjectionParams(view, width, height, lstDeg, observer.lat);
       const themeModeNum = theme === 'red' ? 2 : theme === 'white' ? 1 : 0;
+
+      const rawFlipActive = view.flipH || view.flipV;
+      const normEpRot = optics.showEyepiece
+        ? ((optics.eyepieceRotationDeg % 360) + 360) % 360
+        : 0;
+      const epRotActive = normEpRot > 0.05 && normEpRot < 359.95;
+      const epTransformActive = rawFlipActive || epRotActive;
+      const epRadiusCss = optics.showEyepiece
+        ? getStereographicRadiusPx(optics.eyepieceFovDeg, view.fsz, width, height)
+        : 0;
+      const diagHalf = Math.hypot(width / 2, height / 2);
+      const eyepieceSplitActive =
+        optics.showEyepiece && epTransformActive && epRadiusCss >= 3 && epRadiusCss < diagHalf + 2;
+      const fullFlipActive = rawFlipActive && (!optics.showEyepiece || epRadiusCss >= diagHalf + 2);
+      const fullRotDeg =
+        optics.showEyepiece && epRotActive && epRadiusCss >= diagHalf + 2 ? normEpRot : 0;
+
+      const unflippedView: ChartViewState = { ...view, flipH: false, flipV: false };
+      const flippedView: ChartViewState = view;
+      const unflippedProj = createProjectionParams(
+        unflippedView,
+        width,
+        height,
+        lstDeg,
+        observer.lat,
+        0
+      );
+      const flippedProj = createProjectionParams(
+        flippedView,
+        width,
+        height,
+        lstDeg,
+        observer.lat,
+        normEpRot
+      );
+      const baseProj =
+        fullFlipActive || fullRotDeg > 0
+          ? createProjectionParams(
+              fullFlipActive ? view : unflippedView,
+              width,
+              height,
+              lstDeg,
+              observer.lat,
+              fullRotDeg
+            )
+          : unflippedProj;
 
       // Pass 1: Instant full-sky seamless Allsky.jpg stereographic shader
       if (allskyTex) {
@@ -555,19 +628,28 @@ export function HipsBackground({
         gl.bindTexture(gl.TEXTURE_2D, allskyTex);
         gl.uniform1i(gl.getUniformLocation(allskyProg, 'uAllsky'), 0);
         gl.uniform2f(gl.getUniformLocation(allskyProg, 'uResolution'), targetW, targetH);
-        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uScale'), proj.scale * dpr);
-        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uRa0'), proj.ra0Deg * DEG2RAD);
-        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uDec0'), proj.dec0Deg * DEG2RAD);
-        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uAlt0'), proj.alt0Deg * DEG2RAD);
-        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uAz0'), proj.az0Deg * DEG2RAD);
+        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uScale'), baseProj.scale * dpr);
+        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uRa0'), baseProj.ra0Deg * DEG2RAD);
+        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uDec0'), baseProj.dec0Deg * DEG2RAD);
+        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uAlt0'), baseProj.alt0Deg * DEG2RAD);
+        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uAz0'), baseProj.az0Deg * DEG2RAD);
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uLst'), lstDeg * DEG2RAD);
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uLat'), observer.lat * DEG2RAD);
         gl.uniform1f(
           gl.getUniformLocation(allskyProg, 'uIsHorizontal'),
           view.coordSystem === 'horizontal' ? 1.0 : 0.0
         );
-        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uFlipH'), view.flipH ? 1.0 : 0.0);
-        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uFlipV'), view.flipV ? 1.0 : 0.0);
+        const shaderFlipH = eyepieceSplitActive || fullFlipActive ? (view.flipH ? 1.0 : 0.0) : 0.0;
+        const shaderFlipV = eyepieceSplitActive || fullFlipActive ? (view.flipV ? 1.0 : 0.0) : 0.0;
+        const shaderRotRad =
+          eyepieceSplitActive || fullRotDeg > 0 ? normEpRot * DEG2RAD : 0.0;
+        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uFlipH'), shaderFlipH);
+        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uFlipV'), shaderFlipV);
+        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uRotationRad'), shaderRotRad);
+        gl.uniform1f(
+          gl.getUniformLocation(allskyProg, 'uEyepieceRadius'),
+          eyepieceSplitActive ? epRadiusCss * dpr : 0.0
+        );
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uOpacity'), hips.opacity);
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uThemeMode'), themeModeNum);
 
@@ -594,152 +676,175 @@ export function HipsBackground({
             ? 4
             : 3;
         const nside = 1 << order;
-        const visiblePix = new Set<number>();
-        const gridN = 10;
-        for (let gy = 0; gy <= gridN; gy++) {
-          for (let gx = 0; gx <= gridN; gx++) {
-            const sx = ((gx / gridN) * 1.12 - 0.06) * width;
-            const sy = ((gy / gridN) * 1.12 - 0.06) * height;
-            const eq = unprojectStereographic(sx, sy, proj);
-            if (eq) {
-              visiblePix.add(ang2pixNest(eq.raDeg, eq.decDeg, order));
+
+        const drawTilesForProj = (
+          tileProj: ProjectionParams,
+          clipMode: number,
+          eyepieceBoundsOnly: boolean
+        ) => {
+          const visiblePix = new Set<number>();
+          const gridN = eyepieceBoundsOnly ? 6 : 10;
+          const minX = eyepieceBoundsOnly ? Math.max(0, width / 2 - epRadiusCss * 1.08) : -0.06 * width;
+          const maxX = eyepieceBoundsOnly ? Math.min(width, width / 2 + epRadiusCss * 1.08) : 1.06 * width;
+          const minY = eyepieceBoundsOnly ? Math.max(0, height / 2 - epRadiusCss * 1.08) : -0.06 * height;
+          const maxY = eyepieceBoundsOnly ? Math.min(height, height / 2 + epRadiusCss * 1.08) : 1.06 * height;
+
+          for (let gy = 0; gy <= gridN; gy++) {
+            for (let gx = 0; gx <= gridN; gx++) {
+              const sx = minX + (gx / gridN) * (maxX - minX);
+              const sy = minY + (gy / gridN) * (maxY - minY);
+              const eq = unprojectStereographic(sx, sy, tileProj);
+              if (eq) {
+                visiblePix.add(ang2pixNest(eq.raDeg, eq.decDeg, order));
+              }
             }
           }
-        }
 
-        const nowMs = Date.now();
-        const readyTiles: { ipix: number; tex: WebGLTexture }[] = [];
+          const nowMs = Date.now();
+          const readyTiles: { ipix: number; tex: WebGLTexture }[] = [];
 
-        for (const ipix of visiblePix) {
-          const key = `${hips.survey}_${order}_${ipix}`;
-          let entry = st.tileTextures.get(key);
-          if (!entry) {
-            // Evict oldest tile if cache exceeds limit
-            if (st.tileTextures.size >= MAX_CACHED_TILES) {
-              let oldestKey: string | null = null;
-              let oldestTime = Infinity;
-              for (const [k, v] of st.tileTextures.entries()) {
-                if (v.lastUsed < oldestTime) {
-                  oldestTime = v.lastUsed;
-                  oldestKey = k;
+          for (const ipix of visiblePix) {
+            const key = `${hips.survey}_${order}_${ipix}`;
+            let entry = st.tileTextures.get(key);
+            if (!entry) {
+              if (st.tileTextures.size >= MAX_CACHED_TILES) {
+                let oldestKey: string | null = null;
+                let oldestTime = Infinity;
+                for (const [k, v] of st.tileTextures.entries()) {
+                  if (v.lastUsed < oldestTime) {
+                    oldestTime = v.lastUsed;
+                    oldestKey = k;
+                  }
+                }
+                if (oldestKey) {
+                  const old = st.tileTextures.get(oldestKey);
+                  if (old?.tex) gl.deleteTexture(old.tex);
+                  st.tileTextures.delete(oldestKey);
                 }
               }
-              if (oldestKey) {
-                const old = st.tileTextures.get(oldestKey);
-                if (old?.tex) gl.deleteTexture(old.tex);
-                st.tileTextures.delete(oldestKey);
-              }
-            }
-            entry = { tex: null, status: 'loading', lastUsed: nowMs };
-            st.tileTextures.set(key, entry);
+              entry = { tex: null, status: 'loading', lastUsed: nowMs };
+              st.tileTextures.set(key, entry);
 
-            const dir = Math.floor(ipix / 10000) * 10000;
-            const img = new Image();
-            img.crossOrigin = 'anonymous';
-            img.onload = () => {
-              const cur = glStateRef.current;
-              if (!cur) return;
-              const rec = cur.tileTextures.get(key);
-              if (!rec) return;
-              const tex = uploadTexture(cur.gl, img);
-              if (tex) {
-                rec.tex = tex;
-                rec.status = 'ready';
-                renderTriggerRef.current();
-              } else {
-                rec.status = 'error';
-              }
-            };
-            img.onerror = () => {
-              const rec = glStateRef.current?.tileTextures.get(key);
-              if (rec) rec.status = 'error';
-            };
-            img.src = `${SURVEY_URLS[hips.survey]}/Norder${order}/Dir${dir}/Npix${ipix}.jpg`;
-          } else {
-            entry.lastUsed = nowMs;
-            if (entry.status === 'ready' && entry.tex) {
-              readyTiles.push({ ipix, tex: entry.tex });
-            }
-          }
-        }
-
-        if (readyTiles.length > 0) {
-          gl.useProgram(tileProg);
-          gl.uniform1f(gl.getUniformLocation(tileProg, 'uOpacity'), hips.opacity);
-          gl.uniform1f(gl.getUniformLocation(tileProg, 'uThemeMode'), themeModeNum);
-          gl.uniform1i(gl.getUniformLocation(tileProg, 'uTile'), 0);
-
-          const posLoc = gl.getAttribLocation(tileProg, 'aPos');
-          const uvLoc = gl.getAttribLocation(tileProg, 'aUv');
-          gl.bindBuffer(gl.ARRAY_BUFFER, meshBuf);
-          gl.enableVertexAttribArray(posLoc);
-          gl.enableVertexAttribArray(uvLoc);
-
-          const SUB = 8;
-          const verts = new Float32Array(SUB * SUB * 6 * 4);
-
-          for (const tile of readyTiles) {
-            const { ix, iy, face } = ipix2xyf(tile.ipix, nside);
-            const gridPts: ({ x: number; y: number; u: number; v: number } | null)[][] = [];
-            for (let r = 0; r <= SUB; r++) {
-              const rowPts: ({ x: number; y: number; u: number; v: number } | null)[] = [];
-              const v = r / SUB;
-              for (let c = 0; c <= SUB; c++) {
-                const u = c / SUB;
-                const ang = xyf2angContinuous(ix + v, iy + u, face, nside);
-                const pt = projectStereographicRaw(ang.raDeg, ang.decDeg, proj, -0.2);
-                if (pt && Number.isFinite(pt.x) && Number.isFinite(pt.y)) {
-                  rowPts.push({
-                    x: (pt.x / width) * 2 - 1,
-                    y: 1 - (pt.y / height) * 2,
-                    u,
-                    v,
-                  });
+              const dir = Math.floor(ipix / 10000) * 10000;
+              const img = new Image();
+              img.crossOrigin = 'anonymous';
+              img.onload = () => {
+                const cur = glStateRef.current;
+                if (!cur) return;
+                const rec = cur.tileTextures.get(key);
+                if (!rec) return;
+                const tex = uploadTexture(cur.gl, img);
+                if (tex) {
+                  rec.tex = tex;
+                  rec.status = 'ready';
+                  renderTriggerRef.current();
                 } else {
-                  rowPts.push(null);
+                  rec.status = 'error';
                 }
+              };
+              img.onerror = () => {
+                const rec = glStateRef.current?.tileTextures.get(key);
+                if (rec) rec.status = 'error';
+              };
+              img.src = `${SURVEY_URLS[hips.survey]}/Norder${order}/Dir${dir}/Npix${ipix}.jpg`;
+            } else {
+              entry.lastUsed = nowMs;
+              if (entry.status === 'ready' && entry.tex) {
+                readyTiles.push({ ipix, tex: entry.tex });
               }
-              gridPts.push(rowPts);
-            }
-
-            let ptr = 0;
-            for (let r = 0; r < SUB; r++) {
-              for (let c = 0; c < SUB; c++) {
-                const p00 = gridPts[r][c];
-                const p10 = gridPts[r][c + 1];
-                const p01 = gridPts[r + 1][c];
-                const p11 = gridPts[r + 1][c + 1];
-                if (!p00 || !p10 || !p01 || !p11) continue;
-                // Skip degenerate wrap-around quads
-                if (
-                  Math.abs(p10.x - p00.x) > 1.8 ||
-                  Math.abs(p01.x - p00.x) > 1.8 ||
-                  Math.abs(p11.y - p00.y) > 1.8
-                ) {
-                  continue;
-                }
-                const tri = [p00, p10, p01, p01, p10, p11];
-                for (const p of tri) {
-                  verts[ptr++] = p.x;
-                  verts[ptr++] = p.y;
-                  verts[ptr++] = p.u;
-                  verts[ptr++] = p.v;
-                }
-              }
-            }
-
-            if (ptr > 0) {
-              gl.activeTexture(gl.TEXTURE0);
-              gl.bindTexture(gl.TEXTURE_2D, tile.tex);
-              gl.bufferData(gl.ARRAY_BUFFER, verts.subarray(0, ptr), gl.DYNAMIC_DRAW);
-              gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 16, 0);
-              gl.vertexAttribPointer(uvLoc, 2, gl.FLOAT, false, 16, 8);
-              gl.drawArrays(gl.TRIANGLES, 0, ptr / 4);
             }
           }
 
-          gl.disableVertexAttribArray(posLoc);
-          gl.disableVertexAttribArray(uvLoc);
+          if (readyTiles.length > 0) {
+            gl.useProgram(tileProg);
+            gl.uniform2f(gl.getUniformLocation(tileProg, 'uResolution'), targetW, targetH);
+            gl.uniform1f(
+              gl.getUniformLocation(tileProg, 'uEyepieceRadius'),
+              eyepieceSplitActive ? epRadiusCss * dpr : 0.0
+            );
+            gl.uniform1f(gl.getUniformLocation(tileProg, 'uClipMode'), clipMode);
+            gl.uniform1f(gl.getUniformLocation(tileProg, 'uOpacity'), hips.opacity);
+            gl.uniform1f(gl.getUniformLocation(tileProg, 'uThemeMode'), themeModeNum);
+            gl.uniform1i(gl.getUniformLocation(tileProg, 'uTile'), 0);
+
+            const posLoc = gl.getAttribLocation(tileProg, 'aPos');
+            const uvLoc = gl.getAttribLocation(tileProg, 'aUv');
+            gl.bindBuffer(gl.ARRAY_BUFFER, meshBuf);
+            gl.enableVertexAttribArray(posLoc);
+            gl.enableVertexAttribArray(uvLoc);
+
+            const SUB = 8;
+            const verts = new Float32Array(SUB * SUB * 6 * 4);
+
+            for (const tile of readyTiles) {
+              const { ix, iy, face } = ipix2xyf(tile.ipix, nside);
+              const gridPts: ({ x: number; y: number; u: number; v: number } | null)[][] = [];
+              for (let r = 0; r <= SUB; r++) {
+                const rowPts: ({ x: number; y: number; u: number; v: number } | null)[] = [];
+                const v = r / SUB;
+                for (let c = 0; c <= SUB; c++) {
+                  const u = c / SUB;
+                  const ang = xyf2angContinuous(ix + v, iy + u, face, nside);
+                  const pt = projectStereographicRaw(ang.raDeg, ang.decDeg, tileProj, -0.2);
+                  if (pt && Number.isFinite(pt.x) && Number.isFinite(pt.y)) {
+                    rowPts.push({
+                      x: (pt.x / width) * 2 - 1,
+                      y: 1 - (pt.y / height) * 2,
+                      u,
+                      v,
+                    });
+                  } else {
+                    rowPts.push(null);
+                  }
+                }
+                gridPts.push(rowPts);
+              }
+
+              let ptr = 0;
+              for (let r = 0; r < SUB; r++) {
+                for (let c = 0; c < SUB; c++) {
+                  const p00 = gridPts[r][c];
+                  const p10 = gridPts[r][c + 1];
+                  const p01 = gridPts[r + 1][c];
+                  const p11 = gridPts[r + 1][c + 1];
+                  if (!p00 || !p10 || !p01 || !p11) continue;
+                  if (
+                    Math.abs(p10.x - p00.x) > 1.8 ||
+                    Math.abs(p01.x - p00.x) > 1.8 ||
+                    Math.abs(p11.y - p00.y) > 1.8
+                  ) {
+                    continue;
+                  }
+                  const tri = [p00, p10, p01, p01, p10, p11];
+                  for (const p of tri) {
+                    verts[ptr++] = p.x;
+                    verts[ptr++] = p.y;
+                    verts[ptr++] = p.u;
+                    verts[ptr++] = p.v;
+                  }
+                }
+              }
+
+              if (ptr > 0) {
+                gl.activeTexture(gl.TEXTURE0);
+                gl.bindTexture(gl.TEXTURE_2D, tile.tex);
+                gl.bufferData(gl.ARRAY_BUFFER, verts.subarray(0, ptr), gl.DYNAMIC_DRAW);
+                gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 16, 0);
+                gl.vertexAttribPointer(uvLoc, 2, gl.FLOAT, false, 16, 8);
+                gl.drawArrays(gl.TRIANGLES, 0, ptr / 4);
+              }
+            }
+
+            gl.disableVertexAttribArray(posLoc);
+            gl.disableVertexAttribArray(uvLoc);
+          }
+        };
+
+        if (eyepieceSplitActive) {
+          drawTilesForProj(unflippedProj, 1.0, false);
+          drawTilesForProj(flippedProj, 2.0, true);
+        } else {
+          drawTilesForProj(baseProj, 0.0, false);
         }
       }
     };
@@ -752,6 +857,9 @@ export function HipsBackground({
     hips.survey,
     hips.opacity,
     view,
+    optics.showEyepiece,
+    optics.eyepieceFovDeg,
+    optics.eyepieceRotationDeg,
     observer.timestampMs,
     observer.lat,
     observer.lon,

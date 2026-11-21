@@ -218,7 +218,7 @@ export function TimeControlBar({
       className={`no-print shrink-0 border-t px-3 py-1.5 flex flex-col items-center justify-center gap-1 select-none ${barCls}`}
     >
       {/* Top centered live/simulated clock readout */}
-      <div className="flex items-center justify-center font-mono text-xs font-semibold tabular-nums tracking-wide">
+      <div className="flex items-center justify-center font-mono text-[15px] sm:text-base font-bold tabular-nums tracking-wider leading-tight">
         <span className={clockCls}>{formatClockIso(displayMs)}</span>
       </div>
 
@@ -232,8 +232,8 @@ export function TimeControlBar({
           aria-label="1일 전 (-1D)"
           className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepBackBtnCls}`}
         >
-          <CalendarMinus2 className="w-3 h-3 opacity-85 shrink-0" />
-          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">-1D</span>
+          <CalendarMinus2 className="w-3.5 h-3.5 opacity-85 shrink-0" />
+          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">-1D</span>
         </button>
         <button
           type="button"
@@ -242,8 +242,8 @@ export function TimeControlBar({
           aria-label="1시간 전 (-1H)"
           className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepBackBtnCls}`}
         >
-          <Clock className="w-3 h-3 opacity-85 shrink-0" />
-          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">-1H</span>
+          <Clock className="w-3.5 h-3.5 opacity-85 shrink-0" />
+          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">-1H</span>
         </button>
         <button
           type="button"
@@ -252,8 +252,8 @@ export function TimeControlBar({
           aria-label="1분 전 (-1M)"
           className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepBackBtnCls}`}
         >
-          <Timer className="w-3 h-3 opacity-85 shrink-0" />
-          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">-1M</span>
+          <Timer className="w-3.5 h-3.5 opacity-85 shrink-0" />
+          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">-1M</span>
         </button>
 
         {/* Inner Bordered Playback Capsule: [<<] [▶/⏸] [↺] [>>] */}
@@ -313,8 +313,8 @@ export function TimeControlBar({
           aria-label="1분 후 (+1M)"
           className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepFwdBtnCls}`}
         >
-          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">+1M</span>
-          <Timer className="w-3 h-3 opacity-85 shrink-0" />
+          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">+1M</span>
+          <Timer className="w-3.5 h-3.5 opacity-85 shrink-0" />
         </button>
         <button
           type="button"
@@ -323,8 +323,8 @@ export function TimeControlBar({
           aria-label="1시간 후 (+1H)"
           className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepFwdBtnCls}`}
         >
-          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">+1H</span>
-          <Clock className="w-3 h-3 opacity-85 shrink-0" />
+          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">+1H</span>
+          <Clock className="w-3.5 h-3.5 opacity-85 shrink-0" />
         </button>
         <button
           type="button"
@@ -333,15 +333,15 @@ export function TimeControlBar({
           aria-label="1일 후 (+1D)"
           className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepFwdBtnCls}`}
         >
-          <span className="font-mono text-[10px] font-semibold tabular-nums leading-none">+1D</span>
-          <CalendarPlus2 className="w-3 h-3 opacity-85 shrink-0" />
+          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">+1D</span>
+          <CalendarPlus2 className="w-3.5 h-3.5 opacity-85 shrink-0" />
         </button>
 
         {/* Fixed-width right-aligned slot so speed badge expands strictly leftward without shifting any buttons */}
-        <div className="w-[132px] shrink-0 flex items-center justify-end ml-1">
+        <div className="w-[144px] shrink-0 flex items-center justify-end ml-1">
           <div
             title="현재 시간 가감속 배율 (<< / >> 버튼으로 조절)"
-            className={`h-7 px-2.5 rounded-md border flex items-center justify-center font-mono text-[11px] font-semibold tabular-nums whitespace-nowrap transition-opacity ${speedBadgeCls} ${
+            className={`h-7 px-2.5 rounded-md border flex items-center justify-center font-mono text-xs font-semibold tabular-nums whitespace-nowrap transition-opacity ${speedBadgeCls} ${
               observer.isPlaying ? 'opacity-100' : 'opacity-85'
             }`}
           >

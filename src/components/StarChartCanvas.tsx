@@ -13,6 +13,7 @@ import {
   HipsSettings,
   LayerSettings,
   ObserverConfig,
+  ObservingSessionEntry,
   OpticsSettings,
   ScreenTarget,
   SelectedItem,
@@ -27,6 +28,7 @@ import {
   getCompassDirection,
   getDsoTypeLabel,
   getLSTDeg,
+  getStereographicRadiusPx,
   RAD2DEG,
   unprojectStereographic,
 } from '../utils/astronomy';
@@ -48,11 +50,15 @@ interface StarChartCanvasProps {
   hips: HipsSettings;
   catalogs: CatalogSnapshot;
   selected: SelectedItem | null;
+  centerLocked?: boolean;
+  solarTrails?: Record<string, number>;
   sessionIds: Set<string>;
+  sessionPlan: ObservingSessionEntry[];
   leftDrawerOpen?: boolean;
   rightDrawerOpen?: boolean;
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
   onSelect: (item: SelectedItem | null) => void;
+  onUnlockCenter?: () => void;
 }
 
 const MIN_FSZ_DEG = 0.008;
@@ -68,11 +74,15 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       hips,
       catalogs,
       selected,
+      centerLocked = false,
+      solarTrails,
       sessionIds,
+      sessionPlan,
       leftDrawerOpen = false,
       rightDrawerOpen = false,
       onChangeView,
       onSelect,
+      onUnlockCenter,
     },
     ref
   ) {
@@ -92,6 +102,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       startY: number;
       moved: boolean;
       startView: ChartViewState;
+      startRotationDeg: number;
     } | null>(null);
 
     const cancelCenterAnim = useCallback(() => {
@@ -177,7 +188,9 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           catalogs,
           selected,
           hoveredTarget?.id ?? null,
-          sessionIds
+          sessionIds,
+          solarTrails,
+          sessionPlan
         );
         targetsRef.current = result.targets;
         setRenderStats({
@@ -202,6 +215,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       selected,
       hoveredTarget?.id,
       sessionIds,
+      sessionPlan,
+      solarTrails,
       planetTexRev,
     ]);
 
@@ -303,15 +318,46 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     const obsTimeMs = observer.timestampMs;
     const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
 
+    const getEffectiveTransformAtPoint = (
+      x: number,
+      y: number,
+      baseView: ChartViewState
+    ): { view: ChartViewState; rotationDeg: number } => {
+      if (!optics.showEyepiece) {
+        return { view: baseView, rotationDeg: 0 };
+      }
+      const normRot = ((optics.eyepieceRotationDeg % 360) + 360) % 360;
+      const rotActive = normRot > 0.05 && normRot < 359.95;
+      if (!baseView.flipH && !baseView.flipV && !rotActive) {
+        return { view: baseView, rotationDeg: 0 };
+      }
+      const rPx = getStereographicRadiusPx(
+        optics.eyepieceFovDeg,
+        baseView.fsz,
+        size.width,
+        size.height
+      );
+      const dist = Math.hypot(x - size.width / 2, y - size.height / 2);
+      if (rPx >= 3 && dist <= rPx) {
+        return { view: baseView, rotationDeg: normRot };
+      }
+      return { view: { ...baseView, flipH: false, flipV: false }, rotationDeg: 0 };
+    };
+
     const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
       cancelCenterAnim();
       e.currentTarget.setPointerCapture(e.pointerId);
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const eff = getEffectiveTransformAtPoint(x, y, view);
       dragRef.current = {
         active: true,
         startX: e.clientX,
         startY: e.clientY,
         moved: false,
-        startView: { ...view },
+        startView: { ...eff.view },
+        startRotationDeg: eff.rotationDeg,
       };
     };
 
@@ -321,7 +367,15 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       const y = e.clientY - rect.top;
       setPointerScreen({ x, y });
 
-      const proj = createProjectionParams(view, size.width, size.height, lstDeg, observer.lat);
+      const eff = getEffectiveTransformAtPoint(x, y, view);
+      const proj = createProjectionParams(
+        eff.view,
+        size.width,
+        size.height,
+        lstDeg,
+        observer.lat,
+        eff.rotationDeg
+      );
       setPointerEq(unprojectStereographic(x, y, proj));
 
       const drag = dragRef.current;
@@ -329,7 +383,10 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         const dx = e.clientX - drag.startX;
         const dy = e.clientY - drag.startY;
         if (Math.hypot(dx, dy) > 4) {
-          drag.moved = true;
+          if (!drag.moved) {
+            drag.moved = true;
+            onUnlockCenter?.();
+          }
         }
         if (drag.moved) {
           const startProj = createProjectionParams(
@@ -337,7 +394,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             size.width,
             size.height,
             lstDeg,
-            observer.lat
+            observer.lat,
+            drag.startRotationDeg
           );
           const nextCenter = unprojectStereographic(
             size.width / 2 - dx,
@@ -442,6 +500,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         <HipsBackground
           hips={hips}
           view={view}
+          optics={optics}
           observer={observer}
           theme={theme}
           width={size.width}
@@ -486,6 +545,21 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                 <span aria-hidden="true" className={ui.textMuted}>·</span>
                 <span className={ui.accentText}>
                   고도 ≥{observer.minAltitudeDeg}° ({observer.highlightAboveMinAlt ? '흐림' : '숨김'})
+                </span>
+              </>
+            )}
+            {centerLocked && selected && (
+              <>
+                <span aria-hidden="true" className={ui.textMuted}>·</span>
+                <span className={ui.accentText}>
+                  중심 추적:{' '}
+                  {selected.kind === 'dso'
+                    ? selected.data.koName || selected.data.id
+                    : selected.kind === 'planet'
+                    ? selected.data.koName
+                    : selected.kind === 'double'
+                    ? selected.data.koName || selected.data.name || selected.data.disc
+                    : selected.data.koName || selected.data.name || selected.data.bayer || selected.data.id}
                 </span>
               </>
             )}
@@ -574,7 +648,11 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           <button
             type="button"
             onClick={() => onChangeView((p) => ({ ...p, flipH: !p.flipH }))}
-            title="좌우 반전 (천정미러/굴절망원경)"
+            title={
+              optics.showEyepiece
+                ? '좌우 반전 — 망원경 아이피스 원 내부만 적용 중'
+                : '좌우 반전 (천정미러/굴절망원경 · 전체 성도)'
+            }
             className={`px-2 py-2 border text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               view.flipH ? ui.buttonActive : ui.buttonIdle
             }`}
@@ -586,7 +664,11 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           <button
             type="button"
             onClick={() => onChangeView((p) => ({ ...p, flipV: !p.flipV }))}
-            title="상하 반전 (반사망원경 도립상)"
+            title={
+              optics.showEyepiece
+                ? '상하 반전 — 망원경 아이피스 원 내부만 적용 중'
+                : '상하 반전 (반사망원경 도립상 · 전체 성도)'
+            }
             className={`px-2 py-2 border text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               view.flipV ? ui.buttonActive : ui.buttonIdle
             }`}

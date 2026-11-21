@@ -19,6 +19,9 @@ import {
   DeepSkyObject,
   DoubleStarSystem,
   DsoType,
+  EquipmentCategory,
+  EquipmentItem,
+  EquipmentLockerState,
   HipsSettings,
   HipsSurveyId,
   LayerSettings,
@@ -29,9 +32,15 @@ import {
   Star,
   ThemeMode,
 } from '../types/astronomy';
-import { equatorialToHorizontal, getLSTDeg } from '../utils/astronomy';
+import {
+  equatorialToHorizontal,
+  getDsoLimitingMagnitude,
+  getLimitingMagnitude,
+  getLSTDeg,
+} from '../utils/astronomy';
 import { getSolarSystemBodies } from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
+import { EquipmentLockerPanel } from './EquipmentLockerPanel';
 
 type SidebarTab = 'explore' | 'layers' | 'optics' | 'observer';
 type ExploreCategory = 'all' | 'messier' | 'caldwell' | 'ngcic' | 'solar' | 'constellation';
@@ -95,6 +104,8 @@ interface ControlSidebarProps {
   hips: HipsSettings;
   catalogs: CatalogSnapshot;
   selected: SelectedItem | null;
+  equipmentLocker: EquipmentLockerState;
+  sessionPlanCount: number;
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
   onChangeLayers: (updater: (prev: LayerSettings) => LayerSettings) => void;
   onChangeOptics: (updater: (prev: OpticsSettings) => OpticsSettings) => void;
@@ -102,6 +113,10 @@ interface ControlSidebarProps {
   onChangeHips: (updater: (prev: HipsSettings) => HipsSettings) => void;
   onSelect: (item: SelectedItem) => void;
   onSearchActiveChange: (active: boolean) => void;
+  onAddOrUpdateEquipment: (item: EquipmentItem) => void;
+  onDeleteEquipment: (id: string) => void;
+  onToggleActiveEquipment: (category: EquipmentCategory, id: string) => void;
+  onImportEquipmentLocker: (imported: EquipmentLockerState) => void;
 }
 
 function formatCompactRaDec(raDeg: number, decDeg: number): string {
@@ -159,6 +174,8 @@ export function ControlSidebar({
   hips,
   catalogs,
   selected,
+  equipmentLocker,
+  sessionPlanCount,
   onChangeView,
   onChangeLayers,
   onChangeOptics,
@@ -166,6 +183,10 @@ export function ControlSidebar({
   onChangeHips,
   onSelect,
   onSearchActiveChange,
+  onAddOrUpdateEquipment,
+  onDeleteEquipment,
+  onToggleActiveEquipment,
+  onImportEquipmentLocker,
 }: ControlSidebarProps) {
   const [tab, setTab] = useState<SidebarTab>('explore');
   const [exploreCategory, setExploreCategory] = useState<ExploreCategory>('all');
@@ -644,7 +665,15 @@ export function ControlSidebar({
       body.id === 'Sun' || body.id === 'Moon'
         ? 24
         : body.group === 'moon'
-        ? 0.9
+        ? body.parentId === 'Pluto'
+          ? 0.015
+          : body.parentId === 'Mars' ||
+            body.parentId === 'Uranus' ||
+            body.parentId === 'Neptune'
+          ? 0.06
+          : body.parentId === 'Saturn'
+          ? 0.35
+          : 0.9
         : body.group === 'dwarf' || body.group === 'asteroid'
         ? 10
         : 18;
@@ -1257,54 +1286,48 @@ export function ControlSidebar({
               ) : (
                 filteredSolar.map((body) => {
                   const isActive = selected?.kind === 'planet' && selected.data.id === body.id;
+                  const isNestedMoon =
+                    solarGroupFilter === 'all' && body.group === 'moon' && body.id !== 'Moon';
                   const hz = equatorialToHorizontal(body.ra, body.dec, lstDeg, observer.lat);
                   return (
-                    <button
-                      key={body.id}
-                      type="button"
-                      onClick={() => {
-                        setActiveConAbbr(null);
-                        const targetFsz =
-                          body.id === 'Sun' || body.id === 'Moon'
-                            ? 24
-                            : body.group === 'moon'
-                            ? 0.9
-                            : body.group === 'dwarf' || body.group === 'asteroid'
-                            ? 10
-                            : 18;
-                        onChangeView((p) => ({
-                          ...p,
-                          ra: ((body.ra / 15) % 24 + 24) % 24,
-                          dec: body.dec,
-                          fsz: targetFsz,
-                        }));
-                        onSelect({ kind: 'planet', data: body });
-                      }}
-                      className={`w-full text-left px-2 py-2 border rounded-lg transition-colors ${
-                        isActive ? cardActiveCls : cardIdleCls
-                      }`}
-                    >
-                      <div className="flex items-center justify-between gap-1">
-                        <div className="flex items-center gap-1 min-w-0">
-                          <span className={`font-mono font-bold shrink-0 ${ui.accentText}`}>
-                            {body.symbol}
-                          </span>
-                          <span className={`font-semibold truncate tracking-[-0.04em] ${ui.textPrimary}`}>
-                            {body.koName}
-                          </span>
-                          <span className={`text-[10px] truncate tracking-[-0.04em] ${ui.textMuted}`}>
-                            {body.name}
+                    <div key={body.id} className={isNestedMoon ? 'pl-3' : undefined}>
+                      <button
+                        type="button"
+                        onClick={() => jumpToPlanet(body)}
+                        className={`w-full text-left px-2 border rounded-lg transition-colors ${
+                          isNestedMoon ? 'py-1.5' : 'py-2'
+                        } ${isActive ? cardActiveCls : cardIdleCls}`}
+                      >
+                        <div className="flex items-center justify-between gap-1">
+                          <div className="flex items-center gap-1 min-w-0">
+                            {isNestedMoon && (
+                              <span
+                                aria-hidden="true"
+                                className={`font-mono text-[10px] shrink-0 ${ui.textMuted}`}
+                              >
+                                └
+                              </span>
+                            )}
+                            <span className={`font-mono font-bold shrink-0 ${ui.accentText}`}>
+                              {body.symbol}
+                            </span>
+                            <span className={`font-semibold truncate tracking-[-0.04em] ${ui.textPrimary}`}>
+                              {body.koName}
+                            </span>
+                            <span className={`text-[10px] truncate tracking-[-0.04em] ${ui.textMuted}`}>
+                              {body.name}
+                            </span>
+                          </div>
+                          <span className={`font-mono text-[10px] tracking-[-0.04em] tabular-nums shrink-0 ${ui.textMuted}`}>
+                            {body.mag.toFixed(1)}m
                           </span>
                         </div>
-                        <span className={`font-mono text-[10px] tracking-[-0.04em] tabular-nums shrink-0 ${ui.textMuted}`}>
-                          {body.mag.toFixed(1)}m
-                        </span>
-                      </div>
-                      <div className={`mt-0.5 font-mono text-[10px] tracking-[-0.05em] tabular-nums truncate ${ui.textMuted}`}>
-                        {body.category} · 고도 {hz.altDeg.toFixed(1)}° ·{' '}
-                        {formatCompactRaDec(body.ra, body.dec)}
-                      </div>
-                    </button>
+                        <div className={`mt-0.5 font-mono text-[10px] tracking-[-0.05em] tabular-nums truncate ${ui.textMuted}`}>
+                          {body.category} · 고도 {hz.altDeg.toFixed(1)}° ·{' '}
+                          {formatCompactRaDec(body.ra, body.dec)}
+                        </div>
+                      </button>
+                    </div>
                   );
                 })
               ))}
@@ -1362,8 +1385,72 @@ export function ControlSidebar({
 
         {tab === 'layers' && (
           <>
+            {/* 0. 관측 목록 강조 모드 (Observing List Highlight Mode) */}
+            <div
+              className={`p-2 border space-y-1 transition-colors ${
+                layers.highlightSessionPlan
+                  ? theme === 'white'
+                    ? 'bg-amber-50 border-amber-300'
+                    : theme === 'red'
+                    ? 'bg-[#1D0404] border-[#7F1D1D]'
+                    : 'bg-[#1A1408] border-[#784A12]'
+                  : ui.border
+              }`}
+              style={{ borderRadius: '6px' }}
+            >
+              <label className="flex items-center justify-between gap-1.5 cursor-pointer">
+                <span className="flex items-center gap-1.5 min-w-0">
+                  <Target
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      layers.highlightSessionPlan
+                        ? theme === 'red'
+                          ? 'text-[#FF3B3B]'
+                          : 'text-amber-400'
+                        : ui.textMuted
+                    }`}
+                  />
+                  <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                    관측 목록 강조 모드
+                  </span>
+                </span>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <span
+                    className={`font-mono text-[9.5px] tabular-nums whitespace-nowrap ${
+                      layers.highlightSessionPlan
+                        ? theme === 'red'
+                          ? 'text-[#FF4D4D]'
+                          : theme === 'white'
+                          ? 'text-amber-700'
+                          : 'text-amber-400'
+                        : ui.textMuted
+                    }`}
+                  >
+                    {sessionPlanCount}개
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={layers.highlightSessionPlan}
+                    onChange={(e) =>
+                      onChangeLayers((p) => ({
+                        ...p,
+                        highlightSessionPlan: e.target.checked,
+                      }))
+                    }
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      theme === 'red' ? 'accent-red-600' : 'accent-amber-500'
+                    }`}
+                  />
+                </div>
+              </label>
+              <p className={`text-[9.5px] tracking-[-0.04em] leading-snug break-keep ${ui.textMuted}`}>
+                {sessionPlanCount > 0
+                  ? '관측 목록에 담긴 천체(별·행성·이중성·DSO)를 성도 위에 번호·이중 링·배지 라벨로 눈에 띄게 강조합니다.'
+                  : '활성화 후 관측 목록에 대상을 추가하거나 .skylist를 불러오면 성도 위에 번호·링으로 강조 표시됩니다.'}
+              </p>
+            </div>
+
             {/* 1. 별자리 (Constellations) */}
-            <div className="space-y-1.5">
+            <div className={`pt-3.5 border-t ${ui.divider} space-y-1.5`}>
               <div className="flex items-center justify-between gap-1">
                 <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
                   별자리 (Constellations)
@@ -1426,33 +1513,38 @@ export function ControlSidebar({
                 />
               </label>
 
-              {(layers.showConstellationLines || layers.showConstellationNames) && (
-                <div className="pl-2 pb-0.5 space-y-0.5">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
-                      별자리선 · 이름 진하기
-                    </span>
-                    <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
-                      {Math.round(layers.constellationLineOpacity * 100)}%
-                    </span>
-                  </div>
-                  <input
-                    type="range"
-                    min={0.05}
-                    max={1}
-                    step={0.05}
-                    value={layers.constellationLineOpacity}
-                    onChange={(e) =>
-                      onChangeLayers((p) => ({
-                        ...p,
-                        constellationLineOpacity: Number(e.target.value),
-                      }))
-                    }
-                    aria-label="별자리선 및 이름 진하기"
-                    className="w-full h-1.5 accent-cyan-500 cursor-pointer"
-                  />
+              <div
+                className={`pl-2 pb-0.5 space-y-0.5 transition-opacity ${
+                  layers.showConstellationLines ? '' : 'opacity-45 cursor-not-allowed'
+                }`}
+              >
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                    별자리선 · 이름 진하기
+                  </span>
+                  <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                    {Math.round(layers.constellationLineOpacity * 100)}%
+                  </span>
                 </div>
-              )}
+                <input
+                  type="range"
+                  min={0.05}
+                  max={1}
+                  step={0.05}
+                  disabled={!layers.showConstellationLines}
+                  value={layers.constellationLineOpacity}
+                  onChange={(e) =>
+                    onChangeLayers((p) => ({
+                      ...p,
+                      constellationLineOpacity: Number(e.target.value),
+                    }))
+                  }
+                  aria-label="별자리선 및 이름 진하기"
+                  className={`w-full h-1.5 accent-cyan-500 ${
+                    layers.showConstellationLines ? 'cursor-pointer' : 'cursor-not-allowed'
+                  }`}
+                />
+              </div>
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -1791,14 +1883,15 @@ export function ControlSidebar({
                           : `≥ ${layers.doubleStarMinSepArcsec}″`}
                       </span>
                     </div>
-                    <div className="grid grid-cols-5 gap-0.5">
+                    <div className="grid grid-cols-6 gap-0.5">
                       {(
                         [
                           [0, '전체'],
                           [1, '1″+'],
-                          [2, '2″+'],
                           [5, '5″+'],
                           [10, '10″+'],
+                          [20, '20″+'],
+                          [30, '30″+'],
                         ] as const
                       ).map(([val, lbl]) => (
                         <button
@@ -1807,7 +1900,7 @@ export function ControlSidebar({
                           onClick={() =>
                             onChangeLayers((p) => ({ ...p, doubleStarMinSepArcsec: val }))
                           }
-                          className={`py-1 px-0.5 border text-[9.5px] font-mono tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 ${
+                          className={`py-1 px-0.5 border text-[9px] font-mono tracking-[-0.06em] font-medium whitespace-nowrap shrink-0 ${
                             layers.doubleStarMinSepArcsec === val ? ui.buttonActive : ui.buttonIdle
                           }`}
                           style={{ borderRadius: '4px' }}
@@ -1927,7 +2020,9 @@ export function ControlSidebar({
 
                 <label
                   className={`flex items-center justify-between gap-1.5 py-0.5 ${
-                    layers.showDso ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'
+                    layers.showDso || layers.showMessierCatalog || layers.showCaldwellCatalog
+                      ? 'cursor-pointer'
+                      : 'opacity-45 cursor-not-allowed'
                   }`}
                 >
                   <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -1936,7 +2031,11 @@ export function ControlSidebar({
                   <input
                     type="checkbox"
                     checked={layers.showDsoLabels}
-                    disabled={!layers.showDso}
+                    disabled={
+                      !layers.showDso &&
+                      !layers.showMessierCatalog &&
+                      !layers.showCaldwellCatalog
+                    }
                     onChange={(e) =>
                       onChangeLayers((p) => ({ ...p, showDsoLabels: e.target.checked }))
                     }
@@ -1971,6 +2070,59 @@ export function ControlSidebar({
                   </div>
                 )}
 
+                {/* 알려진 심우주 천체 (심우주 천체 비활성화 시에도 독립 표시) */}
+                <div
+                  className={`my-1.5 px-2 py-1.5 border space-y-1 ${ui.border}`}
+                  style={{ borderRadius: '5px' }}
+                >
+                  <div className="flex items-center justify-between gap-1">
+                    <span
+                      className={`text-[10px] font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
+                    >
+                      알려진 심우주 천체
+                    </span>
+                    <span
+                      className={`text-[9px] tracking-[-0.05em] whitespace-nowrap ${ui.textMuted}`}
+                    >
+                      DSO OFF 시에도 표시
+                    </span>
+                  </div>
+
+                  <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
+                    <span className={`text-[10.5px] whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                      메시에 천체 (M1–M110)
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={layers.showMessierCatalog}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          showMessierCatalog: e.target.checked,
+                        }))
+                      }
+                      className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                    />
+                  </label>
+
+                  <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
+                    <span className={`text-[10.5px] whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                      콜드웰 천체 (C1–C109)
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={layers.showCaldwellCatalog}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          showCaldwellCatalog: e.target.checked,
+                        }))
+                      }
+                      className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                    />
+                  </label>
+                </div>
+
                 <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                   <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
                     성운 다단계 등고선 (Contours)
@@ -1998,6 +2150,95 @@ export function ControlSidebar({
                     className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
                   />
                 </label>
+              </div>
+            </div>
+
+            {/* 3.5. 한계등급 기준 (Star & DSO Limiting Magnitude Baseline) */}
+            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
+              <div className="flex items-center justify-between gap-1">
+                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                  한계등급 기준 (Limiting Mag)
+                </span>
+                {(layers.magOffset !== 0 || layers.dsoMagOffset !== 0) && (
+                  <button
+                    type="button"
+                    onClick={() =>
+                      onChangeLayers((p) => ({ ...p, magOffset: 0, dsoMagOffset: 0 }))
+                    }
+                    className={`text-[9.5px] tracking-[-0.05em] whitespace-nowrap opacity-80 hover:opacity-100 ${ui.accentText}`}
+                  >
+                    초기화
+                  </button>
+                )}
+              </div>
+
+              {/* 항성 한계등급 기준 슬라이드바 */}
+              <div className="space-y-0.5">
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                    항성 한계등급
+                  </span>
+                  <span className={`font-mono tabular-nums whitespace-nowrap ${ui.textPrimary}`}>
+                    {getLimitingMagnitude(view.fsz, layers.magOffset).toFixed(1)}m{' '}
+                    <span className={ui.textMuted}>
+                      ({layers.magOffset >= 0 ? `+${layers.magOffset.toFixed(1)}` : layers.magOffset.toFixed(1)})
+                    </span>
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={-3.0}
+                  max={3.0}
+                  step={0.2}
+                  value={layers.magOffset}
+                  onChange={(e) =>
+                    onChangeLayers((p) => ({ ...p, magOffset: Number(e.target.value) }))
+                  }
+                  aria-label="항성 한계등급 기준"
+                  className={`w-full h-1.5 cursor-pointer ${
+                    theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
+                  }`}
+                />
+              </div>
+
+              {/* DSO 한계등급 기준 슬라이드바 */}
+              <div
+                className={`space-y-0.5 transition-opacity ${
+                  layers.showDso ? '' : 'opacity-45 cursor-not-allowed'
+                }`}
+              >
+                <div className="flex items-center justify-between text-[10px]">
+                  <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                    DSO 한계등급
+                  </span>
+                  <span className={`font-mono tabular-nums whitespace-nowrap ${ui.textPrimary}`}>
+                    {layers.showDso ? (
+                      <>
+                        {getDsoLimitingMagnitude(view.fsz, layers.dsoMagOffset).toFixed(1)}m{' '}
+                        <span className={ui.textMuted}>
+                          ({layers.dsoMagOffset >= 0 ? `+${layers.dsoMagOffset.toFixed(1)}` : layers.dsoMagOffset.toFixed(1)})
+                        </span>
+                      </>
+                    ) : (
+                      <span className={ui.textMuted}>OFF</span>
+                    )}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min={-4.0}
+                  max={4.0}
+                  step={0.2}
+                  disabled={!layers.showDso}
+                  value={layers.dsoMagOffset}
+                  onChange={(e) =>
+                    onChangeLayers((p) => ({ ...p, dsoMagOffset: Number(e.target.value) }))
+                  }
+                  aria-label="DSO 한계등급 기준"
+                  className={`w-full h-1.5 ${
+                    theme === 'red' ? 'accent-red-600' : 'accent-emerald-500'
+                  } ${layers.showDso ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+                />
               </div>
             </div>
 
@@ -2158,10 +2399,29 @@ export function ControlSidebar({
 
         {tab === 'optics' && (
           <>
+            {/* My Equipment Locker (내 장비함 · .skylist 통합) */}
+            <EquipmentLockerPanel
+              theme={theme}
+              locker={equipmentLocker}
+              onAddOrUpdateItem={onAddOrUpdateEquipment}
+              onDeleteItem={onDeleteEquipment}
+              onToggleActiveItem={onToggleActiveEquipment}
+              onImportLocker={onImportEquipmentLocker}
+            />
+
             {/* Mirror / Reflector Flip */}
-            <div className="space-y-2">
-              <div className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                광학계 상 반전 (Flip)
+            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
+              <div className="flex items-center justify-between gap-1">
+                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                  광학계 상 반전 (Flip)
+                </span>
+                <span
+                  className={`font-mono text-[9.5px] tracking-[-0.05em] whitespace-nowrap shrink-0 ${
+                    optics.showEyepiece ? ui.accentText : ui.textMuted
+                  }`}
+                >
+                  {optics.showEyepiece ? '아이피스 내부만' : '전체 성도'}
+                </span>
               </div>
               <div className="grid grid-cols-2 gap-1.5">
                 <button
@@ -2185,8 +2445,95 @@ export function ControlSidebar({
                   상하 반전 (반사)
                 </button>
               </div>
+
+              {/* Eyepiece Field Rotation Slider (active in Telescope Eyepiece mode) */}
+              <div
+                className={`pt-1 space-y-1 transition-opacity ${
+                  optics.showEyepiece ? '' : 'opacity-50'
+                }`}
+              >
+                <div className="flex items-center justify-between gap-1 text-[10px]">
+                  <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                    아이피스 시야 회전
+                  </span>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    {optics.showEyepiece ? (
+                      <>
+                        {optics.eyepieceRotationDeg !== 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onChangeOptics((p) => ({ ...p, eyepieceRotationDeg: 0 }))
+                            }
+                            className={`text-[9.5px] tracking-[-0.05em] opacity-80 hover:opacity-100 ${ui.accentText}`}
+                          >
+                            0° 초기화
+                          </button>
+                        )}
+                        <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
+                          {Math.round(optics.eyepieceRotationDeg)}°
+                        </span>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() =>
+                          onChangeOptics((p) => ({ ...p, showEyepiece: true }))
+                        }
+                        className={`text-[9.5px] tracking-[-0.05em] underline underline-offset-2 ${ui.accentText}`}
+                      >
+                        아이피스 켜기
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <input
+                  type="range"
+                  min={0}
+                  max={360}
+                  step={1}
+                  disabled={!optics.showEyepiece}
+                  value={optics.eyepieceRotationDeg}
+                  onChange={(e) =>
+                    onChangeOptics((p) => ({
+                      ...p,
+                      eyepieceRotationDeg: Number(e.target.value),
+                    }))
+                  }
+                  aria-label="아이피스 시야 회전 각도"
+                  className={`w-full h-1.5 ${
+                    theme === 'red' ? 'accent-red-600' : 'accent-amber-500'
+                  } ${optics.showEyepiece ? 'cursor-pointer' : 'cursor-not-allowed'}`}
+                />
+                <div className="grid grid-cols-4 gap-1">
+                  {[0, 90, 180, 270].map((deg) => (
+                    <button
+                      key={deg}
+                      type="button"
+                      disabled={!optics.showEyepiece}
+                      onClick={() =>
+                        onChangeOptics((p) => ({ ...p, eyepieceRotationDeg: deg }))
+                      }
+                      className={`py-0.5 border text-[9.5px] font-mono tabular-nums font-medium transition-colors ${
+                        optics.showEyepiece &&
+                        Math.round(((optics.eyepieceRotationDeg % 360) + 360) % 360) === deg
+                          ? theme === 'red'
+                            ? 'bg-[#7F1D1D] border-[#DC2626] text-[#FF5252]'
+                            : 'bg-amber-500 border-amber-400 text-slate-950'
+                          : ui.buttonIdle
+                      } ${optics.showEyepiece ? '' : 'cursor-not-allowed'}`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      {deg}°
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <p className={`text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
-                천정미러 사용 시 좌우 반전, 뉴턴식 반사망원경(돕소니언)은 상하+좌우 반전을 활성화하면 접안렌즈 상과 일치합니다.
+                {optics.showEyepiece
+                  ? '망원경 아이피스가 켜져 있어 원 내부의 성도·HiPS 사진만 반전·회전되며, 바깥 성도와 라벨 글자는 정방향으로 유지됩니다.'
+                  : '아이피스를 켜면 원 내부만 반전·회전되고, 꺼두면 전체 성도가 반전됩니다. 천정미러는 좌우 반전, 뉴턴식 반사는 상하+좌우 반전을 사용하세요.'}
               </p>
             </div>
 

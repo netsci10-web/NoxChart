@@ -126,6 +126,8 @@ export interface LayerSettings {
   showDoubleStarLabels: boolean;
   doubleStarLabelDensityPct: number; // 0..100
   showDso: boolean;
+  showMessierCatalog: boolean; // 알려진 심우주 천체: 메시에 (M1-M110) 독립 표시
+  showCaldwellCatalog: boolean; // 알려진 심우주 천체: 콜드웰 (C1-C109) 독립 표시
   dsoSymbolDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to render)
   showDsoLabels: boolean;
   dsoLabelDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to label)
@@ -133,9 +135,11 @@ export interface LayerSettings {
   starLabelDensityPct: number; // 0..100 (% of currently visible on-screen stars to label)
   showFieldStars: boolean;
   enableGaiaLive: boolean;
-  magOffset: number; // -2.0 to +2.5 limiting magnitude adjustment
+  magOffset: number; // -3.0 to +3.0 star limiting magnitude adjustment
+  dsoMagOffset: number; // -4.0 to +4.0 DSO limiting magnitude adjustment
   dsoCategories: Record<DsoType, boolean>;
   catalogFilter: 'all' | 'messier' | 'ngc' | 'ic' | 'barnard';
+  highlightSessionPlan: boolean; // 관측 목록 강조 모드
 }
 
 export interface MilkyWayLayer {
@@ -149,6 +153,7 @@ export interface OpticsSettings {
   showFinder7x50: boolean; // 7×50 파인더 (7.0°)
   showEyepiece: boolean;
   eyepieceFovDeg: number; // Custom or calculated circular TFOV in degrees
+  eyepieceRotationDeg: number; // Clockwise rotation angle (0..360°) inside telescope eyepiece circle
   eyepieceLabel: string;
   eyepieceInputMode: 'direct' | 'calc';
   telescopeFocalLengthMm: number; // 망원경 초점거리 (mm)
@@ -225,3 +230,27 @@ export interface StarHopGuide {
   paDeg: number;
   note?: string;
 }
+
+export type EquipmentCategory = 'telescope' | 'eyepiece' | 'barlow' | 'filter' | 'camera';
+
+export interface EquipmentItem {
+  id: string;
+  category: EquipmentCategory;
+  name: string;
+  note?: string;
+  apertureMm?: number;
+  focalLengthMm?: number;
+  opticalType?: string;
+  afovDeg?: number;
+  factor?: number;
+  filterType?: string;
+  sensorWidthMm?: number;
+  sensorHeightMm?: number;
+  pixelSizeUm?: number;
+}
+
+export interface EquipmentLockerState {
+  items: EquipmentItem[];
+  activeIds: Partial<Record<EquipmentCategory, string>>;
+}
+
