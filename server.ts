@@ -113,6 +113,16 @@ async function createServer() {
     res.json({ ok: true });
   });
 
+  app.get('/api/maps-config', (_req, res) => {
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      apiKey:
+        process.env.VITE_GOOGLE_MAPS_API_KEY ||
+        process.env.GOOGLE_MAPS_API_KEY ||
+        '',
+    });
+  });
+
   // Single pre-gzipped core catalog bundle (replaces 7 simultaneous boot fetches)
   app.get('/api/catalogs/core', (req, res) => {
     const asset = getCoreBundleAsset();

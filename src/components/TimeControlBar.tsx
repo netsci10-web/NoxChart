@@ -1,16 +1,25 @@
 import React, { useEffect, useState } from 'react';
 import {
-  CalendarMinus2,
-  CalendarPlus2,
   ChevronsLeft,
   ChevronsRight,
-  Clock,
+  Minus,
   Pause,
   Play,
+  Plus,
   RotateCcw,
-  Timer,
 } from 'lucide-react';
 import { ObserverConfig, ThemeMode } from '../types/astronomy';
+
+type TimeUnit = 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second';
+
+const TIME_UNIT_LABELS: Record<TimeUnit, string> = {
+  year: '년',
+  month: '월',
+  day: '일',
+  hour: '시',
+  minute: '분',
+  second: '초',
+};
 
 const TIME_SPEED_STEPS = [
   -2592000, -864000, -432000, -86400, -14400, -3600, -900, -300, -60, -10, -1,
@@ -33,15 +42,39 @@ function formatTimeRateBadge(rate: number): string {
   return `${sign}x${abs}(${unitText})`;
 }
 
-function formatClockIso(ms: number): string {
-  const d = new Date(ms);
-  const yyyy = d.getFullYear();
-  const mm = String(d.getMonth() + 1).padStart(2, '0');
-  const dd = String(d.getDate()).padStart(2, '0');
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mi = String(d.getMinutes()).padStart(2, '0');
-  const ss = String(d.getSeconds()).padStart(2, '0');
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}:${ss}`;
+function addTimeUnit(baseMs: number, unit: TimeUnit, delta: number): number {
+  const d = new Date(baseMs);
+  switch (unit) {
+    case 'year': {
+      const targetYear = d.getFullYear() + delta;
+      const month = d.getMonth();
+      const origDay = d.getDate();
+      const maxDay = new Date(targetYear, month + 1, 0).getDate();
+      d.setFullYear(targetYear, month, Math.min(origDay, maxDay));
+      return d.getTime();
+    }
+    case 'month': {
+      const origDay = d.getDate();
+      const totalMonths = d.getFullYear() * 12 + d.getMonth() + delta;
+      const targetYear = Math.floor(totalMonths / 12);
+      const targetMonth = ((totalMonths % 12) + 12) % 12;
+      const maxDay = new Date(targetYear, targetMonth + 1, 0).getDate();
+      d.setFullYear(targetYear, targetMonth, Math.min(origDay, maxDay));
+      return d.getTime();
+    }
+    case 'day':
+      d.setDate(d.getDate() + delta);
+      return d.getTime();
+    case 'hour':
+      d.setHours(d.getHours() + delta);
+      return d.getTime();
+    case 'minute':
+      d.setMinutes(d.getMinutes() + delta);
+      return d.getTime();
+    case 'second':
+      d.setSeconds(d.getSeconds() + delta);
+      return d.getTime();
+  }
 }
 
 interface TimeControlBarProps {
@@ -56,6 +89,7 @@ export function TimeControlBar({
   onChangeObserver,
 }: TimeControlBarProps) {
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
+  const [selectedUnit, setSelectedUnit] = useState<TimeUnit>('hour');
 
   // Tick local clock every 1s when live time is active so HH:MM:SS updates smoothly
   useEffect(() => {
@@ -67,14 +101,29 @@ export function TimeControlBar({
     return () => window.clearInterval(id);
   }, [observer.useLiveTime, observer.isPlaying]);
 
-  const displayMs = observer.useLiveTime && !observer.isPlaying ? liveNowMs : observer.timestampMs;
+  const displayMs =
+    observer.useLiveTime && !observer.isPlaying ? liveNowMs : observer.timestampMs;
 
-  const stepTime = (deltaMs: number) => {
-    onChangeObserver((p) => ({
-      ...p,
-      useLiveTime: false,
-      timestampMs: (p.useLiveTime ? Date.now() : p.timestampMs) + deltaMs,
-    }));
+  const d = new Date(displayMs);
+  const parts: { unit: TimeUnit; value: string; sep?: string }[] = [
+    { unit: 'year', value: String(d.getFullYear()), sep: '-' },
+    { unit: 'month', value: String(d.getMonth() + 1).padStart(2, '0'), sep: '-' },
+    { unit: 'day', value: String(d.getDate()).padStart(2, '0'), sep: ' ' },
+    { unit: 'hour', value: String(d.getHours()).padStart(2, '0'), sep: ':' },
+    { unit: 'minute', value: String(d.getMinutes()).padStart(2, '0'), sep: ':' },
+    { unit: 'second', value: String(d.getSeconds()).padStart(2, '0') },
+  ];
+
+  const stepSelectedUnit = (delta: number, unitOverride?: TimeUnit) => {
+    const targetUnit = unitOverride ?? selectedUnit;
+    onChangeObserver((p) => {
+      const baseMs = p.useLiveTime ? Date.now() : p.timestampMs;
+      return {
+        ...p,
+        useLiveTime: false,
+        timestampMs: addTimeUnit(baseMs, targetUnit, delta),
+      };
+    });
   };
 
   const handleResetNow = () => {
@@ -139,23 +188,51 @@ export function TimeControlBar({
       ? 'bg-[#070000] border-[#300808] text-[#DC2626]'
       : 'bg-[#070B14] border-[#1B273D] text-slate-200';
 
-  const clockCls =
+  const clockSegmentIdleCls =
     theme === 'white'
-      ? 'text-blue-700'
+      ? 'text-blue-700 border-transparent hover:bg-blue-50 hover:border-blue-200'
       : theme === 'red'
-      ? 'text-[#FF3B3B]'
-      : 'text-[#22D3EE]';
+      ? 'text-[#FF4D4D] border-transparent hover:bg-[#1E0303] hover:border-[#5A1212]'
+      : 'text-[#22D3EE] border-transparent hover:bg-[#102038] hover:border-[#2A4266]';
 
-  const stepBackBtnCls =
+  const clockSegmentActiveCls =
     theme === 'white'
-      ? 'bg-indigo-50/80 border-indigo-300 text-indigo-700 hover:bg-indigo-100'
+      ? 'bg-blue-600 border-blue-700 text-white shadow-xs'
+      : theme === 'red'
+      ? 'bg-[#6B1212] border-[#EF4444] text-[#FFE0E0]'
+      : 'bg-[#0C354A] border-[#22D3EE] text-white';
+
+  const unitSuffixIdleCls =
+    theme === 'white'
+      ? 'text-slate-400'
+      : theme === 'red'
+      ? 'text-[#A02828]'
+      : 'text-slate-400';
+
+  const unitSuffixActiveCls =
+    theme === 'white'
+      ? 'text-blue-100'
+      : theme === 'red'
+      ? 'text-[#FF9E9E]'
+      : 'text-cyan-200';
+
+  const sepCls =
+    theme === 'white'
+      ? 'text-slate-400'
+      : theme === 'red'
+      ? 'text-[#7A1B1B]'
+      : 'text-slate-500';
+
+  const minusBtnCls =
+    theme === 'white'
+      ? 'bg-indigo-50/90 border-indigo-300 text-indigo-700 hover:bg-indigo-100'
       : theme === 'red'
       ? 'bg-[#170202] border-[#521010] text-[#E04040] hover:bg-[#260505] hover:text-[#FF5A5A]'
       : 'bg-[#121D36] border-[#314E89] text-[#93C5FD] hover:bg-[#19284A] hover:text-[#BFDBFE]';
 
-  const stepFwdBtnCls =
+  const plusBtnCls =
     theme === 'white'
-      ? 'bg-sky-50/80 border-sky-300 text-sky-700 hover:bg-sky-100'
+      ? 'bg-sky-50/90 border-sky-300 text-sky-700 hover:bg-sky-100'
       : theme === 'red'
       ? 'bg-[#1C0303] border-[#6B1515] text-[#F05252] hover:bg-[#2C0606] hover:text-[#FF6B6B]'
       : 'bg-[#0A2234] border-[#0C7BB3] text-[#7DD3FC] hover:bg-[#103048] hover:text-[#BAE6FD]';
@@ -213,50 +290,94 @@ export function TimeControlBar({
       ? 'bg-[#1E0303] border-[#991B1B] text-[#EF4444]'
       : 'bg-[#062420] border-[#0D9488]/80 text-[#34E2A3]';
 
+  const activeUnitLabel = TIME_UNIT_LABELS[selectedUnit];
+
   return (
     <div
       className={`no-print shrink-0 border-t px-3 py-1.5 flex flex-col items-center justify-center gap-1 select-none ${barCls}`}
     >
-      {/* Top centered live/simulated clock readout */}
-      <div className="flex items-center justify-center font-mono text-[15px] sm:text-base font-bold tabular-nums tracking-wider leading-tight">
-        <span className={clockCls}>{formatClockIso(displayMs)}</span>
+      {/* Top Row: [-] [YYYY년 - MM월 - DD일  HH시 : MM분 : SS초] [+] */}
+      <div className="flex items-center justify-center gap-1.5 flex-wrap">
+        <button
+          type="button"
+          onClick={() => stepSelectedUnit(-1)}
+          title={`선택 단위(${activeUnitLabel}) -1`}
+          aria-label={`선택 단위 ${activeUnitLabel} 감소`}
+          className={`h-7 w-7 rounded-md border flex items-center justify-center transition-colors shrink-0 ${minusBtnCls}`}
+        >
+          <Minus className="w-4 h-4 stroke-[2.5]" />
+        </button>
+
+        <div
+          className={`flex items-center px-1.5 py-0.5 rounded-lg border font-mono text-[14px] sm:text-[15px] font-bold tabular-nums leading-tight ${capsuleCls}`}
+          role="group"
+          aria-label="날짜 및 시간 단위 선택"
+        >
+          {parts.map((part) => {
+            const isSelected = selectedUnit === part.unit;
+            const unitLabel = TIME_UNIT_LABELS[part.unit];
+            return (
+              <React.Fragment key={part.unit}>
+                <button
+                  type="button"
+                  onClick={() => setSelectedUnit(part.unit)}
+                  onWheel={(e) => {
+                    e.preventDefault();
+                    setSelectedUnit(part.unit);
+                    stepSelectedUnit(e.deltaY < 0 ? 1 : -1, part.unit);
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === 'ArrowUp' || e.key === '+') {
+                      e.preventDefault();
+                      stepSelectedUnit(1, part.unit);
+                    } else if (e.key === 'ArrowDown' || e.key === '-') {
+                      e.preventDefault();
+                      stepSelectedUnit(-1, part.unit);
+                    }
+                  }}
+                  aria-pressed={isSelected}
+                  title={`${unitLabel} 선택 (클릭 후 +/- 또는 휠로 조절)`}
+                  className={`px-1 py-0.5 rounded border transition-colors inline-flex items-baseline gap-[1px] cursor-pointer ${
+                    isSelected ? clockSegmentActiveCls : clockSegmentIdleCls
+                  }`}
+                >
+                  <span>{part.value}</span>
+                  <span
+                    className={`font-sans text-[10px] font-medium ${
+                      isSelected ? unitSuffixActiveCls : unitSuffixIdleCls
+                    }`}
+                  >
+                    {unitLabel}
+                  </span>
+                </button>
+                {part.sep && (
+                  <span
+                    className={`px-0.5 font-normal ${
+                      part.sep === ' ' ? 'w-1.5 inline-block' : sepCls
+                    }`}
+                    aria-hidden="true"
+                  >
+                    {part.sep === ' ' ? '' : part.sep}
+                  </span>
+                )}
+              </React.Fragment>
+            );
+          })}
+        </div>
+
+        <button
+          type="button"
+          onClick={() => stepSelectedUnit(1)}
+          title={`선택 단위(${activeUnitLabel}) +1`}
+          aria-label={`선택 단위 ${activeUnitLabel} 증가`}
+          className={`h-7 w-7 rounded-md border flex items-center justify-center transition-colors shrink-0 ${plusBtnCls}`}
+        >
+          <Plus className="w-4 h-4 stroke-[2.5]" />
+        </button>
       </div>
 
-      {/* Bottom time step & playback dock + right-anchored leftward-growing speed readout */}
-      <div className="flex items-center justify-center gap-1.5 flex-wrap">
-        {/* Step Back: -1D, -1H, -1M */}
-        <button
-          type="button"
-          onClick={() => stepTime(-86400 * 1000)}
-          title="1일 전 (-1D)"
-          aria-label="1일 전 (-1D)"
-          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepBackBtnCls}`}
-        >
-          <CalendarMinus2 className="w-3.5 h-3.5 opacity-85 shrink-0" />
-          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">-1D</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => stepTime(-3600 * 1000)}
-          title="1시간 전 (-1H)"
-          aria-label="1시간 전 (-1H)"
-          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepBackBtnCls}`}
-        >
-          <Clock className="w-3.5 h-3.5 opacity-85 shrink-0" />
-          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">-1H</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => stepTime(-60 * 1000)}
-          title="1분 전 (-1M)"
-          aria-label="1분 전 (-1M)"
-          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepBackBtnCls}`}
-        >
-          <Timer className="w-3.5 h-3.5 opacity-85 shrink-0" />
-          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">-1M</span>
-        </button>
-
-        {/* Inner Bordered Playback Capsule: [<<] [▶/⏸] [↺] [>>] */}
+      {/* Bottom Row: Playback Capsule [<<] [▶/⏸] [↺] [>>] + Speed Badge */}
+      <div className="flex items-center justify-center gap-2 flex-wrap">
         <div
           className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border shrink-0 ${capsuleCls}`}
         >
@@ -305,40 +426,7 @@ export function TimeControlBar({
           </button>
         </div>
 
-        {/* Step Forward: +1M, +1H, +1D */}
-        <button
-          type="button"
-          onClick={() => stepTime(60 * 1000)}
-          title="1분 후 (+1M)"
-          aria-label="1분 후 (+1M)"
-          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepFwdBtnCls}`}
-        >
-          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">+1M</span>
-          <Timer className="w-3.5 h-3.5 opacity-85 shrink-0" />
-        </button>
-        <button
-          type="button"
-          onClick={() => stepTime(3600 * 1000)}
-          title="1시간 후 (+1H)"
-          aria-label="1시간 후 (+1H)"
-          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepFwdBtnCls}`}
-        >
-          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">+1H</span>
-          <Clock className="w-3.5 h-3.5 opacity-85 shrink-0" />
-        </button>
-        <button
-          type="button"
-          onClick={() => stepTime(86400 * 1000)}
-          title="1일 후 (+1D)"
-          aria-label="1일 후 (+1D)"
-          className={`h-7 px-1.5 rounded-md border flex items-center justify-center gap-1 transition-colors shrink-0 ${stepFwdBtnCls}`}
-        >
-          <span className="font-mono text-[11px] font-semibold tabular-nums leading-none">+1D</span>
-          <CalendarPlus2 className="w-3.5 h-3.5 opacity-85 shrink-0" />
-        </button>
-
-        {/* Fixed-width right-aligned slot so speed badge expands strictly leftward without shifting any buttons */}
-        <div className="w-[144px] shrink-0 flex items-center justify-end ml-1">
+        <div className="w-[144px] shrink-0 flex items-center justify-start">
           <div
             title="현재 시간 가감속 배율 (<< / >> 버튼으로 조절)"
             className={`h-7 px-2.5 rounded-md border flex items-center justify-center font-mono text-xs font-semibold tabular-nums whitespace-nowrap transition-opacity ${speedBadgeCls} ${

@@ -254,3 +254,14 @@ export interface EquipmentLockerState {
   activeIds: Partial<Record<EquipmentCategory, string>>;
 }
 
+export interface SavedObservingSite {
+  id: string;
+  name: string;
+  lat: number;
+  lon: number;
+  note?: string;
+  bortle?: number; // Optional Bortle scale 1..9
+  createdAt: number;
+}
+
+

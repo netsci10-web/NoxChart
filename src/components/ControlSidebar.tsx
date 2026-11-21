@@ -1,14 +1,19 @@
-import React, { useMemo, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
+  BookmarkPlus,
   Compass,
   Crosshair,
+  Download,
   Eye,
   Image,
   Layers,
+  Map as MapIcon,
   MapPin,
   Search,
   SlidersHorizontal,
   Target,
+  Trash2,
+  Upload,
 } from 'lucide-react';
 import { CALDWELL_CATALOG } from '../data/caldwell';
 import { CatalogSnapshot } from '../data/catalogLoader';
@@ -27,6 +32,7 @@ import {
   LayerSettings,
   ObserverConfig,
   OpticsSettings,
+  SavedObservingSite,
   SelectedItem,
   SolarSystemBody,
   Star,
@@ -38,6 +44,13 @@ import {
   getLimitingMagnitude,
   getLSTDeg,
 } from '../utils/astronomy';
+import {
+  clampLat,
+  clampLon,
+  downloadObservingSitesFile,
+  formatCoordsShort,
+  parseObservingSitesFromJson,
+} from '../utils/observingSites';
 import { getSolarSystemBodies } from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
 import { EquipmentLockerPanel } from './EquipmentLockerPanel';
@@ -105,6 +118,7 @@ interface ControlSidebarProps {
   catalogs: CatalogSnapshot;
   selected: SelectedItem | null;
   equipmentLocker: EquipmentLockerState;
+  savedSites: SavedObservingSite[];
   sessionPlanCount: number;
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
   onChangeLayers: (updater: (prev: LayerSettings) => LayerSettings) => void;
@@ -117,6 +131,12 @@ interface ControlSidebarProps {
   onDeleteEquipment: (id: string) => void;
   onToggleActiveEquipment: (category: EquipmentCategory, id: string) => void;
   onImportEquipmentLocker: (imported: EquipmentLockerState) => void;
+  onOpenSiteMap: (focus?: SavedObservingSite | null) => void;
+  onSaveSite: (site: SavedObservingSite) => void;
+  onDeleteSite: (id: string) => void;
+  onImportSites: (
+    sites: SavedObservingSite[]
+  ) => { addedCount: number; updatedCount: number };
 }
 
 function formatCompactRaDec(raDeg: number, decDeg: number): string {
@@ -175,6 +195,7 @@ export function ControlSidebar({
   catalogs,
   selected,
   equipmentLocker,
+  savedSites,
   sessionPlanCount,
   onChangeView,
   onChangeLayers,
@@ -187,6 +208,10 @@ export function ControlSidebar({
   onDeleteEquipment,
   onToggleActiveEquipment,
   onImportEquipmentLocker,
+  onOpenSiteMap,
+  onSaveSite,
+  onDeleteSite,
+  onImportSites,
 }: ControlSidebarProps) {
   const [tab, setTab] = useState<SidebarTab>('explore');
   const [exploreCategory, setExploreCategory] = useState<ExploreCategory>('all');
@@ -196,7 +221,19 @@ export function ControlSidebar({
   >('all');
   const [query, setQuery] = useState('');
   const [activeConAbbr, setActiveConAbbr] = useState<string | null>(null);
+  const [quickSaveOpen, setQuickSaveOpen] = useState(false);
+  const [quickSiteName, setQuickSiteName] = useState('');
+  const [quickSiteNote, setQuickSiteNote] = useState('');
+  const [siteStatusMsg, setSiteStatusMsg] = useState<string | null>(null);
+  const siteFileInputRef = useRef<HTMLInputElement>(null);
   const ui = getUiTheme(theme);
+
+  const showSiteNotice = (msg: string) => {
+    setSiteStatusMsg(msg);
+    window.setTimeout(() => {
+      setSiteStatusMsg((cur) => (cur === msg ? null : cur));
+    }, 3600);
+  };
 
   const obsTimeMs = observer.timestampMs;
   const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
@@ -3047,11 +3084,40 @@ export function ControlSidebar({
 
         {tab === 'observer' && (
           <>
-            {/* Site Location & Presets */}
+            {/* Current Site Summary + Interactive Map Picker */}
             <div className="space-y-2">
-              <div className={`font-semibold flex items-center gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                <Compass className="w-3.5 h-3.5 shrink-0" />
-                <span>관측지 위도 · 경도</span>
+              <div className={`font-semibold flex items-center justify-between gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                <span className="flex items-center gap-1">
+                  <Compass className="w-3.5 h-3.5 shrink-0" />
+                  <span>현재 관측지</span>
+                </span>
+                <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
+                  {formatCoordsShort(observer.lat, observer.lon)}
+                </span>
+              </div>
+
+              <div className={`p-2 border rounded-md space-y-2 ${cardIdleCls}`}>
+                <div className="flex items-center justify-between gap-1.5">
+                  <span className={`text-[11.5px] font-semibold truncate ${ui.textPrimary}`}>
+                    {observer.name}
+                  </span>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => onOpenSiteMap(null)}
+                  className={`w-full py-1.5 px-2 border text-[11px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${
+                    theme === 'white'
+                      ? 'bg-blue-700 hover:bg-blue-800 text-white border-blue-800'
+                      : theme === 'red'
+                      ? 'bg-[#7F1D1D] hover:bg-[#991B1B] text-[#FFE0E0] border-[#B91C1C]'
+                      : 'bg-[#0094B8] hover:bg-[#00A8D0] text-white border-[#06B6D4]'
+                  }`}
+                  style={{ borderRadius: '4px' }}
+                >
+                  <MapIcon className="w-3.5 h-3.5 shrink-0" />
+                  <span>지도에서 관측지 선택</span>
+                </button>
               </div>
 
               <div className="grid grid-cols-2 gap-1.5">
@@ -3063,15 +3129,15 @@ export function ControlSidebar({
                     type="number"
                     min={-90}
                     max={90}
-                    step={0.1}
-                    value={Number(observer.lat.toFixed(3))}
+                    step={0.001}
+                    value={Number(observer.lat.toFixed(4))}
                     onChange={(e) => {
                       const val = parseFloat(e.target.value);
                       if (Number.isFinite(val)) {
                         onChangeObserver((p) => ({
                           ...p,
                           name: '사용자 지정',
-                          lat: Math.max(-90, Math.min(90, val)),
+                          lat: clampLat(val),
                         }));
                       }
                     }}
@@ -3087,15 +3153,15 @@ export function ControlSidebar({
                     type="number"
                     min={-180}
                     max={180}
-                    step={0.1}
-                    value={Number(observer.lon.toFixed(3))}
+                    step={0.001}
+                    value={Number(observer.lon.toFixed(4))}
                     onChange={(e) => {
                       const val = parseFloat(e.target.value);
                       if (Number.isFinite(val)) {
                         onChangeObserver((p) => ({
                           ...p,
                           name: '사용자 지정',
-                          lon: Math.max(-180, Math.min(180, val)),
+                          lon: clampLon(val),
                         }));
                       }
                     }}
@@ -3104,8 +3170,222 @@ export function ControlSidebar({
                   />
                 </div>
               </div>
+            </div>
 
-              <div className="grid grid-cols-1 gap-1 pt-0.5">
+            {/* Saved Observing Sites + Local File Export/Import */}
+            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
+              <div className="flex items-center justify-between gap-1">
+                <div className={`font-semibold flex items-center gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                  <MapPin className="w-3.5 h-3.5 shrink-0" />
+                  <span>내 저장 관측지 ({savedSites.length})</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setQuickSiteName(observer.name === '사용자 지정' ? '' : observer.name);
+                    setQuickSiteNote('');
+                    setQuickSaveOpen((v) => !v);
+                  }}
+                  className={`px-1.5 py-0.5 border text-[10px] font-medium flex items-center gap-0.5 transition-colors ${
+                    quickSaveOpen ? ui.buttonActive : ui.buttonIdle
+                  }`}
+                  style={{ borderRadius: '4px' }}
+                >
+                  <BookmarkPlus className="w-3 h-3 shrink-0" />
+                  <span>현재 저장</span>
+                </button>
+              </div>
+
+              {quickSaveOpen && (
+                <form
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const cleanName =
+                      quickSiteName.trim() ||
+                      `관측지 (${observer.lat.toFixed(3)}, ${observer.lon.toFixed(3)})`;
+                    const newSite: SavedObservingSite = {
+                      id: `site_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+                      name: cleanName,
+                      lat: Number(clampLat(observer.lat).toFixed(6)),
+                      lon: Number(clampLon(observer.lon).toFixed(6)),
+                      note: quickSiteNote.trim() || undefined,
+                      createdAt: Date.now(),
+                    };
+                    onSaveSite(newSite);
+                    onChangeObserver((p) => ({ ...p, name: cleanName }));
+                    setQuickSaveOpen(false);
+                    showSiteNotice(`"${cleanName}" 관측지가 저장되었습니다.`);
+                  }}
+                  className={`p-2 border rounded-md space-y-1.5 ${cardIdleCls}`}
+                >
+                  <input
+                    type="text"
+                    value={quickSiteName}
+                    onChange={(e) => setQuickSiteName(e.target.value)}
+                    placeholder="관측지 이름 (예: 양평 벗고개)"
+                    className={`w-full px-2 py-1 border rounded text-[11px] ${ui.input}`}
+                  />
+                  <input
+                    type="text"
+                    value={quickSiteNote}
+                    onChange={(e) => setQuickSiteNote(e.target.value)}
+                    placeholder="메모 (선택)"
+                    className={`w-full px-2 py-1 border rounded text-[10.5px] ${ui.input}`}
+                  />
+                  <div className="grid grid-cols-2 gap-1">
+                    <button
+                      type="submit"
+                      className={`py-1 px-2 border text-[10.5px] font-semibold ${ui.buttonActive}`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      저장
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setQuickSaveOpen(false)}
+                      className={`py-1 px-2 border text-[10.5px] ${ui.buttonIdle}`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      취소
+                    </button>
+                  </div>
+                </form>
+              )}
+
+              {/* Local File Save / Load Buttons */}
+              <div className="grid grid-cols-2 gap-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (savedSites.length === 0) {
+                      showSiteNotice('저장된 관측지가 없습니다.');
+                      return;
+                    }
+                    downloadObservingSitesFile(savedSites);
+                    showSiteNotice(`${savedSites.length}개 관측지를 .json 파일로 저장했습니다.`);
+                  }}
+                  className={`py-1.5 px-1.5 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors ${ui.buttonIdle}`}
+                  style={{ borderRadius: '4px' }}
+                >
+                  <Download className="w-3 h-3 shrink-0" />
+                  <span>파일 저장</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => siteFileInputRef.current?.click()}
+                  className={`py-1.5 px-1.5 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors ${ui.buttonIdle}`}
+                  style={{ borderRadius: '4px' }}
+                >
+                  <Upload className="w-3 h-3 shrink-0" />
+                  <span>파일 불러오기</span>
+                </button>
+                <input
+                  ref={siteFileInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  onChange={async (e) => {
+                    const file = e.target.files?.[0];
+                    e.target.value = '';
+                    if (!file) return;
+                    try {
+                      const text = await file.text();
+                      const parsed = parseObservingSitesFromJson(text);
+                      if (parsed.error) {
+                        showSiteNotice(parsed.error);
+                        return;
+                      }
+                      const { addedCount, updatedCount } = onImportSites(parsed.sites);
+                      showSiteNotice(
+                        `불러오기 완료: 신규 ${addedCount}개${
+                          updatedCount > 0 ? ` · 갱신 ${updatedCount}개` : ''
+                        }`
+                      );
+                    } catch {
+                      showSiteNotice('파일을 읽는 중 오류가 발생했습니다.');
+                    }
+                  }}
+                  className="hidden"
+                />
+              </div>
+
+              {siteStatusMsg && (
+                <div className={`px-2 py-1 border rounded text-[10px] leading-snug ${cardIdleCls} ${ui.accentText}`}>
+                  {siteStatusMsg}
+                </div>
+              )}
+
+              {savedSites.length === 0 ? (
+                <div className={`px-2 py-2.5 border rounded text-[10px] text-center leading-relaxed ${cardIdleCls} ${ui.textMuted}`}>
+                  저장된 관측지가 없습니다. 지도에서 선택하거나 현재 위치를 저장해 보세요.
+                </div>
+              ) : (
+                <div className="space-y-1 max-h-44 overflow-y-auto astro-scroll pr-0.5">
+                  {savedSites.map((site) => {
+                    const isActive =
+                      observer.name === site.name &&
+                      Math.abs(observer.lat - site.lat) < 0.0005 &&
+                      Math.abs(observer.lon - site.lon) < 0.0005;
+                    return (
+                      <div
+                        key={site.id}
+                        className={`border flex items-center justify-between gap-1 px-1.5 py-1 transition-colors ${
+                          isActive ? ui.buttonActive : ui.buttonIdle
+                        }`}
+                        style={{ borderRadius: '4px' }}
+                      >
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onChangeObserver((p) => ({
+                              ...p,
+                              name: site.name,
+                              lat: site.lat,
+                              lon: site.lon,
+                            }))
+                          }
+                          className="flex-1 text-left min-w-0 py-0.5"
+                        >
+                          <div className="text-[10.5px] font-medium truncate">
+                            {site.name}
+                          </div>
+                          <div className="font-mono text-[9.5px] tabular-nums opacity-75 truncate">
+                            {site.lat.toFixed(3)}°, {site.lon.toFixed(3)}°
+                            {site.bortle ? ` · B${site.bortle}` : ''}
+                          </div>
+                        </button>
+                        <div className="flex items-center gap-0.5 shrink-0">
+                          <button
+                            type="button"
+                            onClick={() => onOpenSiteMap(site)}
+                            title="지도에서 보기 / 편집"
+                            aria-label={`${site.name} 지도에서 보기`}
+                            className="p-1 opacity-75 hover:opacity-100"
+                          >
+                            <MapIcon className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => onDeleteSite(site.id)}
+                            title="삭제"
+                            aria-label={`${site.name} 삭제`}
+                            className="p-1 opacity-70 hover:opacity-100 hover:text-red-400"
+                          >
+                            <Trash2 className="w-3 h-3" />
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+
+            {/* Built-in Observatory Presets */}
+            <div className={`pt-3.5 border-t ${ui.divider} space-y-1.5`}>
+              <div className={`font-semibold text-[10.5px] tracking-[-0.05em] ${ui.textMuted}`}>
+                기본 추천 관측지
+              </div>
+              <div className="grid grid-cols-1 gap-1">
                 {SITE_PRESETS.map((site) => (
                   <button
                     key={site.name}

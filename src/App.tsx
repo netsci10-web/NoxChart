@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { ControlSidebar } from './components/ControlSidebar';
 import { ObjectInspector } from './components/ObjectInspector';
+import { ObservingSiteMapModal } from './components/ObservingSiteMapModal';
 import { StarChartCanvas, StarChartCanvasHandle } from './components/StarChartCanvas';
 import { TimeControlBar } from './components/TimeControlBar';
 import {
@@ -38,6 +39,7 @@ import {
   ObserverConfig,
   ObservingSessionEntry,
   OpticsSettings,
+  SavedObservingSite,
   SelectedItem,
   ThemeMode,
 } from './types/astronomy';
@@ -57,6 +59,11 @@ import {
   parseSkylistObjects,
   resolveSkylistObjects,
 } from './utils/skylist';
+import {
+  ACTIVE_SITE_STORAGE_KEY,
+  mergeObservingSites,
+  SAVED_SITES_STORAGE_KEY,
+} from './utils/observingSites';
 import { getSolarSystemBodies, getSolarSystemDailyTrail } from './utils/solarSystem';
 import { getUiTheme } from './utils/themeClasses';
 
@@ -223,8 +230,50 @@ export default function App() {
     showTerrain: initialUrl.view.coordSystem === 'horizontal',
   }));
   const [optics, setOptics] = useState<OpticsSettings>(DEFAULT_OPTICS);
-  const [observer, setObserver] = useState<ObserverConfig>(DEFAULT_OBSERVER);
+  const [observer, setObserver] = useState<ObserverConfig>(() => {
+    try {
+      const raw = localStorage.getItem(ACTIVE_SITE_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as { name?: string; lat?: number; lon?: number };
+        if (
+          typeof parsed.lat === 'number' &&
+          Number.isFinite(parsed.lat) &&
+          typeof parsed.lon === 'number' &&
+          Number.isFinite(parsed.lon)
+        ) {
+          return {
+            ...DEFAULT_OBSERVER,
+            name: typeof parsed.name === 'string' && parsed.name.trim() ? parsed.name : DEFAULT_OBSERVER.name,
+            lat: Math.max(-90, Math.min(90, parsed.lat)),
+            lon: Math.max(-180, Math.min(180, parsed.lon)),
+            timestampMs: Date.now(),
+          };
+        }
+      }
+    } catch {
+      // Ignore storage parse failure
+    }
+    return DEFAULT_OBSERVER;
+  });
   const [hips, setHips] = useState<HipsSettings>(DEFAULT_HIPS);
+
+  const [savedSites, setSavedSites] = useState<SavedObservingSite[]>(() => {
+    try {
+      const raw = localStorage.getItem(SAVED_SITES_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as SavedObservingSite[];
+        if (Array.isArray(parsed)) return parsed;
+      }
+    } catch {
+      // Ignore storage parse failure
+    }
+    return [];
+  });
+  const savedSitesRef = useRef<SavedObservingSite[]>(savedSites);
+  savedSitesRef.current = savedSites;
+  const [siteMapOpen, setSiteMapOpen] = useState(false);
+  const [siteMapFocus, setSiteMapFocus] = useState<SavedObservingSite | null>(null);
+  const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
 
   const [selected, setSelected] = useState<SelectedItem | null>(null);
   const [centerLocked, setCenterLocked] = useState(false);
@@ -448,6 +497,34 @@ export default function App() {
       // Ignore storage quota errors
     }
   }, [equipmentLocker]);
+
+  // Persist Saved Observing Sites locally
+  useEffect(() => {
+    try {
+      localStorage.setItem(SAVED_SITES_STORAGE_KEY, JSON.stringify(savedSites));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [savedSites]);
+
+  // Persist active observing site coordinates
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        ACTIVE_SITE_STORAGE_KEY,
+        JSON.stringify({ name: observer.name, lat: observer.lat, lon: observer.lon })
+      );
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [observer.name, observer.lat, observer.lon]);
+
+  // Listen for Google Maps Platform Demo Key quota-exceeded events
+  useEffect(() => {
+    const onQuotaExceeded = () => setGmpQuotaExceeded(true);
+    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
+    return () => window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
+  }, []);
 
   // Refresh live clock every 10s when live time is enabled (and not in time-lapse playback)
   useEffect(() => {
@@ -892,6 +969,48 @@ export default function App() {
     downloadSkylistFile(content, `noxchart-observing-list-${today}.skylist`);
   }, [sessionPlan]);
 
+  const handleApplySite = useCallback(
+    (site: { name: string; lat: number; lon: number }) => {
+      handleChangeObserver((prev) => ({
+        ...prev,
+        name: site.name,
+        lat: Math.max(-90, Math.min(90, site.lat)),
+        lon: Math.max(-180, Math.min(180, site.lon)),
+      }));
+    },
+    [handleChangeObserver]
+  );
+
+  const handleSaveSite = useCallback((site: SavedObservingSite) => {
+    setSavedSites((prev) => {
+      const idx = prev.findIndex((s) => s.id === site.id);
+      const next =
+        idx >= 0 ? prev.map((s) => (s.id === site.id ? site : s)) : [site, ...prev];
+      savedSitesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleDeleteSite = useCallback((id: string) => {
+    setSavedSites((prev) => {
+      const next = prev.filter((s) => s.id !== id);
+      savedSitesRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleImportSites = useCallback((incoming: SavedObservingSite[]) => {
+    const result = mergeObservingSites(savedSitesRef.current, incoming);
+    savedSitesRef.current = result.merged;
+    setSavedSites(result.merged);
+    return { addedCount: result.addedCount, updatedCount: result.updatedCount };
+  }, []);
+
+  const handleOpenSiteMap = useCallback((focus?: SavedObservingSite | null) => {
+    setSiteMapFocus(focus ?? null);
+    setSiteMapOpen(true);
+  }, []);
+
   const handleCopyShareUrl = async () => {
     syncUrlState(view, theme);
     try {
@@ -950,6 +1069,22 @@ export default function App() {
       data-theme={theme}
       className={`w-screen h-screen flex flex-col overflow-hidden ${ui.shell}`}
     >
+      {gmpQuotaExceeded && (
+        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm shrink-0">
+          <span>
+            Google Maps Platform quota reached. If you are the app owner, visit{' '}
+            <a
+              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="underline font-semibold text-amber-950 hover:text-amber-800"
+            >
+              maps developer site
+            </a>{' '}
+            for instructions to update your account.
+          </span>
+        </div>
+      )}
       {/* Top Precision Telemetry Ribbon */}
       <header
         className={`no-print h-12 shrink-0 border-b px-3 flex items-center justify-between gap-3 ${ui.header}`}
@@ -1289,6 +1424,7 @@ export default function App() {
             catalogs={catalogs}
             selected={selected}
             equipmentLocker={equipmentLocker}
+            savedSites={savedSites}
             sessionPlanCount={sessionPlan.length}
             onChangeView={handleChangeView}
             onChangeLayers={setLayers}
@@ -1301,6 +1437,10 @@ export default function App() {
             onDeleteEquipment={handleDeleteEquipment}
             onToggleActiveEquipment={handleToggleActiveEquipment}
             onImportEquipmentLocker={handleImportEquipmentLocker}
+            onOpenSiteMap={handleOpenSiteMap}
+            onSaveSite={handleSaveSite}
+            onDeleteSite={handleDeleteSite}
+            onImportSites={handleImportSites}
           />
         </div>
 
@@ -1359,6 +1499,19 @@ export default function App() {
           )}
         </div>
       </main>
+
+      <ObservingSiteMapModal
+        open={siteMapOpen}
+        theme={theme}
+        observer={observer}
+        savedSites={savedSites}
+        initialFocusSite={siteMapFocus}
+        onClose={() => setSiteMapOpen(false)}
+        onApplySite={handleApplySite}
+        onSaveSite={handleSaveSite}
+        onDeleteSite={handleDeleteSite}
+        onImportSites={handleImportSites}
+      />
     </div>
   );
 }
