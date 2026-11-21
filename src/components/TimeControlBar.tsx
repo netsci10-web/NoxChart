@@ -105,12 +105,12 @@ export function TimeControlBar({
     observer.useLiveTime && !observer.isPlaying ? liveNowMs : observer.timestampMs;
 
   const d = new Date(displayMs);
-  const parts: { unit: TimeUnit; value: string; sep?: string }[] = [
-    { unit: 'year', value: String(d.getFullYear()), sep: '-' },
-    { unit: 'month', value: String(d.getMonth() + 1).padStart(2, '0'), sep: '-' },
-    { unit: 'day', value: String(d.getDate()).padStart(2, '0'), sep: ' ' },
-    { unit: 'hour', value: String(d.getHours()).padStart(2, '0'), sep: ':' },
-    { unit: 'minute', value: String(d.getMinutes()).padStart(2, '0'), sep: ':' },
+  const parts: { unit: TimeUnit; value: string; gapAfter?: boolean }[] = [
+    { unit: 'year', value: String(d.getFullYear()) },
+    { unit: 'month', value: String(d.getMonth() + 1).padStart(2, '0') },
+    { unit: 'day', value: String(d.getDate()).padStart(2, '0'), gapAfter: true },
+    { unit: 'hour', value: String(d.getHours()).padStart(2, '0') },
+    { unit: 'minute', value: String(d.getMinutes()).padStart(2, '0') },
     { unit: 'second', value: String(d.getSeconds()).padStart(2, '0') },
   ];
 
@@ -216,13 +216,6 @@ export function TimeControlBar({
       ? 'text-[#FF9E9E]'
       : 'text-cyan-200';
 
-  const sepCls =
-    theme === 'white'
-      ? 'text-slate-400'
-      : theme === 'red'
-      ? 'text-[#7A1B1B]'
-      : 'text-slate-500';
-
   const minusBtnCls =
     theme === 'white'
       ? 'bg-indigo-50/90 border-indigo-300 text-indigo-700 hover:bg-indigo-100'
@@ -294,10 +287,10 @@ export function TimeControlBar({
 
   return (
     <div
-      className={`no-print shrink-0 border-t px-3 py-1.5 flex flex-col items-center justify-center gap-1 select-none ${barCls}`}
+      className={`no-print shrink-0 border-t px-3 py-1.5 flex items-center justify-center gap-2 flex-wrap select-none ${barCls}`}
     >
-      {/* Top Row: [-] [YYYY년 - MM월 - DD일  HH시 : MM분 : SS초] [+] */}
-      <div className="flex items-center justify-center gap-1.5 flex-wrap">
+      {/* Left: [-] [YYYY년 MM월 DD일  HH시 MM분 SS초] [+] */}
+      <div className="flex items-center justify-center gap-1.5 shrink-0">
         <button
           type="button"
           onClick={() => stepSelectedUnit(-1)}
@@ -309,7 +302,7 @@ export function TimeControlBar({
         </button>
 
         <div
-          className={`flex items-center px-1.5 py-0.5 rounded-lg border font-mono text-[14px] sm:text-[15px] font-bold tabular-nums leading-tight ${capsuleCls}`}
+          className={`flex items-center gap-0.5 px-1.5 py-0.5 rounded-lg border font-mono text-[14px] sm:text-[15px] font-bold tabular-nums leading-tight ${capsuleCls}`}
           role="group"
           aria-label="날짜 및 시간 단위 선택"
         >
@@ -350,15 +343,8 @@ export function TimeControlBar({
                     {unitLabel}
                   </span>
                 </button>
-                {part.sep && (
-                  <span
-                    className={`px-0.5 font-normal ${
-                      part.sep === ' ' ? 'w-1.5 inline-block' : sepCls
-                    }`}
-                    aria-hidden="true"
-                  >
-                    {part.sep === ' ' ? '' : part.sep}
-                  </span>
+                {part.gapAfter && (
+                  <span className="w-2 inline-block shrink-0" aria-hidden="true" />
                 )}
               </React.Fragment>
             );
@@ -376,8 +362,8 @@ export function TimeControlBar({
         </button>
       </div>
 
-      {/* Bottom Row: Playback Capsule [<<] [▶/⏸] [↺] [>>] + Speed Badge */}
-      <div className="flex items-center justify-center gap-2 flex-wrap">
+      {/* Right of Date/Time: Playback/Acceleration Capsule [<<] [▶/⏸] [↺] [>>] + Fixed Max-Width Speed Readout */}
+      <div className="flex items-center justify-center gap-1.5 shrink-0">
         <div
           className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border shrink-0 ${capsuleCls}`}
         >
@@ -426,15 +412,14 @@ export function TimeControlBar({
           </button>
         </div>
 
-        <div className="w-[144px] shrink-0 flex items-center justify-start">
-          <div
-            title="현재 시간 가감속 배율 (<< / >> 버튼으로 조절)"
-            className={`h-7 px-2.5 rounded-md border flex items-center justify-center font-mono text-xs font-semibold tabular-nums whitespace-nowrap transition-opacity ${speedBadgeCls} ${
-              observer.isPlaying ? 'opacity-100' : 'opacity-85'
-            }`}
-          >
-            {formatTimeRateBadge(observer.timeRateSecPerSec)}
-          </div>
+        {/* Fixed max-width box sized for widest value (-x2592000(30일)) so layout never shifts */}
+        <div
+          title="현재 시간 가감속 배율 (<< / >> 버튼으로 조절)"
+          className={`w-[152px] h-7 px-2 rounded-md border shrink-0 flex items-center justify-center font-mono text-xs font-semibold tabular-nums whitespace-nowrap transition-opacity ${speedBadgeCls} ${
+            observer.isPlaying ? 'opacity-100' : 'opacity-85'
+          }`}
+        >
+          {formatTimeRateBadge(observer.timeRateSecPerSec)}
         </div>
       </div>
     </div>
