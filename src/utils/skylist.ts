@@ -624,6 +624,9 @@ export function exportEquipmentToSkylist(locker: EquipmentLockerState): string {
     if (item.pixelSizeUm !== undefined && Number.isFinite(item.pixelSizeUm)) {
       lines.push(`\tPixelSizeUm=${item.pixelSizeUm}`);
     }
+    if (item.isSmartTelescope) {
+      lines.push('\tIsSmartTelescope=1');
+    }
     if (item.note) {
       lines.push(`\tNote=${sanitizeSkylistValue(item.note)}`);
     }
@@ -688,6 +691,7 @@ export function parseEquipmentFromSkylist(text: string): EquipmentLockerState {
           sensorWidthMm: current.sensorWidthMm,
           sensorHeightMm: current.sensorHeightMm,
           pixelSizeUm: current.pixelSizeUm,
+          isSmartTelescope: current.isSmartTelescope,
         };
         items.push(built);
         if (current.active) {
@@ -743,6 +747,9 @@ export function parseEquipmentFromSkylist(text: string): EquipmentLockerState {
           break;
         case 'pixelsizeum':
           if (Number.isFinite(num) && num > 0) current.pixelSizeUm = num;
+          break;
+        case 'issmarttelescope':
+          if (val === '1' || val.toLowerCase() === 'true') current.isSmartTelescope = true;
           break;
         case 'note':
           current.note = unescapeSkylistValue(val);

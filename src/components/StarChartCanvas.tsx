@@ -4,8 +4,10 @@ import {
   FlipHorizontal2,
   FlipVertical2,
   Globe,
+  MapPin,
   Minus,
   Plus,
+  Undo2,
 } from 'lucide-react';
 import { CatalogSnapshot, GAIA_LIVE_MAX_FSZ } from '../data/catalogLoader';
 import {
@@ -36,10 +38,11 @@ import {
 import { renderStarChart, RenderResult } from '../utils/chartRenderer';
 import { getPlanetRenderer } from '../utils/planetRenderer';
 import { getUiTheme } from '../utils/themeClasses';
-import { HipsBackground } from './HipsBackground';
+import { HipsBackground, HipsBackgroundHandle } from './HipsBackground';
 
 export interface StarChartCanvasHandle {
   exportPng: () => void;
+  exportSensorFovPng: (equipmentName?: string) => void;
 }
 
 interface StarChartCanvasProps {
@@ -58,9 +61,18 @@ interface StarChartCanvasProps {
   challenges: ChallengeTrack[];
   leftDrawerOpen?: boolean;
   rightDrawerOpen?: boolean;
+  challengePickMode?: boolean;
+  challengePickAllowEmpty?: boolean;
+  challengeDraftCount?: number;
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
   onSelect: (item: SelectedItem | null) => void;
   onUnlockCenter?: () => void;
+  onChallengeChartPick?: (pick: {
+    item: SelectedItem | null;
+    raDeg: number;
+    decDeg: number;
+  }) => void;
+  onUndoChallengeCheckpoint?: () => void;
 }
 
 const MIN_FSZ_DEG = 0.008;
@@ -83,14 +95,20 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       challenges,
       leftDrawerOpen = false,
       rightDrawerOpen = false,
+      challengePickMode = false,
+      challengePickAllowEmpty = true,
+      challengeDraftCount = 0,
       onChangeView,
       onSelect,
       onUnlockCenter,
+      onChallengeChartPick,
+      onUndoChallengeCheckpoint,
     },
     ref
   ) {
     const containerRef = useRef<HTMLDivElement>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
+    const hipsRef = useRef<HipsBackgroundHandle>(null);
     const targetsRef = useRef<ScreenTarget[]>([]);
     const centerAnimRef = useRef<number | null>(null);
     const lastClickedTargetRef = useRef<{
@@ -145,6 +163,137 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         const link = document.createElement('a');
         link.download = `noxchart-${view.coordSystem}-ra${view.ra.toFixed(2)}-dec${view.dec.toFixed(1)}-fsz${view.fsz < 1 ? view.fsz.toFixed(3) : view.fsz.toFixed(0)}.png`;
         link.href = canvas.toDataURL('image/png');
+        link.click();
+      },
+      exportSensorFovPng: (equipmentName?: string) => {
+        if (
+          !optics.showSensorBox ||
+          optics.sensorWidthDeg <= 0 ||
+          optics.sensorHeightDeg <= 0
+        ) {
+          return;
+        }
+        const sensorW = Math.max(0.05, optics.sensorWidthDeg);
+        const sensorH = Math.max(0.05, optics.sensorHeightDeg);
+        const tanW = Math.tan((sensorW * DEG2RAD) / 4);
+        const tanH = Math.tan((sensorH * DEG2RAD) / 4);
+        const LONG_SIDE = 1800;
+        let outW: number;
+        let outH: number;
+        if (tanW >= tanH) {
+          outW = LONG_SIDE;
+          outH = Math.max(64, Math.round(LONG_SIDE * (tanH / tanW)));
+        } else {
+          outH = LONG_SIDE;
+          outW = Math.max(64, Math.round(LONG_SIDE * (tanW / tanH)));
+        }
+
+        const rawSensorRot = optics.sensorRotationLocked
+          ? 0
+          : optics.sensorRotationDeg ?? 0;
+        const normSensorRot = ((rawSensorRot % 360) + 360) % 360;
+        const sensorRotActive = normSensorRot > 0.05 && normSensorRot < 359.95;
+        // Rotating the sensor frame clockwise by +theta aligns sky rotated by -theta upright
+        const exportRotDeg = sensorRotActive ? (360 - normSensorRot) % 360 : 0;
+
+        const sensorView: ChartViewState = {
+          ...view,
+          fsz: Math.min(sensorW, sensorH),
+          flipH: optics.showEyepiece ? false : view.flipH,
+          flipV: optics.showEyepiece ? false : view.flipV,
+        };
+
+        const cleanOptics: OpticsSettings = {
+          ...optics,
+          showCrosshair: false,
+          showTelrad: false,
+          showFinder7x50: false,
+          showEyepiece: false,
+          showSensorBox: false,
+          showSelectionMark: false,
+        };
+
+        const outCanvas = document.createElement('canvas');
+        outCanvas.width = outW;
+        outCanvas.height = outH;
+        const outCtx = outCanvas.getContext('2d');
+        if (!outCtx) return;
+
+        const hipsVisible = hips.enabled && hips.opacity > 0.02;
+        if (hipsVisible) {
+          outCtx.fillStyle =
+            theme === 'white' ? '#FFFFFF' : theme === 'red' ? '#060000' : '#070A12';
+          outCtx.fillRect(0, 0, outW, outH);
+          hipsRef.current?.renderSnapshotToCanvas(
+            outCtx,
+            outW,
+            outH,
+            sensorView,
+            exportRotDeg
+          );
+
+          const vecCanvas = document.createElement('canvas');
+          vecCanvas.width = outW;
+          vecCanvas.height = outH;
+          const vecCtx = vecCanvas.getContext('2d');
+          if (vecCtx) {
+            renderStarChart(
+              vecCtx,
+              outW,
+              outH,
+              sensorView,
+              theme,
+              layers,
+              cleanOptics,
+              observer,
+              hips,
+              catalogs,
+              selected,
+              null,
+              sessionIds,
+              solarTrails,
+              sessionPlan,
+              challenges,
+              exportRotDeg
+            );
+            outCtx.drawImage(vecCanvas, 0, 0);
+          }
+        } else {
+          renderStarChart(
+            outCtx,
+            outW,
+            outH,
+            sensorView,
+            theme,
+            layers,
+            cleanOptics,
+            observer,
+            hips,
+            catalogs,
+            selected,
+            null,
+            sessionIds,
+            solarTrails,
+            sessionPlan,
+            challenges,
+            exportRotDeg
+          );
+        }
+
+        const safeEquip = (equipmentName ?? '')
+          .trim()
+          .replace(/[\\/:*?"<>|]+/g, '')
+          .replace(/\s+/g, '_')
+          .replace(/_+/g, '_')
+          .replace(/^_+|_+$/g, '')
+          .slice(0, 64);
+        const equipSegment = safeEquip ? `-${safeEquip}` : '';
+        const rotSegment = sensorRotActive ? `-rot${Math.round(normSensorRot)}` : '';
+        const filename = `noxchart-사진화각${equipSegment}-${sensorW.toFixed(2)}x${sensorH.toFixed(2)}deg${rotSegment}-ra${view.ra.toFixed(2)}-dec${view.dec.toFixed(1)}.png`;
+
+        const link = document.createElement('a');
+        link.download = filename;
+        link.href = outCanvas.toDataURL('image/png');
         link.click();
       },
     }));
@@ -434,7 +583,39 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
       if (drag && !drag.moved) {
         const rect = e.currentTarget.getBoundingClientRect();
-        const hit = findHitTarget(e.clientX - rect.left, e.clientY - rect.top);
+        const clickX = e.clientX - rect.left;
+        const clickY = e.clientY - rect.top;
+        const hit = findHitTarget(clickX, clickY);
+
+        if (challengePickMode && onChallengeChartPick) {
+          if (hit) {
+            onChallengeChartPick({
+              item: hit.item,
+              raDeg: hit.item.data.ra,
+              decDeg: hit.item.data.dec,
+            });
+          } else {
+            const eff = getEffectiveTransformAtPoint(clickX, clickY, view);
+            const proj = createProjectionParams(
+              eff.view,
+              size.width,
+              size.height,
+              lstDeg,
+              observer.lat,
+              eff.rotationDeg
+            );
+            const unproj = unprojectStereographic(clickX, clickY, proj);
+            if (unproj) {
+              onChallengeChartPick({
+                item: null,
+                raDeg: unproj.raDeg,
+                decDeg: unproj.decDeg,
+              });
+            }
+          }
+          return;
+        }
+
         if (hit) {
           lastClickedTargetRef.current = {
             item: hit.item,
@@ -448,6 +629,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     };
 
     const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+      if (challengePickMode) return;
       const rect = e.currentTarget.getBoundingClientRect();
       const hit = findHitTarget(e.clientX - rect.left, e.clientY - rect.top, 8);
       let targetItem: SelectedItem | null = hit ? hit.item : null;
@@ -503,6 +685,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       >
         {/* Native WebGL HEALPix HiPS Photographic Sky Background */}
         <HipsBackground
+          ref={hipsRef}
           hips={hips}
           view={view}
           optics={optics}
@@ -600,6 +783,36 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                 {getCompassDirection(pointerAltAz.azDeg)})
               </span>
             </div>
+          </div>
+        )}
+
+        {/* Bottom-Right Challenge Route Picking Banner */}
+        {challengePickMode && (
+          <div
+            className={`no-print absolute z-20 bottom-3 border px-2.5 py-1.5 text-[11px] backdrop-blur-sm transition-[right] duration-200 ease-out flex items-center gap-2 shadow-lg ${ui.hudOverlay}`}
+            style={{ borderRadius: '6px', right: rightDrawerOpen ? '282px' : '12px' }}
+          >
+            <MapPin className={`w-3.5 h-3.5 shrink-0 ${ui.accentText}`} />
+            <div className="flex items-center gap-1.5 whitespace-nowrap">
+              <span className={`font-semibold ${ui.accentText}`}>
+                체크포인트 지정 중 ({challengeDraftCount})
+              </span>
+              <span className={`hidden sm:inline text-[10.5px] ${ui.textMuted}`}>
+                · {challengePickAllowEmpty ? '천체 또는 빈 위치 클릭' : '천체 클릭으로 추가'}
+              </span>
+            </div>
+            {challengeDraftCount > 0 && onUndoChallengeCheckpoint && (
+              <button
+                type="button"
+                onClick={onUndoChallengeCheckpoint}
+                title="방금 추가한 체크포인트 취소"
+                className={`px-1.5 py-0.5 border text-[10px] font-medium flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
+                style={{ borderRadius: '4px' }}
+              >
+                <Undo2 className="w-3 h-3" />
+                <span>실행 취소</span>
+              </button>
+            )}
           </div>
         )}
 
@@ -755,6 +968,12 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                   · {hoveredTarget.item.data.mag.toFixed(2)}m · B-V{' '}
                   {hoveredTarget.item.data.bv.toFixed(2)}
                 </div>
+              </div>
+            )}
+            {challengePickMode && (
+              <div className={`mt-1 pt-1 border-t text-[10.5px] font-semibold flex items-center gap-1 ${ui.divider} ${ui.accentText}`}>
+                <Plus className="w-3 h-3 shrink-0" />
+                <span>클릭하여 체크포인트 추가</span>
               </div>
             )}
           </div>

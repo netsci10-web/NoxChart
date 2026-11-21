@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bookmark,
+  Camera,
   Check,
   ChevronLeft,
   ChevronRight,
@@ -23,6 +24,11 @@ import { StarChartCanvas, StarChartCanvasHandle } from './components/StarChartCa
 import { TimeControlBar } from './components/TimeControlBar';
 import { CALDWELL_CATALOG } from './data/caldwell';
 import { createDefaultChallengeTracks } from './data/challenges';
+import {
+  isSmartTelescopeRotatable,
+  normalizeTelescopeOpticalType,
+  SMART_TELESCOPE_PRESETS,
+} from './data/equipmentCatalog';
 import {
   ensureCoreCatalogs,
   ensureDeepDsos,
@@ -54,6 +60,8 @@ import {
   angularDistanceDeg,
   DEG2RAD,
   equatorialToHorizontal,
+  formatDec,
+  formatRA,
   getDsoLimitingMagnitude,
   getLimitingMagnitude,
   getLSTDeg,
@@ -70,6 +78,11 @@ import {
   resolveSkylistObjects,
 } from './utils/skylist';
 import {
+  LayerSettingsBundle,
+  loadSavedLayerSettings,
+  saveLayerSettingsToLocal,
+} from './utils/layerStorage';
+import {
   ACTIVE_SITE_STORAGE_KEY,
   mergeObservingSites,
   SAVED_SITES_STORAGE_KEY,
@@ -79,6 +92,16 @@ import { getUiTheme } from './utils/themeClasses';
 
 const SESSION_STORAGE_KEY = 'sidereal_atlas_session_v1';
 const EQUIPMENT_STORAGE_KEY = 'noxchart_equipment_v1';
+const OPTICS_STORAGE_KEY = 'noxchart_optics_v1';
+const APP_PREFS_STORAGE_KEY = 'noxchart_app_prefs_v1';
+
+interface SavedAppPrefs {
+  theme?: ThemeMode;
+  coordSystem?: CoordSystem;
+  fsz?: number;
+  flipH?: boolean;
+  flipV?: boolean;
+}
 
 const DEFAULT_EQUIPMENT_LOCKER: EquipmentLockerState = {
   items: [
@@ -171,6 +194,7 @@ const DEFAULT_LAYERS: LayerSettings = {
   showDsoLabels: true,
   dsoLabelDensityPct: 7,
   showStarLabels: true,
+  showProperStarNames: false,
   starLabelDensityPct: 7,
   showFieldStars: true,
   enableGaiaLive: true,
@@ -188,6 +212,7 @@ const DEFAULT_LAYERS: LayerSettings = {
     AST: true,
   },
   highlightSessionPlan: false,
+  challengeOpacity: 1.0,
 };
 
 const DEFAULT_HIPS: HipsSettings = {
@@ -204,13 +229,16 @@ const DEFAULT_OPTICS: OpticsSettings = {
   eyepieceFovDeg: 1.7,
   eyepieceRotationDeg: 0,
   eyepieceLabel: '망원경 아이피스',
-  eyepieceInputMode: 'calc',
+  eyepieceInputMode: 'equipment',
   telescopeFocalLengthMm: 1000,
   eyepieceFocalLengthMm: 25,
   eyepieceAfovDeg: 68,
   showSensorBox: false,
   sensorWidthDeg: 2.15,
   sensorHeightDeg: 1.21,
+  sensorRotationDeg: 0,
+  sensorEquipmentLabel: undefined,
+  sensorRotationLocked: false,
   showStarHop: false,
   showSelectionMark: true,
 };
@@ -227,11 +255,109 @@ const DEFAULT_OBSERVER: ObserverConfig = {
   highlightAboveMinAlt: false,
 };
 
+function loadSavedAppPrefs(): SavedAppPrefs {
+  try {
+    const raw = localStorage.getItem(APP_PREFS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object') {
+        const res: SavedAppPrefs = {};
+        if (parsed.theme === 'dark' || parsed.theme === 'white' || parsed.theme === 'red') {
+          res.theme = parsed.theme;
+        }
+        if (parsed.coordSystem === 'horizontal' || parsed.coordSystem === 'equatorial') {
+          res.coordSystem = parsed.coordSystem;
+        }
+        if (typeof parsed.fsz === 'number' && Number.isFinite(parsed.fsz)) {
+          res.fsz = Math.max(0.008, Math.min(180, parsed.fsz));
+        }
+        if (typeof parsed.flipH === 'boolean') res.flipH = parsed.flipH;
+        if (typeof parsed.flipV === 'boolean') res.flipV = parsed.flipV;
+        return res;
+      }
+    }
+  } catch {
+    // Ignore storage parse failure
+  }
+  return {};
+}
+
+function loadSavedOpticsSettings(): OpticsSettings {
+  try {
+    const raw = localStorage.getItem(OPTICS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Record<string, unknown>;
+      if (parsed && typeof parsed === 'object') {
+        const boolOr = (k: keyof OpticsSettings, fallback: boolean): boolean =>
+          typeof parsed[k] === 'boolean' ? (parsed[k] as boolean) : fallback;
+        const numOr = (k: keyof OpticsSettings, fallback: number, min: number, max: number): number =>
+          typeof parsed[k] === 'number' && Number.isFinite(parsed[k] as number)
+            ? Math.max(min, Math.min(max, parsed[k] as number))
+            : fallback;
+        const mode: OpticsSettings['eyepieceInputMode'] =
+          parsed.eyepieceInputMode === 'direct' ||
+          parsed.eyepieceInputMode === 'calc' ||
+          parsed.eyepieceInputMode === 'equipment'
+            ? parsed.eyepieceInputMode
+            : DEFAULT_OPTICS.eyepieceInputMode;
+
+        return {
+          ...DEFAULT_OPTICS,
+          showCrosshair: boolOr('showCrosshair', DEFAULT_OPTICS.showCrosshair),
+          showTelrad: boolOr('showTelrad', DEFAULT_OPTICS.showTelrad),
+          showFinder7x50: boolOr('showFinder7x50', DEFAULT_OPTICS.showFinder7x50),
+          showEyepiece: boolOr('showEyepiece', DEFAULT_OPTICS.showEyepiece),
+          eyepieceFovDeg: numOr('eyepieceFovDeg', DEFAULT_OPTICS.eyepieceFovDeg, 0.05, 20),
+          eyepieceRotationDeg: numOr('eyepieceRotationDeg', DEFAULT_OPTICS.eyepieceRotationDeg, 0, 360),
+          eyepieceLabel:
+            typeof parsed.eyepieceLabel === 'string' && parsed.eyepieceLabel.trim()
+              ? parsed.eyepieceLabel
+              : DEFAULT_OPTICS.eyepieceLabel,
+          eyepieceInputMode: mode,
+          telescopeFocalLengthMm: numOr(
+            'telescopeFocalLengthMm',
+            DEFAULT_OPTICS.telescopeFocalLengthMm,
+            50,
+            10000
+          ),
+          eyepieceFocalLengthMm: numOr(
+            'eyepieceFocalLengthMm',
+            DEFAULT_OPTICS.eyepieceFocalLengthMm,
+            1,
+            100
+          ),
+          eyepieceAfovDeg: numOr('eyepieceAfovDeg', DEFAULT_OPTICS.eyepieceAfovDeg, 20, 120),
+          showSensorBox: boolOr('showSensorBox', DEFAULT_OPTICS.showSensorBox),
+          sensorWidthDeg: numOr('sensorWidthDeg', DEFAULT_OPTICS.sensorWidthDeg, 0.02, 40),
+          sensorHeightDeg: numOr('sensorHeightDeg', DEFAULT_OPTICS.sensorHeightDeg, 0.02, 40),
+          sensorRotationDeg: numOr('sensorRotationDeg', DEFAULT_OPTICS.sensorRotationDeg, 0, 360),
+          sensorEquipmentLabel:
+            typeof parsed.sensorEquipmentLabel === 'string' && parsed.sensorEquipmentLabel.trim()
+              ? parsed.sensorEquipmentLabel.trim()
+              : undefined,
+          sensorRotationLocked: boolOr('sensorRotationLocked', false),
+          showStarHop: boolOr('showStarHop', DEFAULT_OPTICS.showStarHop),
+          showSelectionMark: boolOr('showSelectionMark', DEFAULT_OPTICS.showSelectionMark),
+        };
+      }
+    }
+  } catch {
+    // Ignore storage parse failure
+  }
+  return { ...DEFAULT_OPTICS };
+}
+
 function createInitialObserver(): ObserverConfig {
   try {
     const raw = localStorage.getItem(ACTIVE_SITE_STORAGE_KEY);
     if (raw) {
-      const parsed = JSON.parse(raw) as { name?: string; lat?: number; lon?: number };
+      const parsed = JSON.parse(raw) as {
+        name?: string;
+        lat?: number;
+        lon?: number;
+        minAltitudeDeg?: number;
+        highlightAboveMinAlt?: boolean;
+      };
       if (
         typeof parsed.lat === 'number' &&
         Number.isFinite(parsed.lat) &&
@@ -246,6 +372,14 @@ function createInitialObserver(): ObserverConfig {
               : DEFAULT_OBSERVER.name,
           lat: Math.max(-90, Math.min(90, parsed.lat)),
           lon: Math.max(-180, Math.min(180, parsed.lon)),
+          minAltitudeDeg:
+            typeof parsed.minAltitudeDeg === 'number' && Number.isFinite(parsed.minAltitudeDeg)
+              ? Math.max(-90, Math.min(85, parsed.minAltitudeDeg))
+              : DEFAULT_OBSERVER.minAltitudeDeg,
+          highlightAboveMinAlt:
+            typeof parsed.highlightAboveMinAlt === 'boolean'
+              ? parsed.highlightAboveMinAlt
+              : DEFAULT_OBSERVER.highlightAboveMinAlt,
           timestampMs: Date.now(),
         };
       }
@@ -267,31 +401,75 @@ function getDefaultHorizontalCenter(obs: ObserverConfig): { ra: number; dec: num
 
 export default function App() {
   const initialUrl = useMemo(() => parseUrlState(), []);
+  const initialAppPrefs = useMemo(() => loadSavedAppPrefs(), []);
   const initialObserver = useMemo(() => createInitialObserver(), []);
   const canvasHandleRef = useRef<StarChartCanvasHandle>(null);
 
+  const initialCoordSystem = useMemo<CoordSystem>(() => {
+    const params = new URLSearchParams(window.location.search);
+    return params.has('coord')
+      ? initialUrl.view.coordSystem
+      : initialAppPrefs.coordSystem ?? initialUrl.view.coordSystem;
+  }, [initialUrl.view.coordSystem, initialAppPrefs.coordSystem]);
+
   const [view, setView] = useState<ChartViewState>(() => {
-    if (initialUrl.view.coordSystem === 'horizontal' && !initialUrl.hasExplicitCoords) {
+    const params = new URLSearchParams(window.location.search);
+    const coordSystem = initialCoordSystem;
+    const fsz = params.has('fsz')
+      ? initialUrl.view.fsz
+      : initialAppPrefs.fsz ?? initialUrl.view.fsz;
+    const flipH = params.has('flipH')
+      ? initialUrl.view.flipH
+      : initialAppPrefs.flipH ?? initialUrl.view.flipH;
+    const flipV = params.has('flipV')
+      ? initialUrl.view.flipV
+      : initialAppPrefs.flipV ?? initialUrl.view.flipV;
+
+    if (coordSystem === 'horizontal' && !initialUrl.hasExplicitCoords) {
       const center = getDefaultHorizontalCenter(initialObserver);
       return {
         ...initialUrl.view,
+        coordSystem,
+        fsz,
+        flipH,
+        flipV,
         ra: center.ra,
         dec: center.dec,
       };
     }
-    return initialUrl.view;
+    return {
+      ...initialUrl.view,
+      coordSystem,
+      fsz,
+      flipH,
+      flipV,
+    };
   });
-  const [theme, setTheme] = useState<ThemeMode>(initialUrl.theme);
-  const [layers, setLayers] = useState<LayerSettings>(() => ({
-    ...DEFAULT_LAYERS,
-    showGridEq: initialUrl.view.coordSystem === 'equatorial',
-    showGridAltAz: initialUrl.view.coordSystem === 'horizontal',
-    showHorizon: initialUrl.view.coordSystem === 'horizontal',
-    showTerrain: initialUrl.view.coordSystem === 'horizontal',
-  }));
-  const [optics, setOptics] = useState<OpticsSettings>(DEFAULT_OPTICS);
+  const [theme, setTheme] = useState<ThemeMode>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('mode')) return initialUrl.theme;
+    return initialAppPrefs.theme ?? initialUrl.theme;
+  });
+  const initialLayerBundle = useMemo<LayerSettingsBundle>(() => {
+    const coordMatchedDefaultLayers: LayerSettings = {
+      ...DEFAULT_LAYERS,
+      dsoCategories: { ...DEFAULT_LAYERS.dsoCategories },
+      showGridEq: initialCoordSystem === 'equatorial',
+      showGridAltAz: initialCoordSystem === 'horizontal',
+      showHorizon: initialCoordSystem === 'horizontal',
+      showTerrain: initialCoordSystem === 'horizontal',
+    };
+    const saved = loadSavedLayerSettings(coordMatchedDefaultLayers, DEFAULT_HIPS);
+    if (saved) return saved;
+    return {
+      layers: coordMatchedDefaultLayers,
+      hips: { ...DEFAULT_HIPS },
+    };
+  }, [initialCoordSystem]);
+  const [layers, setLayers] = useState<LayerSettings>(() => initialLayerBundle.layers);
+  const [optics, setOptics] = useState<OpticsSettings>(() => loadSavedOpticsSettings());
   const [observer, setObserver] = useState<ObserverConfig>(initialObserver);
-  const [hips, setHips] = useState<HipsSettings>(DEFAULT_HIPS);
+  const [hips, setHips] = useState<HipsSettings>(() => initialLayerBundle.hips);
 
   const [savedSites, setSavedSites] = useState<SavedObservingSite[]>(() => {
     try {
@@ -317,6 +495,12 @@ export default function App() {
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<'detail' | 'session' | 'challenge'>('detail');
+  const [challengeDraft, setChallengeDraft] = useState<ChallengeTrack | null>(null);
+  const challengeDraftRef = useRef<ChallengeTrack | null>(challengeDraft);
+  challengeDraftRef.current = challengeDraft;
+  const [challengeDraftIsNew, setChallengeDraftIsNew] = useState(false);
+  const [challengePickAllowEmpty, setChallengePickAllowEmpty] = useState(true);
+  const [challengeDraftNotice, setChallengeDraftNotice] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
   const [searchActive, setSearchActive] = useState(false);
   const [resetCount, setResetCount] = useState(0);
@@ -331,6 +515,8 @@ export default function App() {
   centerLockedRef.current = centerLocked;
   const solarTrailsRef = useRef<Record<string, number>>(solarTrails);
   solarTrailsRef.current = solarTrails;
+  const autoReflectorFlipRestoreRef = useRef<{ flipH: boolean; flipV: boolean } | null>(null);
+  const prevReflectorEyepieceRef = useRef<boolean | null>(null);
   const lockedHzRef = useRef<{
     altDeg: number;
     azDeg: number;
@@ -343,6 +529,9 @@ export default function App() {
     (updater: React.SetStateAction<ChartViewState>) => {
       const prev = viewRef.current;
       const next = typeof updater === 'function' ? updater(prev) : updater;
+      if (next.flipH !== prev.flipH || next.flipV !== prev.flipV) {
+        autoReflectorFlipRestoreRef.current = null;
+      }
       viewRef.current = next;
       if (next.coordSystem !== 'horizontal') {
         lockedHzRef.current = null;
@@ -569,17 +758,102 @@ export default function App() {
     }
   }, [savedSites]);
 
-  // Persist active observing site coordinates
+  // Persist active observing site coordinates & altitude filter locally
   useEffect(() => {
     try {
       localStorage.setItem(
         ACTIVE_SITE_STORAGE_KEY,
-        JSON.stringify({ name: observer.name, lat: observer.lat, lon: observer.lon })
+        JSON.stringify({
+          name: observer.name,
+          lat: observer.lat,
+          lon: observer.lon,
+          minAltitudeDeg: observer.minAltitudeDeg,
+          highlightAboveMinAlt: observer.highlightAboveMinAlt,
+        })
       );
     } catch {
       // Ignore storage quota errors
     }
-  }, [observer.name, observer.lat, observer.lon]);
+  }, [
+    observer.name,
+    observer.lat,
+    observer.lon,
+    observer.minAltitudeDeg,
+    observer.highlightAboveMinAlt,
+  ]);
+
+  // Persist layer & HiPS settings locally so they are restored on next load
+  useEffect(() => {
+    saveLayerSettingsToLocal(layers, hips);
+  }, [layers, hips]);
+
+  // Persist optics settings (eyepiece, sensor framing, finder, overlays) locally
+  useEffect(() => {
+    try {
+      localStorage.setItem(OPTICS_STORAGE_KEY, JSON.stringify(optics));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [optics]);
+
+  // Persist theme & core chart view preferences locally
+  useEffect(() => {
+    try {
+      const prefs: SavedAppPrefs = {
+        theme,
+        coordSystem: view.coordSystem,
+        fsz: view.fsz,
+        flipH: view.flipH,
+        flipV: view.flipV,
+      };
+      localStorage.setItem(APP_PREFS_STORAGE_KEY, JSON.stringify(prefs));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }, [theme, view.coordSystem, view.fsz, view.flipH, view.flipV]);
+
+  // Automatically apply reflector inversion (상하 + 좌우 반전) when eyepiece FOV ring is shown with a reflector telescope
+  const isActiveScopeReflector = useMemo(() => {
+    const scopeId = equipmentLocker.activeIds.telescope;
+    if (!scopeId) return false;
+    const scope = equipmentLocker.items.find(
+      (it) => it.id === scopeId && it.category === 'telescope'
+    );
+    return scope ? normalizeTelescopeOpticalType(scope.opticalType) === '반사' : false;
+  }, [equipmentLocker]);
+
+  useEffect(() => {
+    const shouldApplyReflectorFlip = optics.showEyepiece && isActiveScopeReflector;
+    const prevActive = prevReflectorEyepieceRef.current;
+    prevReflectorEyepieceRef.current = shouldApplyReflectorFlip;
+
+    // Do not override restored localStorage/URL flip state on initial mount
+    if (prevActive === null) return;
+    if (shouldApplyReflectorFlip === prevActive) return;
+
+    if (shouldApplyReflectorFlip) {
+      const cur = viewRef.current;
+      if (!cur.flipH || !cur.flipV) {
+        autoReflectorFlipRestoreRef.current = { flipH: cur.flipH, flipV: cur.flipV };
+        const nextView: ChartViewState = { ...cur, flipH: true, flipV: true };
+        viewRef.current = nextView;
+        setView(nextView);
+      }
+    } else if (autoReflectorFlipRestoreRef.current) {
+      const restore = autoReflectorFlipRestoreRef.current;
+      autoReflectorFlipRestoreRef.current = null;
+      const cur = viewRef.current;
+      if (cur.flipH !== restore.flipH || cur.flipV !== restore.flipV) {
+        const nextView: ChartViewState = {
+          ...cur,
+          flipH: restore.flipH,
+          flipV: restore.flipV,
+        };
+        viewRef.current = nextView;
+        setView(nextView);
+      }
+    }
+  }, [optics.showEyepiece, isActiveScopeReflector]);
 
   // Listen for Google Maps Platform Demo Key quota-exceeded events
   useEffect(() => {
@@ -859,17 +1133,21 @@ export default function App() {
 
         let sensorW = prev.sensorWidthDeg;
         let sensorH = prev.sensorHeightDeg;
+        const sensorEffFl =
+          camera?.isSmartTelescope && camera.focalLengthMm && camera.focalLengthMm > 0
+            ? camera.focalLengthMm
+            : effFl;
         if (camera?.sensorWidthMm && camera?.sensorHeightMm) {
           sensorW = Number(
             Math.max(
               0.05,
-              Math.min(45, 2 * Math.atan(camera.sensorWidthMm / (2 * effFl)) * RAD2DEG)
+              Math.min(45, 2 * Math.atan(camera.sensorWidthMm / (2 * sensorEffFl)) * RAD2DEG)
             ).toFixed(2)
           );
           sensorH = Number(
             Math.max(
               0.05,
-              Math.min(45, 2 * Math.atan(camera.sensorHeightMm / (2 * effFl)) * RAD2DEG)
+              Math.min(45, 2 * Math.atan(camera.sensorHeightMm / (2 * sensorEffFl)) * RAD2DEG)
             ).toFixed(2)
           );
         }
@@ -893,9 +1171,18 @@ export default function App() {
           barlow?.factor && barlow.factor !== 1 ? `${barlow.factor}×` : '',
         ].filter(Boolean);
 
+        const canRotateSensor = camera ? isSmartTelescopeRotatable(camera) : true;
+        const sensorEquipLabel = camera
+          ? camera.isSmartTelescope
+            ? camera.name
+            : [scope?.name, barlow?.name, camera.name].filter(Boolean).join(' + ')
+          : scope
+          ? [scope.name, barlow?.name].filter(Boolean).join(' + ')
+          : prev.sensorEquipmentLabel;
+
         return {
           ...prev,
-          eyepieceInputMode: 'calc',
+          eyepieceInputMode: prev.eyepieceInputMode === 'equipment' ? 'equipment' : 'calc',
           telescopeFocalLengthMm: Math.round(effFl),
           eyepieceFocalLengthMm: epFl,
           eyepieceAfovDeg: epAfov,
@@ -904,12 +1191,84 @@ export default function App() {
           showEyepiece: shouldShowEyepiece,
           sensorWidthDeg: sensorW,
           sensorHeightDeg: sensorH,
+          sensorEquipmentLabel: sensorEquipLabel,
+          sensorRotationLocked: !canRotateSensor,
+          sensorRotationDeg: canRotateSensor ? prev.sensorRotationDeg : 0,
           showSensorBox: shouldShowSensor,
         };
       });
     },
     []
   );
+
+  // Active photographic equipment name used in sensor FOV PNG filenames
+  const activeSensorEquipmentName = useMemo(() => {
+    if (optics.sensorEquipmentLabel && optics.sensorEquipmentLabel.trim()) {
+      return optics.sensorEquipmentLabel.trim();
+    }
+    const cam = equipmentLocker.activeIds.camera
+      ? equipmentLocker.items.find(
+          (it) => it.id === equipmentLocker.activeIds.camera && it.category === 'camera'
+        )
+      : undefined;
+    if (cam) {
+      if (cam.isSmartTelescope) return cam.name;
+      const scope = equipmentLocker.activeIds.telescope
+        ? equipmentLocker.items.find(
+            (it) => it.id === equipmentLocker.activeIds.telescope && it.category === 'telescope'
+          )
+        : undefined;
+      const barlow = equipmentLocker.activeIds.barlow
+        ? equipmentLocker.items.find(
+            (it) => it.id === equipmentLocker.activeIds.barlow && it.category === 'barlow'
+          )
+        : undefined;
+      return [scope?.name, barlow?.name, cam.name].filter(Boolean).join(' + ');
+    }
+    const matchedSmart = SMART_TELESCOPE_PRESETS.find((sp) => {
+      if (!sp.focalLengthMm || !sp.sensorWidthMm || !sp.sensorHeightMm) return false;
+      const w = 2 * Math.atan(sp.sensorWidthMm / (2 * sp.focalLengthMm)) * RAD2DEG;
+      const h = 2 * Math.atan(sp.sensorHeightMm / (2 * sp.focalLengthMm)) * RAD2DEG;
+      return (
+        Math.abs(optics.sensorWidthDeg - w) < 0.03 &&
+        Math.abs(optics.sensorHeightDeg - h) < 0.03
+      );
+    });
+    if (matchedSmart) return matchedSmart.name;
+    return `FOV_${optics.sensorWidthDeg.toFixed(2)}x${optics.sensorHeightDeg.toFixed(2)}`;
+  }, [
+    optics.sensorEquipmentLabel,
+    optics.sensorWidthDeg,
+    optics.sensorHeightDeg,
+    equipmentLocker,
+  ]);
+
+  // Keep sensor rotation locked at 0° when a non-rotatable smart telescope is active (including restored localStorage state)
+  useEffect(() => {
+    const cam = equipmentLocker.activeIds.camera
+      ? equipmentLocker.items.find(
+          (it) => it.id === equipmentLocker.activeIds.camera && it.category === 'camera'
+        )
+      : undefined;
+    if (
+      cam?.isSmartTelescope &&
+      !isSmartTelescopeRotatable(cam) &&
+      (!optics.sensorEquipmentLabel || optics.sensorEquipmentLabel === cam.name)
+    ) {
+      if (!optics.sensorRotationLocked || optics.sensorRotationDeg !== 0) {
+        setOptics((prev) => ({
+          ...prev,
+          sensorRotationLocked: true,
+          sensorRotationDeg: 0,
+        }));
+      }
+    }
+  }, [
+    equipmentLocker,
+    optics.sensorEquipmentLabel,
+    optics.sensorRotationLocked,
+    optics.sensorRotationDeg,
+  ]);
 
   const handleAddOrUpdateEquipment = useCallback(
     (item: EquipmentItem) => {
@@ -955,6 +1314,23 @@ export default function App() {
       setEquipmentLocker((prev) => {
         const activeIds = { ...prev.activeIds };
         if (activeIds[category] === id) {
+          delete activeIds[category];
+        } else {
+          activeIds[category] = id;
+        }
+        const next: EquipmentLockerState = { ...prev, activeIds };
+        applyEquipmentToOptics(next, category);
+        return next;
+      });
+    },
+    [applyEquipmentToOptics]
+  );
+
+  const handleSelectActiveEquipment = useCallback(
+    (category: EquipmentCategory, id: string | null) => {
+      setEquipmentLocker((prev) => {
+        const activeIds = { ...prev.activeIds };
+        if (!id) {
           delete activeIds[category];
         } else {
           activeIds[category] = id;
@@ -1131,6 +1507,218 @@ export default function App() {
       challengesRef.current = next;
       return next;
     });
+    setChallengeDraft((prev) => (prev?.id === trackId ? null : prev));
+  }, []);
+
+  const handleStartCreateChallengeDraft = useCallback(() => {
+    const now = Date.now();
+    const fresh: ChallengeTrack = {
+      id: `custom_track_${now}`,
+      title: '',
+      subtitle: '',
+      description: '',
+      season: 'all',
+      lineColor: '#38BDF8',
+      completedColor: '#FBBF24',
+      activeOnChart: true,
+      builtIn: false,
+      badges: [
+        {
+          id: `master_${now}`,
+          title: '코스 완주 마스터',
+          description: '모든 체크포인트 관측 완료',
+          requiredCheckpointIds: [],
+          isMaster: true,
+        },
+      ],
+      checkpoints: [],
+      createdAt: now,
+    };
+    setChallengeDraft(fresh);
+    setChallengeDraftIsNew(true);
+    setChallengeDraftNotice(null);
+  }, []);
+
+  const handleStartEditChallengeDraft = useCallback((track: ChallengeTrack) => {
+    setChallengeDraft({
+      ...track,
+      checkpoints: track.checkpoints.map((c) => ({ ...c })),
+    });
+    setChallengeDraftIsNew(false);
+    setChallengeDraftNotice(null);
+  }, []);
+
+  const handleCancelChallengeDraft = useCallback(() => {
+    setChallengeDraft(null);
+    setChallengeDraftIsNew(false);
+    setChallengeDraftNotice(null);
+  }, []);
+
+  const handleChallengeChartPick = useCallback(
+    ({
+      item,
+      raDeg,
+      decDeg,
+    }: {
+      item: SelectedItem | null;
+      raDeg: number;
+      decDeg: number;
+    }) => {
+      const prev = challengeDraftRef.current;
+      if (!prev) return;
+
+      if (!item && !challengePickAllowEmpty) {
+        setChallengeDraftNotice(
+          '천체만 선택 모드입니다. 천체를 클릭하거나 "천체 + 빈 위치"로 전환하세요.'
+        );
+        return;
+      }
+
+      const normRa = ((raDeg % 360) + 360) % 360;
+      const normDec = Math.max(-90, Math.min(90, decDeg));
+      const idx = prev.checkpoints.length + 1;
+      const code = `CP ${String(idx).padStart(2, '0')}`;
+      const lastStage =
+        prev.checkpoints[prev.checkpoints.length - 1]?.stage || '1구간 · 기본 코스';
+
+      if (item) {
+        let catalogId: string;
+        let name: string;
+        let constellation: string | undefined;
+        let objectType: string | undefined;
+        let mag: number | undefined;
+        const kind = item.kind;
+
+        if (item.kind === 'dso') {
+          catalogId = item.data.id;
+          name = item.data.koName
+            ? `${item.data.id} ${item.data.koName}`
+            : item.data.name
+            ? `${item.data.id} (${item.data.name})`
+            : item.data.id;
+          constellation = item.data.con;
+          objectType = item.data.type;
+          mag = item.data.mag;
+        } else if (item.kind === 'star') {
+          catalogId = item.data.hip ? `HIP ${item.data.hip}` : item.data.id;
+          name = item.data.koName
+            ? `${item.data.koName} (${item.data.name || item.data.bayer || item.data.id})`
+            : item.data.name || item.data.bayer || item.data.id;
+          constellation = item.data.con;
+          objectType = '항성';
+          mag = item.data.mag;
+        } else if (item.kind === 'double') {
+          catalogId = item.data.id;
+          name = item.data.koName || item.data.name || item.data.bayer || item.data.disc;
+          constellation = item.data.con;
+          objectType = item.data.isMultiple ? '다중성' : '이중성';
+          mag = item.data.mag;
+        } else {
+          catalogId = item.data.id;
+          name = `${item.data.koName} (${item.data.name})`;
+          objectType = item.data.category;
+          mag = item.data.mag;
+        }
+
+        const normCatKey = catalogId.replace(/\s+/g, '').toUpperCase();
+        const alreadyExists = prev.checkpoints.some(
+          (cp) =>
+            cp.catalogId && cp.catalogId.replace(/\s+/g, '').toUpperCase() === normCatKey
+        );
+        if (alreadyExists) {
+          setChallengeDraftNotice(`'${name}' 대상은 이미 체크포인트에 포함되어 있습니다.`);
+          return;
+        }
+
+        const newCp: ChallengeCheckpoint = {
+          id: `cp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+          code,
+          name,
+          catalogId,
+          kind,
+          stage: lastStage,
+          constellation,
+          objectType,
+          mag,
+          ra: item.data.ra,
+          dec: item.data.dec,
+          observed: false,
+        };
+        const nextDraft: ChallengeTrack = {
+          ...prev,
+          checkpoints: [...prev.checkpoints, newCp],
+        };
+        challengeDraftRef.current = nextDraft;
+        setChallengeDraft(nextDraft);
+        setChallengeDraftNotice(`'${name}' (${code}) 체크포인트를 추가했습니다.`);
+        return;
+      }
+
+      const newCp: ChallengeCheckpoint = {
+        id: `cp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+        code,
+        name: `관측 지점 ${idx}`,
+        kind: 'dso',
+        stage: lastStage,
+        objectType: '지정 위치',
+        ra: normRa,
+        dec: normDec,
+        guideNote: `RA ${formatRA(normRa)} · Dec ${formatDec(normDec)}`,
+        observed: false,
+      };
+      const nextDraft: ChallengeTrack = {
+        ...prev,
+        checkpoints: [...prev.checkpoints, newCp],
+      };
+      challengeDraftRef.current = nextDraft;
+      setChallengeDraft(nextDraft);
+      setChallengeDraftNotice(`성도 지정 위치 (${code})를 체크포인트로 추가했습니다.`);
+    },
+    [challengePickAllowEmpty]
+  );
+
+  const handleAddCenterChallengeCheckpoint = useCallback(() => {
+    const prev = challengeDraftRef.current;
+    if (!prev) return;
+    const curView = viewRef.current;
+    const raDeg = ((curView.ra * 15) % 360 + 360) % 360;
+    const decDeg = Math.max(-90, Math.min(90, curView.dec));
+    const idx = prev.checkpoints.length + 1;
+    const code = `CP ${String(idx).padStart(2, '0')}`;
+    const lastStage =
+      prev.checkpoints[prev.checkpoints.length - 1]?.stage || '1구간 · 기본 코스';
+    const newCp: ChallengeCheckpoint = {
+      id: `cp_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+      code,
+      name: `화면 중심 지점 ${idx}`,
+      kind: 'dso',
+      stage: lastStage,
+      objectType: '지정 위치',
+      ra: raDeg,
+      dec: decDeg,
+      guideNote: `RA ${formatRA(raDeg)} · Dec ${formatDec(decDeg)}`,
+      observed: false,
+    };
+    const nextDraft: ChallengeTrack = {
+      ...prev,
+      checkpoints: [...prev.checkpoints, newCp],
+    };
+    challengeDraftRef.current = nextDraft;
+    setChallengeDraft(nextDraft);
+    setChallengeDraftNotice(`현재 성도 중심 (${code})을 체크포인트로 추가했습니다.`);
+  }, []);
+
+  const handleUndoChallengeCheckpoint = useCallback(() => {
+    const prev = challengeDraftRef.current;
+    if (!prev || prev.checkpoints.length === 0) return;
+    const last = prev.checkpoints[prev.checkpoints.length - 1];
+    const nextDraft: ChallengeTrack = {
+      ...prev,
+      checkpoints: prev.checkpoints.slice(0, -1),
+    };
+    challengeDraftRef.current = nextDraft;
+    setChallengeDraft(nextDraft);
+    setChallengeDraftNotice(`'${last.name}' 체크포인트 추가를 취소했습니다.`);
   }, []);
 
   const handleResetBuiltInChallenge = useCallback((trackId: string) => {
@@ -1339,6 +1927,24 @@ export default function App() {
     }
   };
 
+  const handleImportLayerSettings = useCallback((bundle: LayerSettingsBundle) => {
+    setLayers(bundle.layers);
+    setHips(bundle.hips);
+  }, []);
+
+  const handleResetLayerSettings = useCallback(() => {
+    const isHorizontal = viewRef.current.coordSystem === 'horizontal';
+    setLayers({
+      ...DEFAULT_LAYERS,
+      dsoCategories: { ...DEFAULT_LAYERS.dsoCategories },
+      showGridEq: !isHorizontal,
+      showGridAltAz: isHorizontal,
+      showHorizon: isHorizontal,
+      showTerrain: isHorizontal,
+    });
+    setHips({ ...DEFAULT_HIPS });
+  }, []);
+
   const handleResetToDefaults = () => {
     lockedHzRef.current = null;
     const resetObs: ObserverConfig = {
@@ -1369,9 +1975,25 @@ export default function App() {
     setRightOpen(false);
     setLeftOpen(false);
     setInspectorTab('detail');
+    setChallengeDraft(null);
+    setChallengeDraftIsNew(false);
+    setChallengeDraftNotice(null);
     setSearchActive(false);
     setResetCount((c) => c + 1);
   };
+
+  const isChallengePicking = Boolean(
+    challengeDraft && rightOpen && inspectorTab === 'challenge'
+  );
+
+  const chartChallenges = useMemo(() => {
+    if (!challengeDraft) return challenges;
+    const draftOverlay: ChallengeTrack = { ...challengeDraft, activeOnChart: true };
+    const exists = challenges.some((t) => t.id === challengeDraft.id);
+    return exists
+      ? challenges.map((t) => (t.id === challengeDraft.id ? draftOverlay : t))
+      : [draftOverlay, ...challenges];
+  }, [challenges, challengeDraft]);
 
   const ui = getUiTheme(theme);
   const magLimit = getLimitingMagnitude(view.fsz, layers.magOffset);
@@ -1698,6 +2320,21 @@ export default function App() {
             <span>PNG</span>
           </button>
 
+          {optics.showSensorBox && (
+            <button
+              type="button"
+              onClick={() =>
+                canvasHandleRef.current?.exportSensorFovPng(activeSensorEquipmentName)
+              }
+              title={`사진 화각 영역만 PNG 저장 (${activeSensorEquipmentName} · ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°)`}
+              className={`flex px-2.5 py-1.5 border text-xs font-medium items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${ui.buttonActive}`}
+              style={{ borderRadius: '4px' }}
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span>사진화각</span>
+            </button>
+          )}
+
           <button
             type="button"
             onClick={handlePrintWhiteChart}
@@ -1729,12 +2366,17 @@ export default function App() {
             solarTrails={solarTrails}
             sessionIds={sessionIds}
             sessionPlan={sessionPlan}
-            challenges={challenges}
+            challenges={chartChallenges}
             leftDrawerOpen={leftOpen}
             rightDrawerOpen={rightOpen}
+            challengePickMode={isChallengePicking}
+            challengePickAllowEmpty={challengePickAllowEmpty}
+            challengeDraftCount={challengeDraft?.checkpoints.length ?? 0}
             onChangeView={handleChangeView}
             onSelect={handleSelect}
             onUnlockCenter={handleUnlockCenter}
+            onChallengeChartPick={handleChallengeChartPick}
+            onUndoChallengeCheckpoint={handleUndoChallengeCheckpoint}
           />
           <TimeControlBar
             theme={theme}
@@ -1772,11 +2414,14 @@ export default function App() {
             onAddOrUpdateEquipment={handleAddOrUpdateEquipment}
             onDeleteEquipment={handleDeleteEquipment}
             onToggleActiveEquipment={handleToggleActiveEquipment}
+            onSelectActiveEquipment={handleSelectActiveEquipment}
             onImportEquipmentLocker={handleImportEquipmentLocker}
             onOpenSiteMap={handleOpenSiteMap}
             onSaveSite={handleSaveSite}
             onDeleteSite={handleDeleteSite}
             onImportSites={handleImportSites}
+            onImportLayerSettings={handleImportLayerSettings}
+            onResetLayerSettings={handleResetLayerSettings}
           />
         </div>
 
@@ -1832,6 +2477,21 @@ export default function App() {
               onAddRecommendedTonight={handleAddRecommendedTonight}
               onImportSkylist={handleImportSkylistSession}
               onExportSkylist={handleExportSkylistSession}
+              challengeOpacity={layers.challengeOpacity}
+              onChangeChallengeOpacity={(opacity) =>
+                setLayers((p) => ({ ...p, challengeOpacity: opacity }))
+              }
+              challengeDraft={challengeDraft}
+              challengeDraftIsNew={challengeDraftIsNew}
+              challengePickAllowEmpty={challengePickAllowEmpty}
+              challengeDraftNotice={challengeDraftNotice}
+              onStartCreateChallengeDraft={handleStartCreateChallengeDraft}
+              onStartEditChallengeDraft={handleStartEditChallengeDraft}
+              onChangeChallengeDraft={setChallengeDraft}
+              onCancelChallengeDraft={handleCancelChallengeDraft}
+              onChangeChallengePickAllowEmpty={setChallengePickAllowEmpty}
+              onClearChallengeDraftNotice={() => setChallengeDraftNotice(null)}
+              onAddCenterChallengeCheckpoint={handleAddCenterChallengeCheckpoint}
               onToggleChallengeOnChart={handleToggleChallengeOnChart}
               onToggleChallengeCheckpoint={handleToggleChallengeCheckpoint}
               onUpdateChallengeCheckpointNote={handleUpdateChallengeCheckpointNote}

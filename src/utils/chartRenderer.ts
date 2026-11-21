@@ -121,7 +121,7 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       horizonText: '#B91C1C',
       eclipticStroke: 'rgba(180, 83, 9, 0.48)',
       constellationLine: 'rgb(30, 58, 138)',
-      constellationBoundary: 'rgba(71, 85, 105, 0.32)',
+      constellationBoundary: 'rgb(71, 85, 105)',
       constellationName: 'rgb(30, 41, 59)',
       dsoColor: {
         GX: '#B91C1C',
@@ -175,7 +175,7 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       horizonText: '#F87171',
       eclipticStroke: 'rgba(185, 28, 28, 0.40)',
       constellationLine: 'rgb(220, 38, 38)',
-      constellationBoundary: 'rgba(153, 27, 27, 0.34)',
+      constellationBoundary: 'rgb(185, 28, 28)',
       constellationName: 'rgb(239, 68, 68)',
       dsoColor: {
         GX: '#EF4444',
@@ -229,7 +229,7 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
     horizonText: '#F59E0B',
     eclipticStroke: 'rgba(245, 158, 11, 0.32)',
     constellationLine: 'rgb(100, 149, 237)',
-    constellationBoundary: 'rgba(148, 163, 184, 0.24)',
+    constellationBoundary: 'rgb(148, 163, 184)',
     constellationName: 'rgb(148, 163, 184)',
     dsoColor: {
       GX: '#FB7185',
@@ -1089,16 +1089,32 @@ function drawOpticalReticles(
     const wPx = stereoRadiusPx(optics.sensorWidthDeg) * 2;
     const hPx = stereoRadiusPx(optics.sensorHeightDeg) * 2;
     if (wPx >= 6 && hPx >= 6) {
+      const rawSensorRot = optics.sensorRotationLocked ? 0 : (optics.sensorRotationDeg ?? 0);
+      const normSensorRot = ((rawSensorRot % 360) + 360) % 360;
+      const sensorRotActive = normSensorRot > 0.05 && normSensorRot < 359.95;
+
       ctx.save();
+      ctx.translate(cx, cy);
+      if (sensorRotActive) {
+        ctx.rotate(normSensorRot * DEG2RAD);
+      }
       ctx.strokeStyle = palette.reticleSensor;
       ctx.lineWidth = 1.3;
-      ctx.strokeRect(cx - wPx / 2, cy - hPx / 2, wPx, hPx);
+      ctx.strokeRect(-wPx / 2, -hPx / 2, wPx, hPx);
+      if (sensorRotActive && hPx >= 14) {
+        ctx.lineWidth = 1.6;
+        ctx.beginPath();
+        ctx.moveTo(0, -hPx / 2);
+        ctx.lineTo(0, -hPx / 2 - 6);
+        ctx.stroke();
+      }
       ctx.fillStyle = palette.reticleSensor;
-      ctx.font = '500 10px "IBM Plex Mono", monospace';
+      ctx.font = '500 10px "IBM Plex Mono", "Pretendard", monospace';
+      const rotTag = sensorRotActive ? ` · 회전 ${Math.round(normSensorRot)}°` : '';
       ctx.fillText(
-        `FOV ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°`,
-        cx - wPx / 2,
-        cy - hPx / 2 - 5
+        `FOV ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°${rotTag}`,
+        -wPx / 2,
+        -hPx / 2 - 5
       );
       ctx.restore();
     }
@@ -1372,8 +1388,9 @@ function renderStarChartPass(
   // 5.5. IAU Constellation Boundaries (782 polylines)
   if (layers.showConstellationBoundaries && catalogs.constellationBoundaries.length > 0) {
     ctx.save();
+    ctx.globalAlpha = Math.max(0.05, Math.min(1, layers.constellationLineOpacity ?? 0.35));
     ctx.strokeStyle = palette.constellationBoundary;
-    ctx.lineWidth = 0.8;
+    ctx.lineWidth = 0.85;
     ctx.setLineDash([4, 4]);
     for (let i = 0; i < catalogs.constellationBoundaries.length; i++) {
       drawProjectedTupleCurve(ctx, catalogs.constellationBoundaries[i], proj);
@@ -1477,7 +1494,8 @@ function renderStarChartPass(
     }
 
     const pendingDsos: PendingDso[] = [];
-    const onScreenNonDimmed: PendingDso[] = [];
+    const onScreenGeneral: PendingDso[] = [];
+    const onScreenKnown: PendingDso[] = [];
     const seenDsoKeys = new Set<string>();
 
     const checkSelectedDso = (dso: DeepSkyObject) =>
@@ -1533,8 +1551,12 @@ function renderStarChartPass(
         labelPrefix,
       };
       pendingDsos.push(entry);
-      if (isOnScreen && !belowMinAlt && !isKnownForced) {
-        onScreenNonDimmed.push(entry);
+      if (isOnScreen && !belowMinAlt) {
+        if (isKnownForced) {
+          onScreenKnown.push(entry);
+        } else {
+          onScreenGeneral.push(entry);
+        }
       }
     };
 
@@ -1613,13 +1635,23 @@ function renderStarChartPass(
     if (symPct >= 100) {
       for (const entry of pendingDsos) allowedDsoSet.add(entry);
     } else {
-      onScreenNonDimmed.sort((a, b) => a.dso.mag - b.dso.mag);
-      const symQuota = symPct <= 0 ? 0 : Math.ceil((onScreenNonDimmed.length * symPct) / 100);
-      for (let i = 0; i < symQuota && i < onScreenNonDimmed.length; i++) {
-        allowedDsoSet.add(onScreenNonDimmed[i]);
+      if (onScreenGeneral.length > 0) {
+        onScreenGeneral.sort((a, b) => a.dso.mag - b.dso.mag);
+        const symQuota = symPct <= 0 ? 0 : Math.ceil((onScreenGeneral.length * symPct) / 100);
+        for (let i = 0; i < symQuota && i < onScreenGeneral.length; i++) {
+          allowedDsoSet.add(onScreenGeneral[i]);
+        }
+      }
+      if (onScreenKnown.length > 0) {
+        onScreenKnown.sort((a, b) => a.dso.mag - b.dso.mag);
+        const knownSymQuota =
+          symPct <= 0 ? 0 : Math.ceil((onScreenKnown.length * symPct) / 100);
+        for (let i = 0; i < knownSymQuota && i < onScreenKnown.length; i++) {
+          allowedDsoSet.add(onScreenKnown[i]);
+        }
       }
       for (const entry of pendingDsos) {
-        if (entry.isSelected || entry.isKnownForced) allowedDsoSet.add(entry);
+        if (entry.isSelected) allowedDsoSet.add(entry);
       }
     }
 
@@ -1695,16 +1727,31 @@ function renderStarChartPass(
     }
 
     if (onScreenDsoItems.length > 0) {
-      onScreenDsoItems.sort((a, b) => a.mag - b.mag);
       const dsoPct = Math.max(0, Math.min(100, layers.dsoLabelDensityPct ?? 10));
-      const dsoQuota = dsoPct <= 0 ? 0 : Math.ceil((onScreenDsoItems.length * dsoPct) / 100);
-      const maxDsoCandidates = Math.min(dsoQuota, 650);
-      for (let i = 0; i < onScreenDsoItems.length; i++) {
-        const item = onScreenDsoItems[i];
-        const includeGeneral =
-          layers.showDsoLabels && (i < maxDsoCandidates || item.isSelected);
-        if (includeGeneral || item.isKnownForced) {
-          labelCandidates.push(item.candidate);
+      const generalItems = onScreenDsoItems.filter((it) => !it.isKnownForced);
+      const knownItems = onScreenDsoItems.filter((it) => it.isKnownForced);
+
+      if (layers.showDsoLabels && generalItems.length > 0) {
+        generalItems.sort((a, b) => a.mag - b.mag);
+        const dsoQuota = dsoPct <= 0 ? 0 : Math.ceil((generalItems.length * dsoPct) / 100);
+        const maxDsoCandidates = Math.min(dsoQuota, 650);
+        for (let i = 0; i < generalItems.length; i++) {
+          const item = generalItems[i];
+          if (i < maxDsoCandidates || item.isSelected) {
+            labelCandidates.push(item.candidate);
+          }
+        }
+      }
+
+      if (knownItems.length > 0) {
+        knownItems.sort((a, b) => a.mag - b.mag);
+        const knownQuota = dsoPct <= 0 ? 0 : Math.ceil((knownItems.length * dsoPct) / 100);
+        const maxKnownCandidates = Math.min(knownQuota, 650);
+        for (let i = 0; i < knownItems.length; i++) {
+          const item = knownItems[i];
+          if (i < maxKnownCandidates || item.isSelected) {
+            labelCandidates.push(item.candidate);
+          }
         }
       }
     }
@@ -1928,41 +1975,78 @@ function renderStarChartPass(
     });
   }
 
-  // Viewport-relative top-N% apparent-magnitude star labels
-  if (layers.showStarLabels) {
+  // Viewport-relative top-N% apparent-magnitude star labels & known proper star names
+  if (layers.showStarLabels || layers.showProperStarNames) {
     const onScreenStars = drawableStars.filter(
       (item) => !item.dimmed && item.x >= 0 && item.x <= width && item.y >= 0 && item.y <= height
     );
     if (onScreenStars.length > 0) {
       onScreenStars.sort((a, b) => a.star.mag - b.star.mag);
       const starPct = Math.max(0, Math.min(100, layers.starLabelDensityPct ?? 10));
-      const starQuota = starPct <= 0 ? 0 : Math.ceil((onScreenStars.length * starPct) / 100);
-      const maxStarCandidates = Math.min(starQuota, 650);
-      for (let i = 0; i < onScreenStars.length; i++) {
-        const item = onScreenStars[i];
-        if (i >= maxStarCandidates && !item.isSelected) continue;
-        const { star, x, y, radius, isSelected } = item;
-        let text: string | null = null;
-        if (star.name && view.fsz < 95) text = star.name;
-        else if (star.bayer) text = star.bayer;
-        else if (star.name) text = star.name;
-        else if (star.hip) text = `HIP ${star.hip}`;
-        else if (star.gaiaId) text = `Gaia ${star.gaiaId.slice(-6)}`;
-        else if (star.id && !star.id.startsWith('field_')) text = star.id;
-        if (!text) continue;
+      const labeledStarIds = new Set<string>();
 
-        labelCandidates.push({
-          priority: isSelected ? -100 : star.mag + 1.2,
-          x,
-          y,
-          radius,
-          text,
-          color: palette.starLabel,
-          font:
-            star.mag < 1.5
-              ? '600 11px "IBM Plex Sans", sans-serif'
-              : '400 10px "IBM Plex Sans", sans-serif',
-        });
+      // Known proper star names (works even when general showStarLabels is off, still respects top-N% brightness)
+      if (layers.showProperStarNames) {
+        const onScreenProperStars = onScreenStars.filter((item) =>
+          Boolean(item.star.koName || item.star.name)
+        );
+        const properQuota =
+          starPct <= 0 ? 0 : Math.ceil((onScreenProperStars.length * starPct) / 100);
+        const maxProperCandidates = Math.min(properQuota, 450);
+        for (let i = 0; i < onScreenProperStars.length; i++) {
+          const item = onScreenProperStars[i];
+          if (i >= maxProperCandidates && !item.isSelected) continue;
+          const { star, x, y, radius, isSelected } = item;
+          const properText = star.koName || star.name;
+          if (!properText) continue;
+
+          labeledStarIds.add(star.id);
+          labelCandidates.push({
+            priority: isSelected ? -100 : star.mag + 0.8,
+            x,
+            y,
+            radius,
+            text: properText,
+            color: palette.starLabel,
+            font:
+              star.mag < 1.5
+                ? '600 11px "IBM Plex Sans", "Noto Sans KR", sans-serif'
+                : '400 10px "IBM Plex Sans", "Noto Sans KR", sans-serif',
+          });
+        }
+      }
+
+      if (layers.showStarLabels) {
+        const starQuota = starPct <= 0 ? 0 : Math.ceil((onScreenStars.length * starPct) / 100);
+        const maxStarCandidates = Math.min(starQuota, 650);
+        for (let i = 0; i < onScreenStars.length; i++) {
+          const item = onScreenStars[i];
+          if (i >= maxStarCandidates && !item.isSelected) continue;
+          const { star, x, y, radius, isSelected } = item;
+          if (labeledStarIds.has(star.id)) continue;
+          let text: string | null = null;
+          if (star.name && view.fsz < 95) text = star.name;
+          else if (star.bayer) text = star.bayer;
+          else if (star.name) text = star.name;
+          else if (star.hip) text = `HIP ${star.hip}`;
+          else if (star.gaiaId) text = `Gaia ${star.gaiaId.slice(-6)}`;
+          else if (star.id && !star.id.startsWith('field_')) text = star.id;
+          if (!text) continue;
+
+          labeledStarIds.add(star.id);
+          labelCandidates.push({
+            priority: isSelected ? -100 : star.mag + 1.2,
+            x,
+            y,
+            radius,
+            text,
+            color: palette.starLabel,
+            font:
+              star.mag < 1.5
+                ? '600 11px "IBM Plex Sans", sans-serif'
+                : '400 10px "IBM Plex Sans", sans-serif',
+          });
+        }
       }
     }
   }
@@ -3522,6 +3606,7 @@ function renderStarChartPass(
         ? 'rgba(18, 2, 2, 0.88)'
         : 'rgba(7, 12, 22, 0.88)';
     const jumpThreshold = Math.max(width, height) * 0.45;
+    const challengeAlpha = Math.max(0.05, Math.min(1.0, layers.challengeOpacity ?? 1.0));
 
     ctx.save();
     for (const track of activeChallenges) {
@@ -3545,7 +3630,7 @@ function renderStarChartPass(
               : poly.color || 'rgba(147, 197, 253, 0.45)';
           ctx.strokeStyle = polyStroke;
           ctx.lineWidth = 1.4;
-          ctx.globalAlpha = theme === 'white' ? 0.85 : 0.48;
+          ctx.globalAlpha = (theme === 'white' ? 0.85 : 0.48) * challengeAlpha;
           ctx.setLineDash([7, 5]);
 
           const segCount = poly.closed ? poly.points.length : poly.points.length - 1;
@@ -3570,7 +3655,7 @@ function renderStarChartPass(
             }
             if (visCount >= 2) {
               ctx.setLineDash([]);
-              ctx.globalAlpha = 0.7;
+              ctx.globalAlpha = 0.7 * challengeAlpha;
               ctx.fillStyle = polyStroke;
               ctx.font = '600 10.5px "IBM Plex Sans", "Noto Sans KR", sans-serif';
               ctx.textAlign = 'center';
@@ -3607,19 +3692,20 @@ function renderStarChartPass(
           ctx.save();
           ctx.setLineDash([]);
           ctx.lineCap = 'round';
+          ctx.globalAlpha = challengeAlpha;
           ctx.strokeStyle = goldGlow;
           ctx.lineWidth = 6.2;
           drawProjectedCurve(ctx, arcPts, proj, false);
           ctx.strokeStyle = goldSolid;
           ctx.lineWidth = 2.35;
-          ctx.globalAlpha = 0.96;
+          ctx.globalAlpha = 0.96 * challengeAlpha;
           drawProjectedCurve(ctx, arcPts, proj, false);
           ctx.restore();
         } else {
           ctx.save();
           ctx.strokeStyle = baseLineColor;
           ctx.lineWidth = 1.55;
-          ctx.globalAlpha = 0.78;
+          ctx.globalAlpha = 0.78 * challengeAlpha;
           ctx.setLineDash([6, 4]);
           drawProjectedCurve(ctx, arcPts, proj, false);
           ctx.restore();
@@ -3651,7 +3737,7 @@ function renderStarChartPass(
             ctx.translate(pMid.x, pMid.y);
             ctx.rotate(ang);
             ctx.strokeStyle = completed ? goldSolid : baseLineColor;
-            ctx.globalAlpha = completed ? 0.95 : 0.72;
+            ctx.globalAlpha = (completed ? 0.95 : 0.72) * challengeAlpha;
             ctx.lineWidth = completed ? 1.8 : 1.25;
             ctx.beginPath();
             ctx.moveTo(-sz, -sz * 0.65);
@@ -3705,6 +3791,7 @@ function renderStarChartPass(
 
         ctx.save();
         if (cp.observed) {
+          ctx.globalAlpha = challengeAlpha;
           ctx.fillStyle = goldGlow;
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, 9.5, 0, Math.PI * 2);
@@ -3720,7 +3807,7 @@ function renderStarChartPass(
         } else if (isNext) {
           ctx.strokeStyle = baseLineColor;
           ctx.lineWidth = 1.6;
-          ctx.globalAlpha = 0.9;
+          ctx.globalAlpha = 0.9 * challengeAlpha;
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, 8.2, 0, Math.PI * 2);
           ctx.stroke();
@@ -3734,7 +3821,7 @@ function renderStarChartPass(
           ctx.fillStyle = palette.skyCircleBg;
           ctx.strokeStyle = baseLineColor;
           ctx.lineWidth = 1.6;
-          ctx.globalAlpha = 0.92;
+          ctx.globalAlpha = 0.92 * challengeAlpha;
           ctx.beginPath();
           ctx.arc(pt.x, pt.y, 4.0, 0, Math.PI * 2);
           ctx.fill();
@@ -3767,6 +3854,7 @@ function renderStarChartPass(
             : `${cp.code} ${cp.name.slice(0, 10)}`;
           const badgeText = cp.observed ? `✓ ${shortTag}` : shortTag;
           ctx.save();
+          ctx.globalAlpha = challengeAlpha;
           ctx.font = '600 9.5px "IBM Plex Mono", "Pretendard", sans-serif';
           const tw = ctx.measureText(badgeText).width;
           const padX = 4.5;
@@ -3798,6 +3886,7 @@ function renderStarChartPass(
       if (isMasterCompleted && theme === 'white' && !isInnerClip) {
         const certText = `★ ${track.title} · 완주 인증 (${doneCount}/${totalCount}) ★`;
         ctx.save();
+        ctx.globalAlpha = challengeAlpha;
         ctx.font = '700 12px "IBM Plex Sans", "Noto Sans KR", sans-serif';
         const cw = ctx.measureText(certText).width + 28;
         const ch = 26;
@@ -3992,7 +4081,8 @@ export function renderStarChart(
   sessionIds: Set<string>,
   solarTrails?: Record<string, number>,
   sessionPlan?: ObservingSessionEntry[],
-  challenges?: ChallengeTrack[]
+  challenges?: ChallengeTrack[],
+  overrideRotationDeg?: number
 ): RenderResult {
   const rawFlipActive = view.flipH || view.flipV;
   const normEpRot = optics.showEyepiece
@@ -4005,9 +4095,18 @@ export function renderStarChart(
     : 0;
   const diagHalf = Math.hypot(width / 2, height / 2);
   const eyepieceSplitActive =
-    optics.showEyepiece && epTransformActive && epRadiusPx >= 3 && epRadiusPx < diagHalf + 2;
+    overrideRotationDeg === undefined &&
+    optics.showEyepiece &&
+    epTransformActive &&
+    epRadiusPx >= 3 &&
+    epRadiusPx < diagHalf + 2;
   const fullFlipActive = rawFlipActive && (!optics.showEyepiece || epRadiusPx >= diagHalf + 2);
-  const fullRotDeg = optics.showEyepiece && epRotActive && epRadiusPx >= diagHalf + 2 ? normEpRot : 0;
+  const fullRotDeg =
+    overrideRotationDeg !== undefined
+      ? ((overrideRotationDeg % 360) + 360) % 360
+      : optics.showEyepiece && epRotActive && epRadiusPx >= diagHalf + 2
+      ? normEpRot
+      : 0;
 
   if (!eyepieceSplitActive) {
     const effectiveView = fullFlipActive ? view : { ...view, flipH: false, flipV: false };

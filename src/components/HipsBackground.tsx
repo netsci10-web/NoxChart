@@ -1,4 +1,4 @@
-import React, { useEffect, useRef } from 'react';
+import React, { forwardRef, useEffect, useImperativeHandle, useRef } from 'react';
 import {
   ChartViewState,
   HipsSettings,
@@ -440,6 +440,16 @@ interface HipsBackgroundProps {
   height: number;
 }
 
+export interface HipsBackgroundHandle {
+  renderSnapshotToCanvas: (
+    targetCtx: CanvasRenderingContext2D,
+    outWidth: number,
+    outHeight: number,
+    customView: ChartViewState,
+    customRotationDeg?: number
+  ) => boolean;
+}
+
 const MAX_CACHED_TILES = 72;
 
 /**
@@ -447,18 +457,56 @@ const MAX_CACHED_TILES = 72;
  * directly sampling ESA HiPS Allsky.jpg + on-demand 512px high-res tiles in exact
  * stereographic alignment with the vector star chart (Equatorial & Horizontal modes).
  */
-export function HipsBackground({
-  hips,
-  view,
-  optics,
-  observer,
-  theme,
-  width,
-  height,
-}: HipsBackgroundProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
-  const glStateRef = useRef<GlState | null>(null);
-  const renderTriggerRef = useRef<() => void>(() => {});
+export const HipsBackground = forwardRef<HipsBackgroundHandle, HipsBackgroundProps>(
+  function HipsBackground(
+    { hips, view, optics, observer, theme, width, height },
+    ref
+  ) {
+    const canvasRef = useRef<HTMLCanvasElement>(null);
+    const glStateRef = useRef<GlState | null>(null);
+    const renderTriggerRef = useRef<() => void>(() => {});
+    const renderCustomRef = useRef<
+      (
+        renderView: ChartViewState,
+        renderWidth: number,
+        renderHeight: number,
+        renderDpr: number,
+        overrideRotationDeg?: number
+      ) => boolean
+    >(() => false);
+
+    useImperativeHandle(ref, () => ({
+      renderSnapshotToCanvas: (
+        targetCtx,
+        outWidth,
+        outHeight,
+        customView,
+        customRotationDeg = 0
+      ) => {
+        if (!hips.enabled || hips.opacity <= 0.02) return false;
+        const canvas = canvasRef.current;
+        const st = glStateRef.current;
+        if (!canvas || !st) return false;
+        const rendered = renderCustomRef.current(
+          customView,
+          outWidth,
+          outHeight,
+          1,
+          customRotationDeg
+        );
+        if (!rendered) return false;
+        st.gl.finish();
+        try {
+          targetCtx.drawImage(canvas, 0, 0, outWidth, outHeight);
+        } catch {
+          renderTriggerRef.current();
+          return false;
+        }
+        // Immediately restore normal screen WebGL viewport so there is no visual flash
+        renderTriggerRef.current();
+        return true;
+      },
+    }));
 
   // Initialize WebGL1 pipeline lazily when HiPS is enabled
   useEffect(() => {
@@ -546,14 +594,19 @@ export function HipsBackground({
   useEffect(() => {
     if (!hips.enabled) return;
 
-    const drawFrame = () => {
+    const renderScene = (
+      rView: ChartViewState,
+      rWidth: number,
+      rHeight: number,
+      rDpr: number,
+      overrideRotationDeg?: number
+    ): boolean => {
       const canvas = canvasRef.current;
       const st = glStateRef.current;
-      if (!canvas || !st) return;
+      if (!canvas || !st) return false;
 
-      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
-      const targetW = Math.max(1, Math.floor(width * dpr));
-      const targetH = Math.max(1, Math.floor(height * dpr));
+      const targetW = Math.max(1, Math.floor(rWidth * rDpr));
+      const targetH = Math.max(1, Math.floor(rHeight * rDpr));
       if (canvas.width !== targetW || canvas.height !== targetH) {
         canvas.width = targetW;
         canvas.height = targetH;
@@ -575,36 +628,48 @@ export function HipsBackground({
       const lstDeg = getLSTDeg(observer.timestampMs, observer.lon);
       const themeModeNum = theme === 'red' ? 2 : theme === 'white' ? 1 : 0;
 
-      const rawFlipActive = view.flipH || view.flipV;
-      const normEpRot = optics.showEyepiece
-        ? ((optics.eyepieceRotationDeg % 360) + 360) % 360
-        : 0;
+      const isCustomSnapshot = overrideRotationDeg !== undefined;
+      const rawFlipActive = rView.flipH || rView.flipV;
+      const normEpRot =
+        !isCustomSnapshot && optics.showEyepiece
+          ? ((optics.eyepieceRotationDeg % 360) + 360) % 360
+          : 0;
       const epRotActive = normEpRot > 0.05 && normEpRot < 359.95;
       const epTransformActive = rawFlipActive || epRotActive;
-      const epRadiusCss = optics.showEyepiece
-        ? getStereographicRadiusPx(optics.eyepieceFovDeg, view.fsz, width, height)
-        : 0;
-      const diagHalf = Math.hypot(width / 2, height / 2);
+      const epRadiusCss =
+        !isCustomSnapshot && optics.showEyepiece
+          ? getStereographicRadiusPx(optics.eyepieceFovDeg, rView.fsz, rWidth, rHeight)
+          : 0;
+      const diagHalf = Math.hypot(rWidth / 2, rHeight / 2);
       const eyepieceSplitActive =
-        optics.showEyepiece && epTransformActive && epRadiusCss >= 3 && epRadiusCss < diagHalf + 2;
-      const fullFlipActive = rawFlipActive && (!optics.showEyepiece || epRadiusCss >= diagHalf + 2);
-      const fullRotDeg =
-        optics.showEyepiece && epRotActive && epRadiusCss >= diagHalf + 2 ? normEpRot : 0;
+        !isCustomSnapshot &&
+        optics.showEyepiece &&
+        epTransformActive &&
+        epRadiusCss >= 3 &&
+        epRadiusCss < diagHalf + 2;
+      const fullFlipActive = isCustomSnapshot
+        ? rawFlipActive
+        : rawFlipActive && (!optics.showEyepiece || epRadiusCss >= diagHalf + 2);
+      const fullRotDeg = isCustomSnapshot
+        ? ((overrideRotationDeg % 360) + 360) % 360
+        : optics.showEyepiece && epRotActive && epRadiusCss >= diagHalf + 2
+        ? normEpRot
+        : 0;
 
-      const unflippedView: ChartViewState = { ...view, flipH: false, flipV: false };
-      const flippedView: ChartViewState = view;
+      const unflippedView: ChartViewState = { ...rView, flipH: false, flipV: false };
+      const flippedView: ChartViewState = rView;
       const unflippedProj = createProjectionParams(
         unflippedView,
-        width,
-        height,
+        rWidth,
+        rHeight,
         lstDeg,
         observer.lat,
         0
       );
       const flippedProj = createProjectionParams(
         flippedView,
-        width,
-        height,
+        rWidth,
+        rHeight,
         lstDeg,
         observer.lat,
         normEpRot
@@ -612,9 +677,9 @@ export function HipsBackground({
       const baseProj =
         fullFlipActive || fullRotDeg > 0
           ? createProjectionParams(
-              fullFlipActive ? view : unflippedView,
-              width,
-              height,
+              fullFlipActive ? rView : unflippedView,
+              rWidth,
+              rHeight,
               lstDeg,
               observer.lat,
               fullRotDeg
@@ -628,7 +693,7 @@ export function HipsBackground({
         gl.bindTexture(gl.TEXTURE_2D, allskyTex);
         gl.uniform1i(gl.getUniformLocation(allskyProg, 'uAllsky'), 0);
         gl.uniform2f(gl.getUniformLocation(allskyProg, 'uResolution'), targetW, targetH);
-        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uScale'), baseProj.scale * dpr);
+        gl.uniform1f(gl.getUniformLocation(allskyProg, 'uScale'), baseProj.scale * rDpr);
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uRa0'), baseProj.ra0Deg * DEG2RAD);
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uDec0'), baseProj.dec0Deg * DEG2RAD);
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uAlt0'), baseProj.alt0Deg * DEG2RAD);
@@ -637,18 +702,21 @@ export function HipsBackground({
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uLat'), observer.lat * DEG2RAD);
         gl.uniform1f(
           gl.getUniformLocation(allskyProg, 'uIsHorizontal'),
-          view.coordSystem === 'horizontal' ? 1.0 : 0.0
+          rView.coordSystem === 'horizontal' ? 1.0 : 0.0
         );
-        const shaderFlipH = eyepieceSplitActive || fullFlipActive ? (view.flipH ? 1.0 : 0.0) : 0.0;
-        const shaderFlipV = eyepieceSplitActive || fullFlipActive ? (view.flipV ? 1.0 : 0.0) : 0.0;
-        const shaderRotRad =
-          eyepieceSplitActive || fullRotDeg > 0 ? normEpRot * DEG2RAD : 0.0;
+        const shaderFlipH = eyepieceSplitActive || fullFlipActive ? (rView.flipH ? 1.0 : 0.0) : 0.0;
+        const shaderFlipV = eyepieceSplitActive || fullFlipActive ? (rView.flipV ? 1.0 : 0.0) : 0.0;
+        const shaderRotRad = isCustomSnapshot
+          ? fullRotDeg * DEG2RAD
+          : eyepieceSplitActive || fullRotDeg > 0
+          ? normEpRot * DEG2RAD
+          : 0.0;
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uFlipH'), shaderFlipH);
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uFlipV'), shaderFlipV);
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uRotationRad'), shaderRotRad);
         gl.uniform1f(
           gl.getUniformLocation(allskyProg, 'uEyepieceRadius'),
-          eyepieceSplitActive ? epRadiusCss * dpr : 0.0
+          eyepieceSplitActive ? epRadiusCss * rDpr : 0.0
         );
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uOpacity'), hips.opacity);
         gl.uniform1f(gl.getUniformLocation(allskyProg, 'uThemeMode'), themeModeNum);
@@ -662,17 +730,17 @@ export function HipsBackground({
       }
 
       // Pass 2: Stream & overlay high-resolution 512x512 HiPS tiles when zoomed in (<= 28°)
-      if (view.fsz <= 28) {
+      if (rView.fsz <= 28) {
         const order =
-          view.fsz <= 0.55
+          rView.fsz <= 0.55
             ? 8
-            : view.fsz <= 1.1
+            : rView.fsz <= 1.1
             ? 7
-            : view.fsz <= 2.2
+            : rView.fsz <= 2.2
             ? 6
-            : view.fsz <= 6
+            : rView.fsz <= 6
             ? 5
-            : view.fsz <= 14
+            : rView.fsz <= 14
             ? 4
             : 3;
         const nside = 1 << order;
@@ -684,10 +752,10 @@ export function HipsBackground({
         ) => {
           const visiblePix = new Set<number>();
           const gridN = eyepieceBoundsOnly ? 6 : 10;
-          const minX = eyepieceBoundsOnly ? Math.max(0, width / 2 - epRadiusCss * 1.08) : -0.06 * width;
-          const maxX = eyepieceBoundsOnly ? Math.min(width, width / 2 + epRadiusCss * 1.08) : 1.06 * width;
-          const minY = eyepieceBoundsOnly ? Math.max(0, height / 2 - epRadiusCss * 1.08) : -0.06 * height;
-          const maxY = eyepieceBoundsOnly ? Math.min(height, height / 2 + epRadiusCss * 1.08) : 1.06 * height;
+          const minX = eyepieceBoundsOnly ? Math.max(0, rWidth / 2 - epRadiusCss * 1.08) : -0.06 * rWidth;
+          const maxX = eyepieceBoundsOnly ? Math.min(rWidth, rWidth / 2 + epRadiusCss * 1.08) : 1.06 * rWidth;
+          const minY = eyepieceBoundsOnly ? Math.max(0, rHeight / 2 - epRadiusCss * 1.08) : -0.06 * rHeight;
+          const maxY = eyepieceBoundsOnly ? Math.min(rHeight, rHeight / 2 + epRadiusCss * 1.08) : 1.06 * rHeight;
 
           for (let gy = 0; gy <= gridN; gy++) {
             for (let gx = 0; gx <= gridN; gx++) {
@@ -760,7 +828,7 @@ export function HipsBackground({
             gl.uniform2f(gl.getUniformLocation(tileProg, 'uResolution'), targetW, targetH);
             gl.uniform1f(
               gl.getUniformLocation(tileProg, 'uEyepieceRadius'),
-              eyepieceSplitActive ? epRadiusCss * dpr : 0.0
+              eyepieceSplitActive ? epRadiusCss * rDpr : 0.0
             );
             gl.uniform1f(gl.getUniformLocation(tileProg, 'uClipMode'), clipMode);
             gl.uniform1f(gl.getUniformLocation(tileProg, 'uOpacity'), hips.opacity);
@@ -788,8 +856,8 @@ export function HipsBackground({
                   const pt = projectStereographicRaw(ang.raDeg, ang.decDeg, tileProj, -0.2);
                   if (pt && Number.isFinite(pt.x) && Number.isFinite(pt.y)) {
                     rowPts.push({
-                      x: (pt.x / width) * 2 - 1,
-                      y: 1 - (pt.y / height) * 2,
+                      x: (pt.x / rWidth) * 2 - 1,
+                      y: 1 - (pt.y / rHeight) * 2,
                       u,
                       v,
                     });
@@ -847,8 +915,15 @@ export function HipsBackground({
           drawTilesForProj(baseProj, 0.0, false);
         }
       }
+      return true;
     };
 
+    const drawFrame = () => {
+      const dpr = Math.min(window.devicePixelRatio || 1, 1.5);
+      renderScene(view, width, height, dpr);
+    };
+
+    renderCustomRef.current = renderScene;
     renderTriggerRef.current = drawFrame;
     const rafId = requestAnimationFrame(drawFrame);
     return () => cancelAnimationFrame(rafId);
@@ -882,4 +957,4 @@ export function HipsBackground({
       <canvas ref={canvasRef} className="block w-full h-full" />
     </div>
   );
-}
+});

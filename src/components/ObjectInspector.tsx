@@ -74,6 +74,19 @@ interface ObjectInspectorProps {
     unmatchedNames: string[];
   }>;
   onExportSkylist: () => void;
+  challengeOpacity: number;
+  onChangeChallengeOpacity: (opacity: number) => void;
+  challengeDraft: ChallengeTrack | null;
+  challengeDraftIsNew: boolean;
+  challengePickAllowEmpty: boolean;
+  challengeDraftNotice: string | null;
+  onStartCreateChallengeDraft: () => void;
+  onStartEditChallengeDraft: (track: ChallengeTrack) => void;
+  onChangeChallengeDraft: React.Dispatch<React.SetStateAction<ChallengeTrack | null>>;
+  onCancelChallengeDraft: () => void;
+  onChangeChallengePickAllowEmpty: (allow: boolean) => void;
+  onClearChallengeDraftNotice: () => void;
+  onAddCenterChallengeCheckpoint: () => void;
   onToggleChallengeOnChart: (trackId: string) => void;
   onToggleChallengeCheckpoint: (trackId: string, checkpointId: string) => void;
   onUpdateChallengeCheckpointNote: (trackId: string, checkpointId: string, note: string) => void;
@@ -111,6 +124,19 @@ export function ObjectInspector({
   onAddRecommendedTonight,
   onImportSkylist,
   onExportSkylist,
+  challengeOpacity,
+  onChangeChallengeOpacity,
+  challengeDraft,
+  challengeDraftIsNew,
+  challengePickAllowEmpty,
+  challengeDraftNotice,
+  onStartCreateChallengeDraft,
+  onStartEditChallengeDraft,
+  onChangeChallengeDraft,
+  onCancelChallengeDraft,
+  onChangeChallengePickAllowEmpty,
+  onClearChallengeDraftNotice,
+  onAddCenterChallengeCheckpoint,
   onToggleChallengeOnChart,
   onToggleChallengeCheckpoint,
   onUpdateChallengeCheckpointNote,
@@ -809,6 +835,19 @@ export function ObjectInspector({
             theme={theme}
             observer={observer}
             catalogs={catalogs}
+            challengeOpacity={challengeOpacity}
+            onChangeChallengeOpacity={onChangeChallengeOpacity}
+            draft={challengeDraft}
+            isCreatingDraft={challengeDraftIsNew}
+            pickAllowEmpty={challengePickAllowEmpty}
+            draftNotice={challengeDraftNotice}
+            onStartCreateDraft={onStartCreateChallengeDraft}
+            onStartEditDraft={onStartEditChallengeDraft}
+            onChangeDraft={onChangeChallengeDraft}
+            onCancelDraft={onCancelChallengeDraft}
+            onChangePickAllowEmpty={onChangeChallengePickAllowEmpty}
+            onClearDraftNotice={onClearChallengeDraftNotice}
+            onAddCenterCheckpoint={onAddCenterChallengeCheckpoint}
             onToggleTrackOnChart={onToggleChallengeOnChart}
             onToggleCheckpoint={onToggleChallengeCheckpoint}
             onUpdateCheckpointNote={onUpdateChallengeCheckpointNote}

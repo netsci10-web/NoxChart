@@ -10,10 +10,12 @@ import {
   ChevronDown,
   ChevronUp,
   Circle,
+  Crosshair,
   Download,
   Edit3,
   Eye,
   EyeOff,
+  MapPin,
   Maximize2,
   Plus,
   Printer,
@@ -36,6 +38,8 @@ import {
 } from '../types/astronomy';
 import {
   equatorialToHorizontal,
+  formatDec,
+  formatRA,
   getCompassDirection,
   getLSTDeg,
 } from '../utils/astronomy';
@@ -51,6 +55,19 @@ interface ChallengePanelProps {
   theme: ThemeMode;
   observer: ObserverConfig;
   catalogs: CatalogSnapshot;
+  challengeOpacity: number;
+  onChangeChallengeOpacity: (opacity: number) => void;
+  draft: ChallengeTrack | null;
+  isCreatingDraft: boolean;
+  pickAllowEmpty: boolean;
+  draftNotice: string | null;
+  onStartCreateDraft: () => void;
+  onStartEditDraft: (track: ChallengeTrack) => void;
+  onChangeDraft: React.Dispatch<React.SetStateAction<ChallengeTrack | null>>;
+  onCancelDraft: () => void;
+  onChangePickAllowEmpty: (allow: boolean) => void;
+  onClearDraftNotice: () => void;
+  onAddCenterCheckpoint: () => void;
   onToggleTrackOnChart: (trackId: string) => void;
   onToggleCheckpoint: (trackId: string, checkpointId: string) => void;
   onUpdateCheckpointNote: (trackId: string, checkpointId: string, note: string) => void;
@@ -96,6 +113,19 @@ export function ChallengePanel({
   theme,
   observer,
   catalogs,
+  challengeOpacity,
+  onChangeChallengeOpacity,
+  draft,
+  isCreatingDraft,
+  pickAllowEmpty,
+  draftNotice,
+  onStartCreateDraft,
+  onStartEditDraft,
+  onChangeDraft,
+  onCancelDraft,
+  onChangePickAllowEmpty,
+  onClearDraftNotice,
+  onAddCenterCheckpoint,
   onToggleTrackOnChart,
   onToggleCheckpoint,
   onUpdateCheckpointNote,
@@ -110,7 +140,7 @@ export function ChallengePanel({
   const ui = getUiTheme(theme);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const [mode, setMode] = useState<'list' | 'detail' | 'edit'>('list');
+  const [mode, setMode] = useState<'list' | 'detail'>('list');
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<'all' | 'todo' | 'done'>('all');
   const [expandedCpId, setExpandedCpId] = useState<string | null>(null);
@@ -126,9 +156,7 @@ export function ChallengePanel({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [deleteTarget]);
 
-  // Edit / Create Draft State
-  const [isCreating, setIsCreating] = useState(false);
-  const [draft, setDraft] = useState<ChallengeTrack | null>(null);
+  // Edit / Create Form Local Fields
   const [catalogQuery, setCatalogQuery] = useState('');
   const [showManualAdd, setShowManualAdd] = useState(false);
   const [manualName, setManualName] = useState('');
@@ -137,8 +165,62 @@ export function ChallengePanel({
   const [manualDec, setManualDec] = useState('');
   const [manualGuide, setManualGuide] = useState('');
 
-  const obsTimeMs = observer.useLiveTime ? Date.now() : observer.timestampMs;
+  const obsTimeMs = observer.timestampMs;
   const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
+
+  const belowHorizonTextCls =
+    theme === 'white'
+      ? 'text-slate-400'
+      : theme === 'red'
+      ? 'text-[#732626]'
+      : 'text-slate-500';
+
+  const belowHorizonSubCls =
+    theme === 'white'
+      ? 'text-slate-300'
+      : theme === 'red'
+      ? 'text-[#551B1B]'
+      : 'text-slate-600';
+
+  const resolveCheckpointCoords = (
+    cp: ChallengeCheckpoint
+  ): { ra: number; dec: number } | null => {
+    if (cp.ra !== undefined && cp.dec !== undefined) {
+      return { ra: cp.ra, dec: cp.dec };
+    }
+    const key = cp.catalogId ? cp.catalogId.replace(/\s+/g, '').toUpperCase() : '';
+    if (!key) return null;
+    if (cp.kind === 'dso') {
+      const pools = [
+        catalogs.dsosBright,
+        CALDWELL_CATALOG,
+        catalogs.dsosDeep,
+        catalogs.darkNebulae,
+      ];
+      for (const pool of pools) {
+        const hit = pool.find(
+          (d) =>
+            d.id.replace(/\s+/g, '').toUpperCase() === key ||
+            (d.altId && d.altId.replace(/\s+/g, '').toUpperCase() === key)
+        );
+        if (hit) return { ra: hit.ra, dec: hit.dec };
+      }
+    } else if (cp.kind === 'star') {
+      const hit = catalogs.brightStars.find(
+        (s) =>
+          s.id.replace(/\s+/g, '').toUpperCase() === key ||
+          (s.hip && `HIP${s.hip}` === key) ||
+          (s.name && s.name.replace(/\s+/g, '').toUpperCase() === key)
+      );
+      if (hit) return { ra: hit.ra, dec: hit.dec };
+    } else if (cp.kind === 'double') {
+      const hit = catalogs.doubleStars.find(
+        (d) => d.id.replace(/\s+/g, '').toUpperCase() === key
+      );
+      if (hit) return { ra: hit.ra, dec: hit.dec };
+    }
+    return null;
+  };
 
   const selectedTrack = useMemo(
     () => tracks.find((t) => t.id === selectedTrackId) ?? null,
@@ -160,7 +242,7 @@ export function ChallengePanel({
       setMode('list');
     }
     if (draft?.id === deletedId) {
-      setDraft(null);
+      onCancelDraft();
       setMode('list');
     }
     setDeleteTarget(null);
@@ -254,49 +336,23 @@ export function ChallengePanel({
   }, [catalogQuery, catalogs]);
 
   const startCreateTrack = () => {
-    const now = Date.now();
-    const fresh: ChallengeTrack = {
-      id: `custom_track_${now}`,
-      title: '',
-      subtitle: '',
-      description: '',
-      season: 'all',
-      lineColor: '#38BDF8',
-      completedColor: '#FBBF24',
-      activeOnChart: true,
-      builtIn: false,
-      badges: [
-        {
-          id: `master_${now}`,
-          title: '코스 완주 마스터',
-          description: '모든 체크포인트 관측 완료',
-          requiredCheckpointIds: [],
-          isMaster: true,
-        },
-      ],
-      checkpoints: [],
-      createdAt: now,
-    };
-    setDraft(fresh);
-    setIsCreating(true);
     setCatalogQuery('');
     setShowManualAdd(false);
-    setMode('edit');
+    setNotice(null);
+    onClearDraftNotice();
+    onStartCreateDraft();
   };
 
   const startEditTrack = (track: ChallengeTrack) => {
-    setDraft({
-      ...track,
-      checkpoints: track.checkpoints.map((c) => ({ ...c })),
-    });
-    setIsCreating(false);
     setCatalogQuery('');
     setShowManualAdd(false);
-    setMode('edit');
+    setNotice(null);
+    onClearDraftNotice();
+    onStartEditDraft(track);
   };
 
   const addCatalogHitToDraft = (hit: CatalogSearchHit) => {
-    setDraft((prev) => {
+    onChangeDraft((prev) => {
       if (!prev) return prev;
       const idx = prev.checkpoints.length + 1;
       const lastStage =
@@ -330,7 +386,7 @@ export function ChallengePanel({
       setNotice('천체 이름과 유효한 적경(0~360°), 적위(-90~90°)를 입력해 주세요.');
       return;
     }
-    setDraft((prev) => {
+    onChangeDraft((prev) => {
       if (!prev) return prev;
       const idx = prev.checkpoints.length + 1;
       const newCp: ChallengeCheckpoint = {
@@ -358,7 +414,7 @@ export function ChallengePanel({
   };
 
   const moveDraftCheckpoint = (index: number, delta: -1 | 1) => {
-    setDraft((prev) => {
+    onChangeDraft((prev) => {
       if (!prev) return prev;
       const targetIdx = index + delta;
       if (targetIdx < 0 || targetIdx >= prev.checkpoints.length) return prev;
@@ -370,7 +426,7 @@ export function ChallengePanel({
   };
 
   const removeDraftCheckpoint = (cpId: string) => {
-    setDraft((prev) => {
+    onChangeDraft((prev) => {
       if (!prev) return prev;
       return {
         ...prev,
@@ -384,7 +440,7 @@ export function ChallengePanel({
     field: 'code' | 'name' | 'stage' | 'guideNote',
     value: string
   ) => {
-    setDraft((prev) => {
+    onChangeDraft((prev) => {
       if (!prev) return prev;
       return {
         ...prev,
@@ -418,12 +474,12 @@ export function ChallengePanel({
         guideNote: c.guideNote?.trim() || undefined,
       })),
     };
+    const wasCreating = isCreatingDraft;
     onSaveTrack(cleanTrack);
+    onCancelDraft();
     setSelectedTrackId(cleanTrack.id);
-    setDraft(null);
-    setIsCreating(false);
     setMode('detail');
-    setNotice(isCreating ? '새 챌린지 트랙을 생성했습니다.' : '챌린지 트랙을 저장했습니다.');
+    setNotice(wasCreating ? '새 챌린지 트랙을 생성했습니다.' : '챌린지 트랙을 저장했습니다.');
   };
 
   const goldTextClass =
@@ -443,17 +499,48 @@ export function ChallengePanel({
   const progressFillColor =
     theme === 'white' ? '#D97706' : theme === 'red' ? '#EF4444' : '#FBBF24';
 
+  const renderOpacityBar = () => (
+    <div
+      className={`border px-2 py-1.5 space-y-1 ${ui.border}`}
+      style={{ borderRadius: '6px' }}
+    >
+      <div className="flex items-center justify-between gap-1 text-[10px]">
+        <span className={`font-medium whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+          챌린지 투명도
+        </span>
+        <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
+          {Math.round(challengeOpacity * 100)}%
+        </span>
+      </div>
+      <input
+        type="range"
+        min={0.05}
+        max={1}
+        step={0.05}
+        value={challengeOpacity}
+        onChange={(e) => onChangeChallengeOpacity(Number(e.target.value))}
+        aria-label="챌린지 성도 표시 투명도"
+        className={`w-full h-1.5 cursor-pointer ${
+          theme === 'red' ? 'accent-red-600' : 'accent-amber-500'
+        }`}
+      />
+    </div>
+  );
+
   // =================== EDIT / CREATE VIEW ===================
-  if (mode === 'edit' && draft) {
+  if (draft) {
+    const activeNotice = draftNotice || notice;
     return (
       <div className="space-y-2.5">
+        {renderOpacityBar()}
         <div className="flex items-center justify-between gap-1">
           <button
             type="button"
             onClick={() => {
-              setDraft(null);
+              onCancelDraft();
               setMode(selectedTrack ? 'detail' : 'list');
               setNotice(null);
+              onClearDraftNotice();
             }}
             className={`px-1.5 py-1 border text-[10px] tracking-[-0.05em] font-medium flex items-center gap-1 ${ui.buttonIdle}`}
             style={{ borderRadius: '4px' }}
@@ -462,7 +549,7 @@ export function ChallengePanel({
             <span>취소</span>
           </button>
           <span className={`font-semibold text-[11px] tracking-[-0.05em] ${ui.textPrimary}`}>
-            {isCreating ? '새 챌린지 생성' : '챌린지 편집'}
+            {isCreatingDraft ? '새 챌린지 생성' : '챌린지 편집'}
           </span>
           <button
             type="button"
@@ -475,13 +562,70 @@ export function ChallengePanel({
           </button>
         </div>
 
-        {notice && (
+        {/* Interactive Star-Chart Picking Guide Banner */}
+        <div
+          className={`border p-2 space-y-1.5 ${goldBgClass}`}
+          style={{ borderRadius: '6px' }}
+        >
+          <div className="flex items-center justify-between gap-1">
+            <span className="font-semibold text-[10.5px] tracking-[-0.04em] flex items-center gap-1">
+              <MapPin className="w-3.5 h-3.5 shrink-0" />
+              <span>성도 직접 지정 활성화</span>
+            </span>
+            <span className="text-[9.5px] font-mono tabular-nums opacity-85">
+              {draft.checkpoints.length}개 지정
+            </span>
+          </div>
+          <p className="text-[9.5px] leading-snug tracking-[-0.03em] break-keep opacity-90">
+            성도의 천체나 원하는 위치를 클릭하면 천체 정보로 이동하지 않고 체크포인트로 바로 추가되며, 루트가 성도에 실시간 표시됩니다.
+          </p>
+          <div className="grid grid-cols-2 gap-1 pt-0.5">
+            <button
+              type="button"
+              onClick={() => onChangePickAllowEmpty(true)}
+              className={`py-1 px-1.5 border text-[9.5px] tracking-[-0.04em] font-medium transition-colors ${
+                pickAllowEmpty ? ui.buttonActive : ui.buttonIdle
+              }`}
+              style={{ borderRadius: '4px' }}
+            >
+              천체 + 빈 위치
+            </button>
+            <button
+              type="button"
+              onClick={() => onChangePickAllowEmpty(false)}
+              className={`py-1 px-1.5 border text-[9.5px] tracking-[-0.04em] font-medium transition-colors ${
+                !pickAllowEmpty ? ui.buttonActive : ui.buttonIdle
+              }`}
+              style={{ borderRadius: '4px' }}
+            >
+              천체만 선택
+            </button>
+          </div>
+          <button
+            type="button"
+            onClick={onAddCenterCheckpoint}
+            className={`w-full py-1 px-2 border text-[9.5px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors ${ui.buttonIdle}`}
+            style={{ borderRadius: '4px' }}
+          >
+            <Crosshair className="w-3 h-3 shrink-0" />
+            <span>현재 성도 중심 위치 추가</span>
+          </button>
+        </div>
+
+        {activeNotice && (
           <div
             className={`px-2 py-1.5 border text-[10px] tracking-[-0.04em] leading-snug break-keep flex items-start justify-between gap-1 ${ui.border} ${ui.accentText}`}
             style={{ borderRadius: '4px' }}
           >
-            <span>{notice}</span>
-            <button type="button" onClick={() => setNotice(null)} className="shrink-0">
+            <span>{activeNotice}</span>
+            <button
+              type="button"
+              onClick={() => {
+                setNotice(null);
+                onClearDraftNotice();
+              }}
+              className="shrink-0"
+            >
               <X className="w-3 h-3" />
             </button>
           </div>
@@ -494,7 +638,7 @@ export function ChallengePanel({
             <input
               type="text"
               value={draft.title}
-              onChange={(e) => setDraft((p) => (p ? { ...p, title: e.target.value } : p))}
+              onChange={(e) => onChangeDraft((p) => (p ? { ...p, title: e.target.value } : p))}
               placeholder="예: 가을철 안드로메다 은하 투어"
               className={`w-full px-2 py-1 border text-[11px] ${ui.input}`}
               style={{ borderRadius: '4px' }}
@@ -505,7 +649,7 @@ export function ChallengePanel({
             <input
               type="text"
               value={draft.subtitle ?? ''}
-              onChange={(e) => setDraft((p) => (p ? { ...p, subtitle: e.target.value } : p))}
+              onChange={(e) => onChangeDraft((p) => (p ? { ...p, subtitle: e.target.value } : p))}
               placeholder="예: 1호선 메시에 성단 투어 · 5역"
               className={`w-full px-2 py-1 border text-[10.5px] ${ui.input}`}
               style={{ borderRadius: '4px' }}
@@ -516,7 +660,7 @@ export function ChallengePanel({
             <textarea
               rows={2}
               value={draft.description}
-              onChange={(e) => setDraft((p) => (p ? { ...p, description: e.target.value } : p))}
+              onChange={(e) => onChangeDraft((p) => (p ? { ...p, description: e.target.value } : p))}
               placeholder="코스 개요 및 관측 팁..."
               className={`w-full px-2 py-1 border text-[10.5px] resize-none ${ui.input}`}
               style={{ borderRadius: '4px' }}
@@ -528,7 +672,7 @@ export function ChallengePanel({
               <select
                 value={draft.season ?? 'all'}
                 onChange={(e) =>
-                  setDraft((p) =>
+                  onChangeDraft((p) =>
                     p ? { ...p, season: e.target.value as ChallengeTrack['season'] } : p
                   )
                 }
@@ -549,7 +693,7 @@ export function ChallengePanel({
                   <button
                     key={col}
                     type="button"
-                    onClick={() => setDraft((p) => (p ? { ...p, lineColor: col } : p))}
+                    onClick={() => onChangeDraft((p) => (p ? { ...p, lineColor: col } : p))}
                     className={`w-4 h-4 rounded-full border transition-transform ${
                       draft.lineColor === col
                         ? 'scale-110 ring-2 ring-amber-400 border-white'
@@ -568,7 +712,7 @@ export function ChallengePanel({
         <div className={`border p-2 space-y-2 ${ui.border}`} style={{ borderRadius: '6px' }}>
           <div className="flex items-center justify-between gap-1">
             <span className={`font-semibold text-[10.5px] ${ui.textPrimary}`}>
-              체크포인트 추가 ({draft.checkpoints.length})
+              검색 · 좌표로 추가 ({draft.checkpoints.length})
             </span>
             <button
               type="button"
@@ -731,6 +875,12 @@ export function ChallengePanel({
                     <Trash2 className="w-3 h-3" />
                   </button>
                 </div>
+                {cp.ra !== undefined && cp.dec !== undefined && (
+                  <div className={`text-[9px] font-mono tabular-nums px-0.5 ${ui.textMuted}`}>
+                    {cp.catalogId ? `${cp.catalogId} · ` : '지정 좌표 · '}
+                    RA {formatRA(cp.ra)} · Dec {formatDec(cp.dec)}
+                  </div>
+                )}
                 <input
                   type="text"
                   value={cp.stage}
@@ -753,14 +903,14 @@ export function ChallengePanel({
         )}
 
         {/* Delete / Reset Built-In Footer */}
-        {!isCreating && (
+        {!isCreatingDraft && (
           <div className="pt-1 flex items-center gap-1">
             {draft.builtIn && (
               <button
                 type="button"
                 onClick={() => {
                   onResetBuiltInTrack(draft.id);
-                  setDraft(null);
+                  onCancelDraft();
                   setMode('detail');
                   setNotice('기본 챌린지 구성을 초기값으로 복원했습니다.');
                 }}
@@ -823,6 +973,7 @@ export function ChallengePanel({
 
     return (
       <div className="space-y-2.5">
+        {renderOpacityBar()}
         {/* Top Action Bar */}
         <div className="flex items-center justify-between gap-1">
           <button
@@ -1073,12 +1224,18 @@ export function ChallengePanel({
                 <div className={`divide-y ${ui.divider}`}>
                   {group.items.map((cp) => {
                     const expanded = expandedCpId === cp.id;
-                    const hz =
-                      cp.ra !== undefined && cp.dec !== undefined
-                        ? equatorialToHorizontal(cp.ra, cp.dec, lstDeg, observer.lat)
-                        : null;
+                    const coords = resolveCheckpointCoords(cp);
+                    const hz = coords
+                      ? equatorialToHorizontal(coords.ra, coords.dec, lstDeg, observer.lat)
+                      : null;
+                    const isBelowHorizon = hz !== null && hz.altDeg < 0;
                     return (
-                      <div key={cp.id} className="p-1.5 space-y-1">
+                      <div
+                        key={cp.id}
+                        className={`p-1.5 space-y-1 transition-opacity ${
+                          isBelowHorizon ? 'opacity-70' : ''
+                        }`}
+                      >
                         <div className="flex items-start gap-1.5">
                           <button
                             type="button"
@@ -1087,9 +1244,17 @@ export function ChallengePanel({
                             className="mt-0.5 shrink-0"
                           >
                             {cp.observed ? (
-                              <CheckCircle2 className={`w-3.5 h-3.5 ${goldTextClass}`} />
+                              <CheckCircle2
+                                className={`w-3.5 h-3.5 ${
+                                  isBelowHorizon ? belowHorizonTextCls : goldTextClass
+                                }`}
+                              />
                             ) : (
-                              <Circle className={`w-3.5 h-3.5 ${ui.textMuted}`} />
+                              <Circle
+                                className={`w-3.5 h-3.5 ${
+                                  isBelowHorizon ? belowHorizonSubCls : ui.textMuted
+                                }`}
+                              />
                             )}
                           </button>
                           <button
@@ -1100,14 +1265,20 @@ export function ChallengePanel({
                             <div className="flex items-center gap-1 min-w-0">
                               <span
                                 className={`text-[9.5px] font-mono font-semibold shrink-0 ${
-                                  cp.observed ? goldTextClass : ui.accentText
+                                  isBelowHorizon
+                                    ? belowHorizonTextCls
+                                    : cp.observed
+                                    ? goldTextClass
+                                    : ui.accentText
                                 }`}
                               >
                                 {cp.code}
                               </span>
                               <span
                                 className={`text-[10.5px] font-medium truncate ${
-                                  cp.observed
+                                  isBelowHorizon
+                                    ? `${cp.observed ? 'line-through ' : ''}${belowHorizonTextCls}`
+                                    : cp.observed
                                     ? `line-through opacity-75 ${ui.textPrimary}`
                                     : ui.textPrimary
                                 }`}
@@ -1116,7 +1287,9 @@ export function ChallengePanel({
                               </span>
                             </div>
                             <div
-                              className={`text-[9px] font-mono tabular-nums truncate ${ui.textMuted}`}
+                              className={`text-[9px] font-mono tabular-nums truncate ${
+                                isBelowHorizon ? belowHorizonSubCls : ui.textMuted
+                              }`}
                             >
                               {[
                                 cp.constellation,
@@ -1183,6 +1356,7 @@ export function ChallengePanel({
 
   return (
     <div className="space-y-2.5">
+      {renderOpacityBar()}
       {/* Header & File I/O Toolbar */}
       <div className="flex items-center justify-between gap-1">
         <span className={`font-semibold tracking-[-0.05em] flex items-center gap-1 ${ui.textPrimary}`}>

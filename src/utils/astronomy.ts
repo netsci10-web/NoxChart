@@ -564,19 +564,19 @@ export function bvToStarColor(
 
 /**
  * Compute dynamic Level-of-Detail (LoD) limiting magnitude from Field Size (fsz).
- * Scales from ~5.2m (180° all-sky) down to 14.5m-15.8m (0.5°-2° eyepiece/Gaia DR3 depth).
+ * Baseline is 6.0m at 60° FOV (offset = 0), scaling deeper as FOV narrows.
  */
 export function getLimitingMagnitude(fszDeg: number, magOffset: number): number {
-  const base = 13.4 - 3.65 * Math.log10(Math.max(0.35, fszDeg));
+  const base = 6.0 - 3.65 * Math.log10(Math.max(0.35, fszDeg) / 60);
   return Math.max(3.0, Math.min(15.8, base + magOffset));
 }
 
 /**
  * Compute dynamic DSO limiting magnitude independently from the star offset.
- * Default baseline is +3.5m deeper than the FOV star baseline.
+ * Baseline is 10.0m at 60° FOV (offset = 0), scaling deeper as FOV narrows.
  */
 export function getDsoLimitingMagnitude(fszDeg: number, dsoMagOffset: number): number {
-  const base = 13.4 - 3.65 * Math.log10(Math.max(0.35, fszDeg)) + 3.5;
+  const base = 10.0 - 3.65 * Math.log10(Math.max(0.35, fszDeg) / 60);
   return Math.max(4.0, Math.min(17.5, base + dsoMagOffset));
 }
 

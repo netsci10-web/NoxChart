@@ -132,6 +132,7 @@ export interface LayerSettings {
   showDsoLabels: boolean;
   dsoLabelDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to label)
   showStarLabels: boolean;
+  showProperStarNames: boolean; // 알려진 항성 고유 이름 표시 (항성 이름 라벨 OFF 시에도 표시)
   starLabelDensityPct: number; // 0..100 (% of currently visible on-screen stars to label)
   showFieldStars: boolean;
   enableGaiaLive: boolean;
@@ -140,6 +141,7 @@ export interface LayerSettings {
   dsoCategories: Record<DsoType, boolean>;
   catalogFilter: 'all' | 'messier' | 'ngc' | 'ic' | 'barnard';
   highlightSessionPlan: boolean; // 관측 목록 강조 모드
+  challengeOpacity: number; // 0.05..1.0 성도 위 챌린지 노선·마커 투명도
 }
 
 export interface MilkyWayLayer {
@@ -155,13 +157,16 @@ export interface OpticsSettings {
   eyepieceFovDeg: number; // Custom or calculated circular TFOV in degrees
   eyepieceRotationDeg: number; // Clockwise rotation angle (0..360°) inside telescope eyepiece circle
   eyepieceLabel: string;
-  eyepieceInputMode: 'direct' | 'calc';
+  eyepieceInputMode: 'direct' | 'calc' | 'equipment';
   telescopeFocalLengthMm: number; // 망원경 초점거리 (mm)
   eyepieceFocalLengthMm: number; // 아이피스 초점거리 (mm)
   eyepieceAfovDeg: number; // 아이피스 겉보기 시야각 (AFOV, °)
   showSensorBox: boolean;
   sensorWidthDeg: number;
   sensorHeightDeg: number;
+  sensorRotationDeg: number; // Clockwise rotation angle (0..360°) of camera sensor framing box
+  sensorEquipmentLabel?: string; // Active camera / telescope / smart scope label for sensor frame export
+  sensorRotationLocked?: boolean; // True when a non-rotatable smart telescope is active
   showStarHop: boolean;
   showSelectionMark: boolean; // 선택 천체 타겟 마크 표시 여부
 }
@@ -247,6 +252,8 @@ export interface EquipmentItem {
   sensorWidthMm?: number;
   sensorHeightMm?: number;
   pixelSizeUm?: number;
+  isSmartTelescope?: boolean;
+  supportsSensorRotation?: boolean;
 }
 
 export interface EquipmentLockerState {
