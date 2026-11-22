@@ -152,6 +152,30 @@ export interface MilkyWayLayer {
   polys: [number, number][][];
 }
 
+export interface SensorExportCaptionConfig {
+  showTargetName: boolean; // 중심 천체명
+  showCoordinates: boolean; // 적경·적위 좌표 (RA, Dec)
+  showDateTime: boolean; // 관측 일시
+  showLocation: boolean; // 관측지 이름
+  showConstellation: boolean; // 별자리명
+  showEquipmentFov: boolean; // 장비명 및 센서 화각 크기
+  showRotation: boolean; // 좌표계(J2000) 및 지평 회전각
+  showNoxChartBrand: boolean; // NoxChart 출처 표기
+  customNote: string; // 사용자 추가 메모 / 촬영자 표기
+}
+
+export const DEFAULT_SENSOR_EXPORT_CAPTION: SensorExportCaptionConfig = {
+  showTargetName: true,
+  showCoordinates: true,
+  showDateTime: true,
+  showLocation: false,
+  showConstellation: true,
+  showEquipmentFov: true,
+  showRotation: true,
+  showNoxChartBrand: true,
+  customNote: '',
+};
+
 export interface OpticsSettings {
   showCrosshair: boolean; // 중앙 십자선
   showTelrad: boolean; // 0.5°, 2°, 4° concentric circles
@@ -170,6 +194,7 @@ export interface OpticsSettings {
   sensorRotationDeg: number; // Clockwise rotation angle (0..360°) of camera sensor framing box
   sensorEquipmentLabel?: string; // Active camera / telescope / smart scope label for sensor frame export
   sensorRotationLocked?: boolean; // True when a non-rotatable smart telescope is active
+  sensorExportCaption?: SensorExportCaptionConfig; // 촬영센서 화각 PNG 저장 시 하단 설명 설정
   showStarHop: boolean;
   showSelectionMark: boolean; // 선택 천체 타겟 마크 표시 여부
 }
@@ -244,6 +269,43 @@ export interface ObservingListsState {
     string,
     { observed?: boolean; notes?: string; excluded?: boolean }
   >;
+}
+
+export type ObservationSeeingGrade = 'excellent' | 'good' | 'fair' | 'poor' | '';
+
+export interface ObservationLogEntry {
+  id: string;
+  objectId: string;
+  objectKind: 'star' | 'dso' | 'planet' | 'double';
+  objectName: string;
+  constellation?: string;
+  raDeg: number;
+  decDeg: number;
+  observedAt: number; // Epoch ms of observation date & time
+  location: string; // 관측 장소
+  equipment: string; // 사용 장비
+  seeing?: ObservationSeeingGrade; // 시상
+  transparency?: ObservationSeeingGrade; // 투명도
+  rating?: number; // 1..5 optional rating
+  notes: string; // 관측 내용
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface ObservedObjectStatus {
+  objectId: string;
+  objectKind: 'star' | 'dso' | 'planet' | 'double';
+  objectName: string;
+  constellation?: string;
+  raDeg: number;
+  decDeg: number;
+  observed: boolean;
+  updatedAt: number;
+}
+
+export interface ObservationLogStoreState {
+  observedMap: Record<string, ObservedObjectStatus>;
+  logs: ObservationLogEntry[];
 }
 
 export interface StarHopGuide {

@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Bookmark,
+  BookOpen,
   Camera,
   Check,
   ChevronDown,
@@ -10,17 +11,21 @@ import {
   Download,
   Globe2,
   Moon,
+  Mountain,
   Printer,
   Share2,
+  Star,
   Sun,
   Trophy,
   Waypoints,
+  X,
 } from 'lucide-react';
 import { ControlSidebar } from './components/ControlSidebar';
 import { ObjectInspector } from './components/ObjectInspector';
 import { ObservingSiteMapModal } from './components/ObservingSiteMapModal';
 import { StarChartCanvas, StarChartCanvasHandle } from './components/StarChartCanvas';
 import { TimeControlBar } from './components/TimeControlBar';
+import { TourGuideOverlay } from './components/TourGuideOverlay';
 import { CALDWELL_CATALOG } from './data/caldwell';
 import { createDefaultChallengeTracks } from './data/challenges';
 import {
@@ -47,12 +52,15 @@ import {
   ChallengeTrack,
   ChartViewState,
   CoordSystem,
+  DEFAULT_SENSOR_EXPORT_CAPTION,
   DeepSkyObject,
   EquipmentCategory,
   EquipmentItem,
   EquipmentLockerState,
   HipsSettings,
   LayerSettings,
+  ObservationLogEntry,
+  ObservationLogStoreState,
   ObserverConfig,
   ObservingListGroup,
   ObservingListsState,
@@ -60,6 +68,7 @@ import {
   OpticsSettings,
   SavedObservingSite,
   SelectedItem,
+  SensorExportCaptionConfig,
   Star as StarType,
   ThemeMode,
 } from './types/astronomy';
@@ -87,11 +96,23 @@ import {
 } from './utils/asterismStorage';
 import { CHALLENGES_STORAGE_KEY, mergeChallengeTracks } from './utils/challengeStorage';
 import {
+  loadObservationLogStore,
+  mergeObservationLogStores,
+  saveObservationLogStore,
+} from './utils/observationLogStorage';
+import {
   downloadSkylistFile,
   exportObservingListToSkylist,
   parseSkylistObjects,
   resolveSkylistObjects,
 } from './utils/skylist';
+import {
+  buildChallengeTourStops,
+  buildTonightTourStops,
+  GuidedTourState,
+  TOUR_DWELL_OPTIONS,
+  TourStop,
+} from './utils/tonightTour';
 import {
   LayerSettingsBundle,
   loadSavedLayerSettings,
@@ -281,6 +302,7 @@ const DEFAULT_OPTICS: OpticsSettings = {
   sensorRotationDeg: 0,
   sensorEquipmentLabel: undefined,
   sensorRotationLocked: false,
+  sensorExportCaption: { ...DEFAULT_SENSOR_EXPORT_CAPTION },
   showStarHop: false,
   showSelectionMark: true,
 };
@@ -378,6 +400,42 @@ function loadSavedOpticsSettings(): OpticsSettings {
               ? parsed.sensorEquipmentLabel.trim()
               : undefined,
           sensorRotationLocked: boolOr('sensorRotationLocked', false),
+          sensorExportCaption: (() => {
+            const rawCap = parsed.sensorExportCaption;
+            if (!rawCap || typeof rawCap !== 'object') {
+              return { ...DEFAULT_SENSOR_EXPORT_CAPTION };
+            }
+            const c = rawCap as Record<string, unknown>;
+            const capBool = (k: keyof SensorExportCaptionConfig, fb: boolean): boolean =>
+              typeof c[k] === 'boolean' ? (c[k] as boolean) : fb;
+            return {
+              showTargetName: capBool(
+                'showTargetName',
+                DEFAULT_SENSOR_EXPORT_CAPTION.showTargetName
+              ),
+              showCoordinates: capBool(
+                'showCoordinates',
+                DEFAULT_SENSOR_EXPORT_CAPTION.showCoordinates
+              ),
+              showDateTime: capBool('showDateTime', DEFAULT_SENSOR_EXPORT_CAPTION.showDateTime),
+              showLocation: capBool('showLocation', DEFAULT_SENSOR_EXPORT_CAPTION.showLocation),
+              showConstellation: capBool(
+                'showConstellation',
+                DEFAULT_SENSOR_EXPORT_CAPTION.showConstellation
+              ),
+              showEquipmentFov: capBool(
+                'showEquipmentFov',
+                DEFAULT_SENSOR_EXPORT_CAPTION.showEquipmentFov
+              ),
+              showRotation: capBool('showRotation', DEFAULT_SENSOR_EXPORT_CAPTION.showRotation),
+              showNoxChartBrand: capBool(
+                'showNoxChartBrand',
+                DEFAULT_SENSOR_EXPORT_CAPTION.showNoxChartBrand
+              ),
+              customNote:
+                typeof c.customNote === 'string' ? c.customNote.slice(0, 80) : '',
+            };
+          })(),
           showStarHop: boolOr('showStarHop', DEFAULT_OPTICS.showStarHop),
           showSelectionMark: boolOr('showSelectionMark', DEFAULT_OPTICS.showSelectionMark),
         };
@@ -386,7 +444,10 @@ function loadSavedOpticsSettings(): OpticsSettings {
   } catch {
     // Ignore storage parse failure
   }
-  return { ...DEFAULT_OPTICS };
+  return {
+    ...DEFAULT_OPTICS,
+    sensorExportCaption: { ...DEFAULT_SENSOR_EXPORT_CAPTION },
+  };
 }
 
 function createInitialObserver(): ObserverConfig {
@@ -536,7 +597,14 @@ export default function App() {
   const [solarTrails, setSolarTrails] = useState<Record<string, number>>({});
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
-  const [inspectorTab, setInspectorTab] = useState<'detail' | 'session' | 'challenge' | 'asterism'>('detail');
+  const [inspectorTab, setInspectorTab] = useState<
+    'detail' | 'session' | 'challenge' | 'asterism' | 'log'
+  >('detail');
+  const [observationLogStore, setObservationLogStore] = useState<ObservationLogStoreState>(() =>
+    loadObservationLogStore()
+  );
+  const observationLogStoreRef = useRef<ObservationLogStoreState>(observationLogStore);
+  observationLogStoreRef.current = observationLogStore;
   const [challengeDraft, setChallengeDraft] = useState<ChallengeTrack | null>(null);
   const challengeDraftRef = useRef<ChallengeTrack | null>(challengeDraft);
   challengeDraftRef.current = challengeDraft;
@@ -603,16 +671,23 @@ export default function App() {
 
   const [cardinalMenuOpen, setCardinalMenuOpen] = useState(false);
   const cardinalMenuRef = useRef<HTMLDivElement>(null);
+  const [printPreview, setPrintPreview] = useState<{
+    dataUrl: string;
+    title: string;
+  } | null>(null);
 
   useEffect(() => {
     if (!cardinalMenuOpen) return;
     const handleOutside = (e: MouseEvent) => {
-      if (cardinalMenuRef.current && !cardinalMenuRef.current.contains(e.target as Node)) {
+      const target = e.target as Node;
+      if (cardinalMenuRef.current && !cardinalMenuRef.current.contains(target)) {
         setCardinalMenuOpen(false);
       }
     };
     const handleEsc = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setCardinalMenuOpen(false);
+      if (e.key === 'Escape') {
+        setCardinalMenuOpen(false);
+      }
     };
     document.addEventListener('mousedown', handleOutside);
     window.addEventListener('keydown', handleEsc);
@@ -621,6 +696,15 @@ export default function App() {
       window.removeEventListener('keydown', handleEsc);
     };
   }, [cardinalMenuOpen]);
+
+  useEffect(() => {
+    if (!printPreview) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setPrintPreview(null);
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [printPreview]);
 
   const viewRef = useRef<ChartViewState>(view);
   viewRef.current = view;
@@ -1493,6 +1577,204 @@ export default function App() {
       };
     });
   }, []);
+
+  useEffect(() => {
+    saveObservationLogStore(observationLogStore);
+  }, [observationLogStore]);
+
+  const syncObservedToSessionLists = useCallback((objectId: string, observed: boolean) => {
+    setObservingListsState((prev) => {
+      let changed = false;
+      const nextTonightEntries = prev.tonightEntries.map((e) => {
+        if (e.id === objectId && e.observed !== observed) {
+          changed = true;
+          return { ...e, observed };
+        }
+        return e;
+      });
+      const nextLists = prev.lists.map((l) => {
+        let listChanged = false;
+        const entries = l.entries.map((e) => {
+          if (e.id === objectId && e.observed !== observed) {
+            listChanged = true;
+            changed = true;
+            return { ...e, observed };
+          }
+          return e;
+        });
+        return listChanged ? { ...l, entries } : l;
+      });
+      const overrides = prev.tonightLinkedOverrides ?? {};
+      let nextOverrides = overrides;
+      const linkedList = prev.tonightListId
+        ? prev.lists.find((l) => l.id === prev.tonightListId) ?? null
+        : null;
+      if (linkedList?.entries.some((e) => e.id === objectId)) {
+        if (overrides[objectId]?.observed !== observed) {
+          changed = true;
+          nextOverrides = {
+            ...overrides,
+            [objectId]: { ...overrides[objectId], observed },
+          };
+        }
+      }
+      if (!changed) return prev;
+      return {
+        ...prev,
+        tonightEntries: nextTonightEntries,
+        lists: nextLists,
+        tonightLinkedOverrides: nextOverrides,
+      };
+    });
+  }, []);
+
+  const handleToggleObjectObserved = useCallback(
+    (
+      meta: {
+        objectId: string;
+        objectKind: 'star' | 'dso' | 'planet' | 'double';
+        objectName: string;
+        constellation?: string;
+        raDeg: number;
+        decDeg: number;
+      },
+      forceObserved?: boolean
+    ) => {
+      const now = Date.now();
+      let nextObserved = true;
+      setObservationLogStore((prev) => {
+        const current = prev.observedMap[meta.objectId]?.observed;
+        const hasLogs = prev.logs.some((l) => l.objectId === meta.objectId);
+        const resolvedCurrent = current !== undefined ? current : hasLogs;
+        nextObserved = forceObserved !== undefined ? forceObserved : !resolvedCurrent;
+        return {
+          ...prev,
+          observedMap: {
+            ...prev.observedMap,
+            [meta.objectId]: {
+              objectId: meta.objectId,
+              objectKind: meta.objectKind,
+              objectName: meta.objectName,
+              constellation: meta.constellation,
+              raDeg: meta.raDeg,
+              decDeg: meta.decDeg,
+              observed: nextObserved,
+              updatedAt: now,
+            },
+          },
+        };
+      });
+      syncObservedToSessionLists(meta.objectId, nextObserved);
+    },
+    [syncObservedToSessionLists]
+  );
+
+  const handleSaveObservationLog = useCallback(
+    (entry: ObservationLogEntry) => {
+      setObservationLogStore((prev) => {
+        const exists = prev.logs.some((l) => l.id === entry.id);
+        const nextLogs = (
+          exists ? prev.logs.map((l) => (l.id === entry.id ? entry : l)) : [entry, ...prev.logs]
+        ).sort((a, b) => b.observedAt - a.observedAt);
+        return {
+          observedMap: {
+            ...prev.observedMap,
+            [entry.objectId]: {
+              objectId: entry.objectId,
+              objectKind: entry.objectKind,
+              objectName: entry.objectName,
+              constellation: entry.constellation,
+              raDeg: entry.raDeg,
+              decDeg: entry.decDeg,
+              observed: true,
+              updatedAt: entry.updatedAt,
+            },
+          },
+          logs: nextLogs,
+        };
+      });
+      syncObservedToSessionLists(entry.objectId, true);
+    },
+    [syncObservedToSessionLists]
+  );
+
+  const handleDeleteObservationLog = useCallback((logId: string) => {
+    setObservationLogStore((prev) => ({
+      ...prev,
+      logs: prev.logs.filter((l) => l.id !== logId),
+    }));
+  }, []);
+
+  const handleImportObservationLogs = useCallback((incoming: ObservationLogStoreState) => {
+    const res = mergeObservationLogStores(observationLogStoreRef.current, incoming);
+    observationLogStoreRef.current = res.merged;
+    setObservationLogStore(res.merged);
+    return { addedLogs: res.addedLogs, updatedLogs: res.updatedLogs };
+  }, []);
+
+  const handleFocusObservationTarget = useCallback(
+    (target: {
+      objectId: string;
+      objectKind: 'star' | 'dso' | 'planet' | 'double';
+      raDeg: number;
+      decDeg: number;
+    }) => {
+      const snap = getCatalogSnapshot();
+      let found: SelectedItem | null = null;
+      if (target.objectKind === 'dso') {
+        const d =
+          snap.dsosBright.find((x) => x.id === target.objectId) ??
+          snap.darkNebulae.find((x) => x.id === target.objectId) ??
+          snap.dsosDeep.find((x) => x.id === target.objectId) ??
+          CALDWELL_CATALOG.find((x) => x.id === target.objectId);
+        if (d) found = { kind: 'dso', data: d };
+      } else if (target.objectKind === 'planet') {
+        const bodies = getSolarSystemBodies(observer.useLiveTime ? Date.now() : observer.timestampMs);
+        const p = bodies.find((x) => x.id === target.objectId);
+        if (p) found = { kind: 'planet', data: p };
+      } else if (target.objectKind === 'double') {
+        const dbl = snap.doubleStars.find((x) => x.id === target.objectId);
+        if (dbl) found = { kind: 'double', data: dbl };
+      } else {
+        const st =
+          snap.brightStars.find((x) => x.id === target.objectId) ??
+          snap.deepStars.find((x) => x.id === target.objectId) ??
+          snap.gaiaStars.find((x) => x.id === target.objectId);
+        if (st) found = { kind: 'star', data: st };
+      }
+
+      if (found) {
+        setSelected(found);
+      }
+
+      const raDeg = found ? found.data.ra : target.raDeg;
+      const decDeg = found ? found.data.dec : target.decDeg;
+      const targetFsz =
+        target.objectKind === 'planet'
+          ? 0.08
+          : target.objectKind === 'double'
+          ? 1.5
+          : target.objectKind === 'dso'
+          ? 10
+          : 16;
+
+      if (canvasHandleRef.current) {
+        canvasHandleRef.current.smoothCenterOn(raDeg, decDeg, {
+          targetFsz,
+          durationMs: 750,
+          arcZoomOut: true,
+        });
+      } else {
+        setView((p) => ({
+          ...p,
+          ra: ((raDeg / 15) % 24 + 24) % 24,
+          dec: decDeg,
+          fsz: targetFsz,
+        }));
+      }
+    },
+    [observer.timestampMs, observer.useLiveTime]
+  );
 
   const handleUpdateNotes = useCallback(
     (id: string, notes: string, targetListId?: string) => {
@@ -2379,14 +2661,16 @@ export default function App() {
   const handlePrintChallengeCertificate = useCallback(
     (track: ChallengeTrack) => {
       handleFrameChallengeTrack(track);
-      if (theme !== 'white') {
-        setTheme('white');
-        window.setTimeout(() => window.print(), 280);
-      } else {
-        window.setTimeout(() => window.print(), 120);
-      }
+      window.setTimeout(() => {
+        const dataUrl = canvasHandleRef.current?.renderPrintableChart({
+          title: `${track.title} 관측 투어 성도`,
+        });
+        if (dataUrl) {
+          setPrintPreview({ dataUrl, title: `${track.title} 관측 투어 성도` });
+        }
+      }, 120);
     },
-    [handleFrameChallengeTrack, theme]
+    [handleFrameChallengeTrack]
   );
 
   const handleSelectChallengeCheckpoint = useCallback(
@@ -2478,6 +2762,321 @@ export default function App() {
     [handleChangeView]
   );
 
+  // =================== Guided Auto-Tour ("오늘의 투어" & Challenge Auto-Tour) ===================
+  const [tourState, setTourState] = useState<GuidedTourState>({
+    active: false,
+    title: '오늘의 투어',
+    trackId: null,
+    stops: [],
+    currentIndex: 0,
+    playing: false,
+    pausedByUser: false,
+    completed: false,
+    dwellSec: 8,
+    phase: 'dwelling',
+  });
+  const [tourDwellProgress, setTourDwellProgress] = useState(0);
+  const tourStateRef = useRef<GuidedTourState>(tourState);
+  tourStateRef.current = tourState;
+  const tourRunTokenRef = useRef(0);
+
+  const tonightTourTimeBucket = Math.floor(observer.timestampMs / 300000);
+  const tonightTourStops = useMemo(
+    () => buildTonightTourStops(observer, catalogs, 10),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [
+      observer.lat,
+      observer.lon,
+      tonightTourTimeBucket,
+      catalogs.coreLoaded,
+      catalogs.doubleStarsLoaded,
+    ]
+  );
+
+  const navigateTourToStop = useCallback(
+    (
+      stops: TourStop[],
+      index: number,
+      autoPlay: boolean,
+      meta?: { title: string; trackId: string | null }
+    ) => {
+      if (stops.length === 0) return;
+      const safeIdx = Math.max(0, Math.min(stops.length - 1, index));
+      const stop = stops[safeIdx];
+      const token = ++tourRunTokenRef.current;
+
+      setTourDwellProgress(0);
+      selectedRef.current = stop.selectedItem;
+      setSelected(stop.selectedItem);
+      setOptics((prev) =>
+        prev.showSelectionMark ? prev : { ...prev, showSelectionMark: true }
+      );
+      centerLockedRef.current = false;
+      setCenterLocked(false);
+      lockedHzRef.current = null;
+
+      // Ensure the target's catalog layer is visible during the guided tour
+      setLayers((prev) => {
+        if (stop.kind === 'planet' && !prev.showSolarSystem) {
+          return { ...prev, showSolarSystem: true };
+        }
+        if (stop.kind === 'double' && !prev.showDoubleStars) {
+          return { ...prev, showDoubleStars: true };
+        }
+        if (stop.kind === 'dso') {
+          const isMessier = /^M\d+$/i.test(stop.selectedItem.data.id);
+          const isCaldwell =
+            /^C\d+$/i.test(stop.selectedItem.data.id) ||
+            (stop.selectedItem.kind === 'dso' &&
+              Boolean(stop.selectedItem.data.altId && /^C\d+$/i.test(stop.selectedItem.data.altId)));
+          if (isMessier && !prev.showMessierCatalog && !prev.showDso) {
+            return { ...prev, showMessierCatalog: true };
+          }
+          if (isCaldwell && !prev.showCaldwellCatalog && !prev.showDso) {
+            return { ...prev, showCaldwellCatalog: true };
+          }
+          if (!isMessier && !isCaldwell && !prev.showDso) {
+            return { ...prev, showDso: true };
+          }
+        }
+        return prev;
+      });
+
+      setTourState((prev) => ({
+        ...prev,
+        active: true,
+        title: meta ? meta.title : prev.title,
+        trackId: meta !== undefined ? meta.trackId : prev.trackId,
+        stops,
+        currentIndex: safeIdx,
+        playing: autoPlay,
+        pausedByUser: false,
+        completed: false,
+        phase: 'slewing',
+      }));
+
+      canvasHandleRef.current?.smoothCenterOn(stop.ra, stop.dec, {
+        targetFsz: stop.recommendedFovDeg,
+        arcZoomOut: true,
+        onComplete: () => {
+          if (tourRunTokenRef.current !== token) return;
+          setTourState((prev) => (prev.active ? { ...prev, phase: 'dwelling' } : prev));
+        },
+      });
+    },
+    []
+  );
+
+  const handleStartTonightTour = useCallback(
+    (startIndex = 0) => {
+      const freshStops = buildTonightTourStops(observer, getCatalogSnapshot(), 10);
+      if (freshStops.length === 0) return;
+      navigateTourToStop(freshStops, startIndex, true, {
+        title: '오늘의 투어',
+        trackId: null,
+      });
+    },
+    [observer, navigateTourToStop]
+  );
+
+  const handleStartChallengeTour = useCallback(
+    (track: ChallengeTrack, startIndex = 0) => {
+      setChallenges((prev) =>
+        prev.map((t) => (t.id === track.id ? { ...t, activeOnChart: true } : t))
+      );
+      const stops = buildChallengeTourStops(track, observer, getCatalogSnapshot());
+      if (stops.length === 0) return;
+      navigateTourToStop(stops, startIndex, true, {
+        title: track.title,
+        trackId: track.id,
+      });
+    },
+    [observer, navigateTourToStop]
+  );
+
+  const handleStopTour = useCallback(() => {
+    tourRunTokenRef.current++;
+    canvasHandleRef.current?.cancelSmoothCenter();
+    setTourDwellProgress(0);
+    setTourState((prev) => ({
+      ...prev,
+      active: false,
+      playing: false,
+      pausedByUser: false,
+      completed: false,
+      phase: 'dwelling',
+    }));
+  }, []);
+
+  const handleToggleTourPlay = useCallback(() => {
+    const cur = tourStateRef.current;
+    if (!cur.active || cur.stops.length === 0) return;
+    if (cur.completed) {
+      navigateTourToStop(cur.stops, 0, true);
+      return;
+    }
+    if (cur.playing) {
+      tourRunTokenRef.current++;
+      canvasHandleRef.current?.cancelSmoothCenter();
+      setTourState((prev) => ({
+        ...prev,
+        playing: false,
+        pausedByUser: false,
+        phase: 'dwelling',
+      }));
+    } else {
+      // If paused after manual panning/zooming, smoothly re-frame current stop before resuming dwell
+      if (cur.pausedByUser) {
+        navigateTourToStop(cur.stops, cur.currentIndex, true);
+      } else {
+        setTourState((prev) => ({
+          ...prev,
+          playing: true,
+          pausedByUser: false,
+          phase: 'dwelling',
+        }));
+      }
+    }
+  }, [navigateTourToStop]);
+
+  const handleJumpTourStop = useCallback(
+    (index: number) => {
+      const cur = tourStateRef.current;
+      if (!cur.active || cur.stops.length === 0) return;
+      navigateTourToStop(cur.stops, index, cur.playing || cur.completed);
+    },
+    [navigateTourToStop]
+  );
+
+  const handlePrevTourStop = useCallback(() => {
+    const cur = tourStateRef.current;
+    if (!cur.active || cur.currentIndex <= 0) return;
+    navigateTourToStop(cur.stops, cur.currentIndex - 1, cur.playing);
+  }, [navigateTourToStop]);
+
+  const handleNextTourStop = useCallback(() => {
+    const cur = tourStateRef.current;
+    if (!cur.active || cur.currentIndex >= cur.stops.length - 1) return;
+    navigateTourToStop(cur.stops, cur.currentIndex + 1, cur.playing);
+  }, [navigateTourToStop]);
+
+  const handleChangeTourDwellSec = useCallback((sec: number) => {
+    setTourState((prev) => ({ ...prev, dwellSec: sec }));
+  }, []);
+
+  const handleCycleTourDwellSec = useCallback(() => {
+    setTourState((prev) => {
+      const idx = TOUR_DWELL_OPTIONS.indexOf(
+        prev.dwellSec as (typeof TOUR_DWELL_OPTIONS)[number]
+      );
+      const nextSec = TOUR_DWELL_OPTIONS[(idx + 1) % TOUR_DWELL_OPTIONS.length];
+      return { ...prev, dwellSec: nextSec };
+    });
+  }, []);
+
+  const handleUserCameraInteract = useCallback(() => {
+    const cur = tourStateRef.current;
+    if (!cur.active || !cur.playing) return;
+    tourRunTokenRef.current++;
+    setTourState((prev) =>
+      prev.active && prev.playing
+        ? { ...prev, playing: false, pausedByUser: true, phase: 'dwelling' }
+        : prev
+    );
+  }, []);
+
+  // Auto-advance dwell countdown timer while tour is playing & dwelling on a stop
+  useEffect(() => {
+    if (
+      !tourState.active ||
+      !tourState.playing ||
+      tourState.completed ||
+      tourState.phase !== 'dwelling'
+    ) {
+      return;
+    }
+
+    const dwellMs = Math.max(2000, tourState.dwellSec * 1000);
+    const startMs = performance.now();
+    let rafId = 0;
+    let lastPaintMs = 0;
+
+    const tick = (now: number) => {
+      const elapsed = now - startMs;
+      const ratio = Math.min(1, elapsed / dwellMs);
+      if (now - lastPaintMs >= 60 || ratio >= 1) {
+        setTourDwellProgress(ratio);
+        lastPaintMs = now;
+      }
+
+      if (ratio >= 1) {
+        const cur = tourStateRef.current;
+        if (!cur.active || !cur.playing) return;
+        if (cur.currentIndex + 1 < cur.stops.length) {
+          navigateTourToStop(cur.stops, cur.currentIndex + 1, true);
+        } else {
+          setTourState((prev) => ({
+            ...prev,
+            playing: false,
+            completed: true,
+            phase: 'dwelling',
+          }));
+        }
+        return;
+      }
+      rafId = requestAnimationFrame(tick);
+    };
+
+    rafId = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(rafId);
+  }, [
+    tourState.active,
+    tourState.playing,
+    tourState.completed,
+    tourState.phase,
+    tourState.currentIndex,
+    tourState.dwellSec,
+    navigateTourToStop,
+  ]);
+
+  // Keyboard shortcuts while Guided Auto-Tour is active
+  useEffect(() => {
+    if (!tourState.active) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement | null)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        handleStopTour();
+      } else if (e.key === ' ' && tag !== 'BUTTON') {
+        e.preventDefault();
+        handleToggleTourPlay();
+      } else if (e.key === 'ArrowRight') {
+        e.preventDefault();
+        handleNextTourStop();
+      } else if (e.key === 'ArrowLeft') {
+        e.preventDefault();
+        handlePrevTourStop();
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [
+    tourState.active,
+    handleStopTour,
+    handleToggleTourPlay,
+    handleNextTourStop,
+    handlePrevTourStop,
+  ]);
+
+  const currentTourStop = tourState.active ? tourState.stops[tourState.currentIndex] : undefined;
+  const isCurrentTourCheckpointObserved = useMemo(() => {
+    if (!tourState.trackId || !currentTourStop?.checkpointId) return false;
+    const tr = challenges.find((t) => t.id === tourState.trackId);
+    const cp = tr?.checkpoints.find((c) => c.id === currentTourStop.checkpointId);
+    return Boolean(cp?.observed);
+  }, [challenges, tourState.trackId, currentTourStop]);
+
   const handleCopyShareUrl = async () => {
     syncUrlState(view, theme);
     try {
@@ -2490,12 +3089,20 @@ export default function App() {
   };
 
   const handlePrintWhiteChart = () => {
-    if (theme !== 'white') {
-      setTheme('white');
-      window.setTimeout(() => window.print(), 180);
+    const dataUrl = canvasHandleRef.current?.renderPrintableChart();
+    if (dataUrl) {
+      setPrintPreview({ dataUrl, title: 'NoxChart 인쇄용 성도' });
     } else {
       window.print();
     }
+  };
+
+  const handleDownloadPrintablePng = () => {
+    if (!printPreview) return;
+    const link = document.createElement('a');
+    link.download = `noxchart-print-${view.coordSystem}-ra${view.ra.toFixed(2)}-dec${view.dec.toFixed(1)}.png`;
+    link.href = printPreview.dataUrl;
+    link.click();
   };
 
   const handleImportLayerSettings = useCallback((bundle: LayerSettingsBundle) => {
@@ -3229,7 +3836,7 @@ export default function App() {
       )}
       {/* Top Precision Telemetry Ribbon */}
       <header
-        className={`no-print relative z-40 h-12 shrink-0 border-b px-3 flex items-center justify-between gap-3 ${ui.header}`}
+        className={`no-print relative z-40 h-12 shrink-0 border-b px-2 sm:px-3 flex items-center justify-between gap-1.5 sm:gap-2.5 ${ui.header}`}
       >
         {/* Left: Brand */}
         <div className="flex items-center gap-2.5 shrink-0">
@@ -3362,7 +3969,7 @@ export default function App() {
                   : 'text-slate-400 hover:text-white hover:bg-[#182438]'
               }`}
             >
-              <Compass className="w-4 h-4" />
+              <Mountain className="w-4 h-4" />
             </button>
           </div>
 
@@ -3443,61 +4050,228 @@ export default function App() {
               </div>
             )}
           </div>
+
+          {/* Limiting Magnitude Display + Slider (2-row compact layout: badges on top, slider below) */}
+          <div
+            className={`hidden sm:flex flex-col justify-center gap-0.5 rounded-lg border px-2 py-0.5 shrink-0 ${
+              theme === 'white'
+                ? 'bg-slate-100 border-slate-300 text-slate-700'
+                : theme === 'red'
+                ? 'bg-[#100101] border-[#420C0C] text-[#DC2626]'
+                : 'bg-[#0B1220] border-[#25334D] text-slate-300'
+            }`}
+            title="현재 시야각 기준 항성 및 DSO 한계등급 조절"
+          >
+            <div className="flex items-center gap-1 leading-none">
+              <span className="text-[10px] font-medium whitespace-nowrap">한계등급</span>
+              <span
+                className={`rounded border px-1 py-[1px] flex items-center gap-0.5 font-mono text-[10px] font-bold tabular-nums whitespace-nowrap ${
+                  theme === 'white'
+                    ? 'bg-sky-50 border-sky-200 text-sky-700'
+                    : theme === 'red'
+                    ? 'bg-[#200303] border-[#5A1212] text-[#FF3B3B]'
+                    : 'bg-[#162235] border-[#2C3E5C] text-[#22D3EE]'
+                }`}
+              >
+                <Star className="w-2.5 h-2.5 fill-current shrink-0" />
+                <span>{magLimit.toFixed(1)}</span>
+              </span>
+              <span
+                className={`rounded border px-1 py-[1px] flex items-center font-mono text-[10px] font-bold tabular-nums whitespace-nowrap ${
+                  theme === 'white'
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                    : theme === 'red'
+                    ? 'bg-[#200303] border-[#5A1212] text-[#EF4444]'
+                    : 'bg-[#162235] border-[#2C3E5C] text-[#10B981]'
+                }`}
+              >
+                DSO{' '}
+                {layers.showDso
+                  ? dsoMagLimit.toFixed(1)
+                  : layers.showMessierCatalog && layers.showCaldwellCatalog
+                  ? 'M+C'
+                  : layers.showMessierCatalog
+                  ? 'M'
+                  : layers.showCaldwellCatalog
+                  ? 'C'
+                  : 'OFF'}
+              </span>
+            </div>
+            <div className="flex items-center gap-1.5 leading-none">
+              <input
+                type="range"
+                min={-3.0}
+                max={3.0}
+                step={0.2}
+                value={layers.magOffset}
+                onChange={(e) => {
+                  const nextMag = Number(e.target.value);
+                  setLayers((p) => {
+                    const delta = nextMag - p.magOffset;
+                    const nextDso = Math.max(
+                      -4.0,
+                      Math.min(4.0, Number((p.dsoMagOffset + delta).toFixed(1)))
+                    );
+                    return { ...p, magOffset: nextMag, dsoMagOffset: nextDso };
+                  });
+                }}
+                aria-label="한계 등급 보정"
+                title="한계 등급 보정 (-3.0m ~ +3.0m)"
+                className={`flex-1 min-w-[92px] h-1.5 cursor-pointer ${
+                  theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
+                }`}
+              />
+              <button
+                type="button"
+                onClick={() =>
+                  setLayers((p) => ({ ...p, magOffset: 0, dsoMagOffset: 0 }))
+                }
+                title="클릭하여 한계 등급 보정 초기화 (0.0m)"
+                className={`font-mono text-[10px] tabular-nums whitespace-nowrap w-9 text-right hover:opacity-100 transition-opacity ${
+                  layers.magOffset !== 0 || layers.dsoMagOffset !== 0
+                    ? theme === 'white'
+                      ? 'text-sky-700 font-semibold'
+                      : theme === 'red'
+                      ? 'text-[#FF3B3B] font-semibold'
+                      : 'text-cyan-400 font-semibold'
+                    : 'opacity-70'
+                }`}
+              >
+                {layers.magOffset >= 0
+                  ? `+${layers.magOffset.toFixed(1)}`
+                  : layers.magOffset.toFixed(1)}
+                m
+              </button>
+            </div>
+          </div>
         </div>
 
-        {/* Right: Icon-Only Session Plan, Challenge, Asterism Mode, URL Share, PNG Export, Sensor FOV PNG, Print */}
+        {/* Right: Grouped Tool Box (관측목록/챌린지/작도), URL Share, PNG Export, Sensor FOV PNG, Print */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => {
-              setInspectorTab('session');
-              setRightOpen((o) => (inspectorTab === 'session' ? !o : true));
-            }}
-            title={`관측 목록 (${sessionPlan.length})`}
-            aria-label={`관측 목록 (${sessionPlan.length})`}
-            className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${
-              rightOpen && inspectorTab === 'session' ? ui.buttonActive : ui.buttonIdle
+          {/* Grouped Rectangular Box: 관측목록 · 챌린지 · 작도 */}
+          <div
+            className={`flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
+              theme === 'white'
+                ? 'bg-slate-100 border-slate-300'
+                : theme === 'red'
+                ? 'bg-[#100101] border-[#420C0C]'
+                : 'bg-[#0B1220] border-[#25334D]'
             }`}
-            style={{ borderRadius: '4px' }}
+            role="group"
+            aria-label="관측목록, 챌린지, 작도, 관측기록"
           >
-            <Bookmark className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-          </button>
+            {(() => {
+              const hasActiveChallenge = challenges.some((t) => t.activeOnChart);
+              const activeBoxBtn =
+                theme === 'white'
+                  ? 'bg-blue-700 text-white'
+                  : theme === 'red'
+                  ? 'bg-[#7F1D1D] text-[#FF5252]'
+                  : 'bg-[#0094B8] text-white';
+              const idleBoxBtn =
+                theme === 'white'
+                  ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
+                  : theme === 'red'
+                  ? 'text-[#B83232] hover:text-[#FF4D4D] hover:bg-[#220404]'
+                  : 'text-slate-400 hover:text-white hover:bg-[#182438]';
+              return (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInspectorTab('session');
+                      setRightOpen((o) => (inspectorTab === 'session' ? !o : true));
+                    }}
+                    title={`관측목록 (${sessionPlan.length})`}
+                    aria-label={`관측목록 (${sessionPlan.length})`}
+                    className={`relative w-7 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+                      rightOpen && inspectorTab === 'session' ? activeBoxBtn : idleBoxBtn
+                    }`}
+                  >
+                    <Bookmark className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    {sessionPlan.length > 0 && (
+                      <span
+                        className={`absolute -top-0.5 -right-0.5 min-w-[13px] h-[13px] px-0.5 rounded-full text-[8px] font-mono font-bold leading-[13px] text-center ${
+                          theme === 'white'
+                            ? 'bg-blue-600 text-white'
+                            : theme === 'red'
+                            ? 'bg-[#DC2626] text-black'
+                            : 'bg-cyan-500 text-slate-950'
+                        }`}
+                      >
+                        {sessionPlan.length > 99 ? '99' : sessionPlan.length}
+                      </span>
+                    )}
+                  </button>
 
-          <button
-            type="button"
-            onClick={() => {
-              setInspectorTab('challenge');
-              setRightOpen((o) => (inspectorTab === 'challenge' ? !o : true));
-            }}
-            title="계절별 관측 투어 및 챌린지 트랙"
-            aria-label="챌린지"
-            className={`relative w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${
-              rightOpen && inspectorTab === 'challenge' ? ui.buttonActive : ui.buttonIdle
-            }`}
-            style={{ borderRadius: '4px' }}
-          >
-            <Trophy className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            {challenges.some((t) => t.activeOnChart) && (
-              <span
-                className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400"
-                aria-hidden="true"
-              />
-            )}
-          </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInspectorTab('challenge');
+                      setRightOpen((o) => (inspectorTab === 'challenge' ? !o : true));
+                    }}
+                    title="관측 챌린지 · 오늘의 투어"
+                    aria-label="관측 챌린지"
+                    className={`relative w-7 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+                      rightOpen && inspectorTab === 'challenge' ? activeBoxBtn : idleBoxBtn
+                    }`}
+                  >
+                    <Trophy className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    {(tourState.active || hasActiveChallenge) && (
+                      <span
+                        className={`absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full ${
+                          tourState.active ? 'bg-cyan-400 animate-pulse' : 'bg-amber-400'
+                        }`}
+                        aria-hidden="true"
+                      />
+                    )}
+                  </button>
 
-          <button
-            type="button"
-            onClick={handleToggleAsterismMode}
-            title="나만의 성군 · 스타 체인 작도 모드"
-            aria-label="성군 작도 모드"
-            aria-pressed={asterismMode}
-            className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${
-              asterismMode ? ui.buttonActive : ui.buttonIdle
-            }`}
-            style={{ borderRadius: '4px' }}
-          >
-            <Waypoints className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-          </button>
+                  <button
+                    type="button"
+                    onClick={handleToggleAsterismMode}
+                    title={asterismMode ? '성군 작도 모드 끄기' : '성군 작도 모드 켜기'}
+                    aria-label="성군 작도"
+                    className={`w-7 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+                      asterismMode ? activeBoxBtn : idleBoxBtn
+                    }`}
+                  >
+                    <Waypoints className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setInspectorTab('log');
+                      setRightOpen((o) => (inspectorTab === 'log' ? !o : true));
+                    }}
+                    title={`관측기록 (${observationLogStore.logs.length})`}
+                    aria-label={`관측기록 (${observationLogStore.logs.length})`}
+                    className={`relative w-7 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+                      rightOpen && inspectorTab === 'log' ? activeBoxBtn : idleBoxBtn
+                    }`}
+                  >
+                    <BookOpen className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    {observationLogStore.logs.length > 0 && (
+                      <span
+                        className={`absolute -top-0.5 -right-0.5 min-w-[13px] h-[13px] px-0.5 rounded-full text-[8px] font-mono font-bold leading-[13px] text-center ${
+                          theme === 'white'
+                            ? 'bg-emerald-600 text-white'
+                            : theme === 'red'
+                            ? 'bg-[#DC2626] text-black'
+                            : 'bg-emerald-400 text-slate-950'
+                        }`}
+                      >
+                        {observationLogStore.logs.length > 99
+                          ? '99'
+                          : observationLogStore.logs.length}
+                      </span>
+                    )}
+                  </button>
+                </>
+              );
+            })()}
+          </div>
 
           <button
             type="button"
@@ -3527,20 +4301,28 @@ export default function App() {
             <Download className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
 
-          {optics.showSensorBox && (
-            <button
-              type="button"
-              onClick={() =>
-                canvasHandleRef.current?.exportSensorFovPng(activeSensorEquipmentName)
+          <button
+            type="button"
+            onClick={() => {
+              if (optics.showSensorBox) {
+                canvasHandleRef.current?.exportSensorFovPng(activeSensorEquipmentName);
+              } else {
+                setOptics((p) => ({ ...p, showSensorBox: true }));
               }
-              title={`사진 화각 영역만 PNG 저장 (${activeSensorEquipmentName} · ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°)`}
-              aria-label="사진 화각 PNG 저장"
-              className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${ui.buttonActive}`}
-              style={{ borderRadius: '4px' }}
-            >
-              <Camera className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            </button>
-          )}
+            }}
+            title={
+              optics.showSensorBox
+                ? `사진 화각 영역만 PNG 저장 (${activeSensorEquipmentName} · ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°)`
+                : '촬영 센서 프레임 켜기 (켠 후 다시 클릭하면 사진 화각 PNG 저장)'
+            }
+            aria-label="사진 화각 PNG 저장"
+            className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${
+              optics.showSensorBox ? ui.buttonActive : `${ui.buttonIdle} opacity-65 hover:opacity-100`
+            }`}
+            style={{ borderRadius: '4px' }}
+          >
+            <Camera className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+          </button>
 
           <button
             type="button"
@@ -3559,73 +4341,93 @@ export default function App() {
       <main className="relative flex-1 min-h-0 overflow-hidden">
         {/* Full-Width Star Chart + Bottom Time Dock (never pushed/resized by side menus) */}
         <div className="w-full h-full flex flex-col min-w-0 min-h-0 overflow-hidden">
-          <StarChartCanvas
-            ref={canvasHandleRef}
-            view={view}
-            theme={theme}
-            layers={layers}
-            optics={optics}
-            observer={observer}
-            hips={hips}
-            catalogs={catalogs}
-            selected={selected}
-            centerLocked={centerLocked}
-            solarTrails={solarTrails}
-            sessionIds={sessionIds}
-            sessionPlan={sessionPlan}
-            challenges={chartChallenges}
-            leftDrawerOpen={leftOpen}
-            rightDrawerOpen={rightOpen}
-            challengePickMode={isChallengePicking}
-            challengePickAllowEmpty={challengePickAllowEmpty}
-            challengeDraftCount={challengeDraft?.checkpoints.length ?? 0}
-            onChangeView={handleChangeView}
-            onSelect={handleSelect}
-            onUnlockCenter={handleUnlockCenter}
-            onChallengeChartPick={handleChallengeChartPick}
-            onUndoChallengeCheckpoint={handleUndoChallengeCheckpoint}
-            asterismMode={asterismMode}
-            asterismStore={asterismStore}
-            asterismTool={asterismTool}
-            asterismSelectedId={asterismSelectedId}
-            asterismDraft={asterismDraft}
-            asterismCanUndo={asterismPast.length > 0}
-            asterismCanRedo={asterismFuture.length > 0}
-            onChangeAsterismTool={handleChangeAsterismTool}
-            onSelectAsterism={setAsterismSelectedId}
-            onAddAsterismDraftPoint={handleAddAsterismDraftPoint}
-            onFinishAsterismDraft={handleFinishAsterismDraft}
-            onUndoAsterismDraftPoint={handleUndoAsterismDraftPoint}
-            onCancelAsterismDraft={handleCancelAsterismDraft}
-            onCreateAsterismLabel={handleCreateAsterismLabel}
-            onMoveAsterismVertex={handleMoveAsterismVertex}
-            onInsertAsterismVertex={handleInsertAsterismVertex}
-            onDeleteAsterismVertex={handleDeleteAsterismVertex}
-            onCommitAsterismDrag={handleCommitAsterismDrag}
-            onUndoAsterism={handleUndoAsterism}
-            onRedoAsterism={handleRedoAsterism}
-            onCloseAsterismMode={handleCloseAsterismMode}
-            onUpdateAsterismObject={handleUpdateAsterismObject}
-            onDeleteAsterismObject={handleDeleteAsterismObject}
-            onUpdateAsterismSettings={handleUpdateAsterismSettings}
-            onSetAsterismActiveLayer={handleSetAsterismActiveLayer}
-            onToggleAsterismLayerVisible={handleToggleAsterismLayerVisible}
-            onCreateAsterismLayer={handleCreateAsterismLayer}
-            onRenameAsterismLayer={handleRenameAsterismLayer}
-            onDeleteAsterismLayer={handleDeleteAsterismLayer}
-            onLoadAsterismPresets={handleLoadAsterismPresets}
-            onImportAsterismBundle={handleImportAsterismBundle}
-            onFocusAsterismObject={handleFocusAsterismObject}
-            onChangeOptics={setOptics}
-          />
+          <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
+            <StarChartCanvas
+              ref={canvasHandleRef}
+              view={view}
+              theme={theme}
+              layers={layers}
+              optics={optics}
+              observer={observer}
+              hips={hips}
+              catalogs={catalogs}
+              selected={selected}
+              centerLocked={centerLocked}
+              solarTrails={solarTrails}
+              sessionIds={sessionIds}
+              sessionPlan={sessionPlan}
+              challenges={chartChallenges}
+              leftDrawerOpen={leftOpen}
+              rightDrawerOpen={rightOpen}
+              challengePickMode={isChallengePicking}
+              challengePickAllowEmpty={challengePickAllowEmpty}
+              challengeDraftCount={challengeDraft?.checkpoints.length ?? 0}
+              onChangeView={handleChangeView}
+              onSelect={handleSelect}
+              onUnlockCenter={handleUnlockCenter}
+              onUserCameraInteract={handleUserCameraInteract}
+              onChallengeChartPick={handleChallengeChartPick}
+              onUndoChallengeCheckpoint={handleUndoChallengeCheckpoint}
+              asterismMode={asterismMode}
+              asterismStore={asterismStore}
+              asterismTool={asterismTool}
+              asterismSelectedId={asterismSelectedId}
+              asterismDraft={asterismDraft}
+              asterismCanUndo={asterismPast.length > 0}
+              asterismCanRedo={asterismFuture.length > 0}
+              onChangeAsterismTool={handleChangeAsterismTool}
+              onSelectAsterism={setAsterismSelectedId}
+              onAddAsterismDraftPoint={handleAddAsterismDraftPoint}
+              onFinishAsterismDraft={handleFinishAsterismDraft}
+              onUndoAsterismDraftPoint={handleUndoAsterismDraftPoint}
+              onCancelAsterismDraft={handleCancelAsterismDraft}
+              onCreateAsterismLabel={handleCreateAsterismLabel}
+              onMoveAsterismVertex={handleMoveAsterismVertex}
+              onInsertAsterismVertex={handleInsertAsterismVertex}
+              onDeleteAsterismVertex={handleDeleteAsterismVertex}
+              onCommitAsterismDrag={handleCommitAsterismDrag}
+              onUndoAsterism={handleUndoAsterism}
+              onRedoAsterism={handleRedoAsterism}
+              onCloseAsterismMode={handleCloseAsterismMode}
+              onUpdateAsterismObject={handleUpdateAsterismObject}
+              onDeleteAsterismObject={handleDeleteAsterismObject}
+              onUpdateAsterismSettings={handleUpdateAsterismSettings}
+              onSetAsterismActiveLayer={handleSetAsterismActiveLayer}
+              onToggleAsterismLayerVisible={handleToggleAsterismLayerVisible}
+              onCreateAsterismLayer={handleCreateAsterismLayer}
+              onRenameAsterismLayer={handleRenameAsterismLayer}
+              onDeleteAsterismLayer={handleDeleteAsterismLayer}
+              onLoadAsterismPresets={handleLoadAsterismPresets}
+              onImportAsterismBundle={handleImportAsterismBundle}
+              onFocusAsterismObject={handleFocusAsterismObject}
+              onChangeOptics={setOptics}
+            />
+            <TourGuideOverlay
+              tour={tourState}
+              dwellProgress={tourDwellProgress}
+              theme={theme}
+              isCurrentCheckpointObserved={isCurrentTourCheckpointObserved}
+              onPrev={handlePrevTourStop}
+              onNext={handleNextTourStop}
+              onTogglePlay={handleToggleTourPlay}
+              onJump={handleJumpTourStop}
+              onStop={handleStopTour}
+              onCycleDwellSec={handleCycleTourDwellSec}
+              onToggleObserved={
+                tourState.trackId && currentTourStop?.checkpointId
+                  ? () =>
+                      handleToggleChallengeCheckpoint(
+                        tourState.trackId!,
+                        currentTourStop.checkpointId!
+                      )
+                  : undefined
+              }
+            />
+          </div>
           <TimeControlBar
             theme={theme}
             observer={observer}
-            layers={layers}
-            magLimit={magLimit}
-            dsoMagLimit={dsoMagLimit}
             onChangeObserver={handleChangeObserver}
-            onChangeLayers={setLayers}
           />
         </div>
 
@@ -3689,9 +4491,9 @@ export default function App() {
           )}
         </button>
 
-        {/* Right Overlay Object Inspector / Session Drawer (270px, matches left drawer) */}
+        {/* Right Overlay Object Inspector / Session Drawer (292px) */}
         <div
-          className={`no-print absolute inset-y-0 right-0 z-30 w-[270px] transition-transform duration-200 ease-out shadow-2xl ${
+          className={`no-print absolute inset-y-0 right-0 z-30 w-[292px] transition-transform duration-200 ease-out shadow-2xl ${
             rightOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
           }`}
         >
@@ -3704,6 +4506,8 @@ export default function App() {
               theme={theme}
               observer={observer}
               optics={optics}
+              equipmentLocker={equipmentLocker}
+              savedSites={savedSites}
               catalogs={catalogs}
               sessionPlan={sessionPlan}
               tonightManualEntries={observingListsState.tonightEntries}
@@ -3757,6 +4561,14 @@ export default function App() {
               onDeleteChallengeTrack={handleDeleteChallengeTrack}
               onResetBuiltInChallenge={handleResetBuiltInChallenge}
               onImportChallenges={handleImportChallenges}
+              tourState={tourState}
+              tonightTourStops={tonightTourStops}
+              onStartTonightTour={handleStartTonightTour}
+              onStartChallengeTour={handleStartChallengeTour}
+              onToggleTourPlay={handleToggleTourPlay}
+              onStopTour={handleStopTour}
+              onJumpTourStop={handleJumpTourStop}
+              onChangeTourDwellSec={handleChangeTourDwellSec}
               asterismStore={asterismStore}
               asterismMode={asterismMode}
               asterismSelectedId={asterismSelectedId}
@@ -3775,6 +4587,12 @@ export default function App() {
               onToggleAsterismPreset={handleToggleAsterismPreset}
               onFocusAsterismPreset={handleFocusAsterismPreset}
               onImportAsterismBundle={handleImportAsterismBundle}
+              observationLogStore={observationLogStore}
+              onSaveObservationLog={handleSaveObservationLog}
+              onDeleteObservationLog={handleDeleteObservationLog}
+              onToggleObjectObserved={handleToggleObjectObserved}
+              onFocusObservationTarget={handleFocusObservationTarget}
+              onImportObservationLogs={handleImportObservationLogs}
             />
           )}
         </div>
@@ -3787,7 +4605,7 @@ export default function App() {
           aria-label={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
           className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-14 w-5 border border-r-0 flex items-center justify-center transition-[right,background-color] duration-200 ease-out shadow-md ${ui.panel} hover:opacity-90`}
           style={{
-            right: rightOpen ? '270px' : '0px',
+            right: rightOpen ? '292px' : '0px',
             borderTopLeftRadius: '6px',
             borderBottomLeftRadius: '6px',
           }}
@@ -3812,6 +4630,81 @@ export default function App() {
         onDeleteSite={handleDeleteSite}
         onImportSites={handleImportSites}
       />
+
+      {/* Dedicated Print-Only Sheet (rendered exclusively by @media print) */}
+      {printPreview && (
+        <div className="print-only" aria-hidden="true">
+          <img src={printPreview.dataUrl} alt={printPreview.title} />
+        </div>
+      )}
+
+      {/* Printable White Star Chart Preview Modal */}
+      {printPreview && (
+        <div
+          className="no-print fixed inset-0 z-50 bg-black/75 backdrop-blur-xs flex items-center justify-center p-3 sm:p-6"
+          role="dialog"
+          aria-modal="true"
+          aria-label="종이 성도 인쇄 미리보기"
+          onClick={() => setPrintPreview(null)}
+        >
+          <div
+            className={`w-full max-w-5xl max-h-[92vh] border flex flex-col overflow-hidden shadow-2xl ${ui.panel}`}
+            style={{ borderRadius: '8px' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div
+              className={`px-3.5 py-2.5 border-b flex items-center justify-between gap-2 shrink-0 ${ui.divider}`}
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                <Printer className={`w-4 h-4 shrink-0 ${ui.accentText}`} />
+                <span className={`text-xs sm:text-sm font-semibold truncate ${ui.textPrimary}`}>
+                  {printPreview.title}
+                </span>
+                <span className={`hidden sm:inline text-[11px] ${ui.textMuted}`}>
+                  · A4 가로 인쇄 최적화 (화이트 모드)
+                </span>
+              </div>
+              <div className="flex items-center gap-1.5 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleDownloadPrintablePng}
+                  className={`h-7 px-2.5 border text-xs font-medium flex items-center gap-1.5 transition-colors ${ui.buttonIdle}`}
+                  style={{ borderRadius: '4px' }}
+                >
+                  <Download className="w-3.5 h-3.5 shrink-0" />
+                  <span>인쇄용 PNG 저장</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => window.print()}
+                  className={`h-7 px-3 border text-xs font-semibold flex items-center gap-1.5 transition-colors ${ui.buttonActive}`}
+                  style={{ borderRadius: '4px' }}
+                >
+                  <Printer className="w-3.5 h-3.5 shrink-0" />
+                  <span>인쇄하기</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setPrintPreview(null)}
+                  aria-label="인쇄 미리보기 닫기"
+                  className={`w-7 h-7 border flex items-center justify-center transition-colors ${ui.buttonIdle}`}
+                  style={{ borderRadius: '4px' }}
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+
+            <div className="flex-1 min-h-0 overflow-auto p-3 sm:p-4 bg-slate-900/60 flex items-center justify-center">
+              <img
+                src={printPreview.dataUrl}
+                alt={printPreview.title}
+                className="max-w-full max-h-[76vh] w-auto h-auto object-contain bg-white shadow-xl border border-slate-300"
+              />
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

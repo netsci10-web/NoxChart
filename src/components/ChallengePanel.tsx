@@ -10,6 +10,7 @@ import {
   ChevronDown,
   ChevronUp,
   Circle,
+  Compass,
   Crosshair,
   Download,
   Edit3,
@@ -17,12 +18,16 @@ import {
   EyeOff,
   MapPin,
   Maximize2,
+  Pause,
+  Play,
   Plus,
   Printer,
   RotateCcw,
   Save,
   Search,
   SlidersHorizontal,
+  Sparkles,
+  Square,
   Trash2,
   Trophy,
   Upload,
@@ -49,6 +54,12 @@ import {
   evaluateTrackBadges,
   parseChallengesFromJson,
 } from '../utils/challengeStorage';
+import {
+  formatFovLabel,
+  GuidedTourState,
+  TOUR_DWELL_OPTIONS,
+  TourStop,
+} from '../utils/tonightTour';
 import { getUiTheme } from '../utils/themeClasses';
 
 interface ChallengePanelProps {
@@ -81,6 +92,15 @@ interface ChallengePanelProps {
   onDeleteTrack: (trackId: string) => void;
   onResetBuiltInTrack: (trackId: string) => void;
   onImportTracks: (tracks: ChallengeTrack[]) => { addedCount: number; updatedCount: number };
+  // Guided Auto-Tour ("오늘의 투어" & Challenge Track Auto-Tour)
+  tourState: GuidedTourState;
+  tonightTourStops: TourStop[];
+  onStartTonightTour: (startIndex?: number) => void;
+  onStartChallengeTour: (track: ChallengeTrack, startIndex?: number) => void;
+  onToggleTourPlay: () => void;
+  onStopTour: () => void;
+  onJumpTourStop: (index: number) => void;
+  onChangeTourDwellSec: (sec: number) => void;
 }
 
 const SEASON_LABELS: Record<NonNullable<ChallengeTrack['season']>, string> = {
@@ -141,6 +161,14 @@ export function ChallengePanel({
   onDeleteTrack,
   onResetBuiltInTrack,
   onImportTracks,
+  tourState,
+  tonightTourStops,
+  onStartTonightTour,
+  onStartChallengeTour,
+  onToggleTourPlay,
+  onStopTour,
+  onJumpTourStop,
+  onChangeTourDwellSec,
 }: ChallengePanelProps) {
   const ui = getUiTheme(theme);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -152,6 +180,7 @@ export function ChallengePanel({
   const [notice, setNotice] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ChallengeTrack | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(true);
+  const [tourListExpanded, setTourListExpanded] = useState(false);
 
   useEffect(() => {
     if (!deleteTarget) return;
@@ -1204,6 +1233,52 @@ export function ChallengePanel({
             </div>
           </div>
 
+          <div className="pt-1 flex items-center gap-1">
+            {tourState.active && tourState.trackId === selectedTrack.id ? (
+              <>
+                <button
+                  type="button"
+                  onClick={onToggleTourPlay}
+                  className={`flex-1 py-1.5 px-2 border text-[10px] font-semibold flex items-center justify-center gap-1 transition-colors ${ui.buttonActive}`}
+                  style={{ borderRadius: '5px' }}
+                >
+                  {tourState.playing ? (
+                    <>
+                      <Pause className="w-3 h-3 shrink-0" />
+                      <span>투어 일시정지 ({tourState.currentIndex + 1}/{tourState.stops.length})</span>
+                    </>
+                  ) : (
+                    <>
+                      <Play className="w-3 h-3 shrink-0" />
+                      <span>투어 계속 ({tourState.currentIndex + 1}/{tourState.stops.length})</span>
+                    </>
+                  )}
+                </button>
+                <button
+                  type="button"
+                  onClick={onStopTour}
+                  title="자동 투어 종료"
+                  className={`py-1.5 px-2 border text-[10px] font-medium flex items-center gap-1 ${ui.buttonIdle}`}
+                  style={{ borderRadius: '5px' }}
+                >
+                  <Square className="w-3 h-3 shrink-0" />
+                  <span>종료</span>
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={() => onStartChallengeTour(selectedTrack)}
+                title="이 챌린지의 대상들을 시야각 자동 조정으로 순차 순회합니다"
+                className={`w-full py-1.5 px-2 border text-[10px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${ui.buttonActive}`}
+                style={{ borderRadius: '5px' }}
+              >
+                <Play className="w-3 h-3 shrink-0" />
+                <span>이 코스 자동 순회 투어</span>
+              </button>
+            )}
+          </div>
+
           {isCompleted && (
             <button
               type="button"
@@ -1450,9 +1525,217 @@ export function ChallengePanel({
 
   // =================== LIST VIEW ===================
   const activeCount = tracks.filter((t) => t.activeOnChart).length;
+  const isTonightTourActive = tourState.active && tourState.trackId === null;
+  const tourCardTone =
+    theme === 'white'
+      ? isTonightTourActive
+        ? 'border-blue-500 bg-blue-50/70'
+        : 'border-blue-300/80 bg-gradient-to-br from-blue-50/80 to-indigo-50/50'
+      : theme === 'red'
+      ? isTonightTourActive
+        ? 'border-[#EF4444] bg-[#220404]'
+        : 'border-[#7F1D1D] bg-[#160202]'
+      : isTonightTourActive
+      ? 'border-cyan-400/70 bg-cyan-950/35'
+      : 'border-cyan-500/35 bg-gradient-to-br from-[#0B1B2E] to-[#0A1322]';
 
   return (
     <div className="space-y-2.5">
+      {/* Tonight's Guided Auto-Tour Card */}
+      <div
+        className={`border p-2.5 space-y-2 transition-colors ${tourCardTone}`}
+        style={{ borderRadius: '7px' }}
+      >
+        <div className="flex items-start justify-between gap-1.5">
+          <div className="min-w-0 space-y-0.5">
+            <div className="flex items-center gap-1.5">
+              <Sparkles className={`w-3.5 h-3.5 shrink-0 ${ui.accentText}`} />
+              <span className={`text-[11.5px] font-semibold tracking-[-0.04em] ${ui.textPrimary}`}>
+                오늘의 투어
+              </span>
+              <span
+                className={`px-1 py-[1px] border text-[8.5px] font-mono leading-tight ${
+                  isTonightTourActive ? ui.buttonActive : `${ui.border} ${ui.textMuted}`
+                }`}
+                style={{ borderRadius: '3px' }}
+              >
+                {isTonightTourActive
+                  ? tourState.completed
+                    ? '완주'
+                    : tourState.playing
+                    ? `순회 ${tourState.currentIndex + 1}/${tourState.stops.length}`
+                    : '일시정지'
+                  : `자동 가이드`}
+              </span>
+            </div>
+            <p className={`text-[9.5px] leading-snug break-keep ${ui.textSecondary}`}>
+              현재 관측지·시각의 주요 천체 {tonightTourStops.length}개를 시야각 자동 조정으로
+              순차 안내합니다.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setTourListExpanded((v) => !v)}
+            title={tourListExpanded ? '오늘의 코스 접기' : '오늘의 코스 목록 보기'}
+            className={`p-1 border shrink-0 ${ui.buttonIdle}`}
+            style={{ borderRadius: '4px' }}
+          >
+            {tourListExpanded ? (
+              <ChevronUp className="w-3 h-3" />
+            ) : (
+              <ChevronDown className="w-3 h-3" />
+            )}
+          </button>
+        </div>
+
+        {/* Dwell interval selector */}
+        <div className="flex items-center justify-between gap-1.5">
+          <span className={`text-[9.5px] flex items-center gap-1 ${ui.textMuted}`}>
+            <Compass className="w-3 h-3 shrink-0" />
+            <span>대상당 머무름</span>
+          </span>
+          <div className="flex items-center gap-1">
+            {TOUR_DWELL_OPTIONS.map((sec) => (
+              <button
+                key={sec}
+                type="button"
+                onClick={() => onChangeTourDwellSec(sec)}
+                className={`px-1.5 py-0.5 border text-[9px] font-mono tabular-nums transition-colors ${
+                  tourState.dwellSec === sec ? ui.buttonActive : ui.buttonIdle
+                }`}
+                style={{ borderRadius: '4px' }}
+              >
+                {sec}초
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Primary Play / Pause / Stop Controls */}
+        <div className="flex items-center gap-1">
+          {isTonightTourActive ? (
+            <>
+              <button
+                type="button"
+                onClick={onToggleTourPlay}
+                className={`flex-1 py-1.5 px-2 border text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors ${ui.buttonActive}`}
+                style={{ borderRadius: '5px' }}
+              >
+                {tourState.completed ? (
+                  <>
+                    <RotateCcw className="w-3.5 h-3.5 shrink-0" />
+                    <span>처음부터 다시 투어</span>
+                  </>
+                ) : tourState.playing ? (
+                  <>
+                    <Pause className="w-3.5 h-3.5 shrink-0" />
+                    <span>일시정지</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-3.5 h-3.5 shrink-0" />
+                    <span>투어 계속</span>
+                  </>
+                )}
+              </button>
+              <button
+                type="button"
+                onClick={onStopTour}
+                title="오늘의 투어 종료"
+                className={`py-1.5 px-2.5 border text-[10px] font-medium flex items-center gap-1 ${ui.buttonIdle}`}
+                style={{ borderRadius: '5px' }}
+              >
+                <Square className="w-3 h-3 shrink-0" />
+                <span>종료</span>
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              disabled={tonightTourStops.length === 0}
+              onClick={() => onStartTonightTour(0)}
+              className={`w-full py-1.5 px-2 border text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 ${ui.buttonActive}`}
+              style={{ borderRadius: '5px' }}
+            >
+              <Play className="w-3.5 h-3.5 shrink-0" />
+              <span>오늘의 투어 시작 ({tonightTourStops.length}개 대상)</span>
+            </button>
+          )}
+        </div>
+
+        {/* Compact Preview Strip when collapsed */}
+        {!tourListExpanded && tonightTourStops.length > 0 && (
+          <div className={`text-[9px] font-mono truncate ${ui.textMuted}`}>
+            {tonightTourStops
+              .slice(0, 6)
+              .map((s) => (s.kind === 'planet' ? s.title.split(' (')[0] : s.code))
+              .join(' → ')}
+            {tonightTourStops.length > 6 ? ' …' : ''}
+          </div>
+        )}
+
+        {/* Expandable Tonight's Stop List */}
+        {tourListExpanded && tonightTourStops.length > 0 && (
+          <div
+            className={`border divide-y max-h-[210px] overflow-y-auto astro-scroll ${ui.border} ${ui.divider}`}
+            style={{ borderRadius: '5px' }}
+          >
+            {tonightTourStops.map((stop, idx) => {
+              const isCurrent = isTonightTourActive && tourState.currentIndex === idx;
+              return (
+                <button
+                  key={stop.id}
+                  type="button"
+                  onClick={() =>
+                    isTonightTourActive ? onJumpTourStop(idx) : onStartTonightTour(idx)
+                  }
+                  className={`w-full text-left px-2 py-1.5 flex items-center justify-between gap-1.5 transition-colors ${
+                    isCurrent
+                      ? theme === 'white'
+                        ? 'bg-blue-100/90'
+                        : theme === 'red'
+                        ? 'bg-[#2C0606]'
+                        : 'bg-cyan-500/20'
+                      : theme === 'white'
+                      ? 'hover:bg-slate-100/80'
+                      : theme === 'red'
+                      ? 'hover:bg-[#1E0404]'
+                      : 'hover:bg-slate-800/50'
+                  }`}
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-1 min-w-0">
+                      <span
+                        className={`text-[9px] font-mono font-bold shrink-0 ${
+                          isCurrent ? ui.accentText : ui.textMuted
+                        }`}
+                      >
+                        {String(idx + 1).padStart(2, '0')}
+                      </span>
+                      <span className={`text-[9.5px] font-mono font-semibold shrink-0 ${ui.accentText}`}>
+                        {stop.code}
+                      </span>
+                      <span className={`text-[10px] font-medium truncate ${ui.textPrimary}`}>
+                        {stop.title}
+                      </span>
+                    </div>
+                    <div className={`text-[8.5px] font-mono tabular-nums truncate ${ui.textMuted}`}>
+                      고도 {stop.altDeg.toFixed(0)}°({stop.compass}) · 자동 화각{' '}
+                      {formatFovLabel(stop.recommendedFovDeg)}
+                    </div>
+                  </div>
+                  <Play
+                    className={`w-2.5 h-2.5 shrink-0 ${
+                      isCurrent ? ui.accentText : `${ui.textMuted} opacity-60`
+                    }`}
+                  />
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+
       {renderChallengeSettings()}
       {/* Header & File I/O Toolbar */}
       <div className="flex items-center justify-between gap-1">

@@ -28,6 +28,7 @@ import {
 import {
   ChartViewState,
   Constellation,
+  DEFAULT_SENSOR_EXPORT_CAPTION,
   DeepSkyObject,
   DoubleStarSystem,
   EquipmentCategory,
@@ -40,6 +41,7 @@ import {
   OpticsSettings,
   SavedObservingSite,
   SelectedItem,
+  SensorExportCaptionConfig,
   SolarSystemBody,
   Star,
   ThemeMode,
@@ -51,6 +53,14 @@ import {
   getLSTDeg,
   RAD2DEG,
 } from '../utils/astronomy';
+import {
+  formatCatalogCode,
+  formatObjectDisplayName,
+  getDsoSearchAliases,
+  getExtraAliasesForKnownId,
+  getSecondaryDesignations,
+  normalizeCatalogToken,
+} from '../utils/catalogNames';
 import {
   downloadLayerSettingsFile,
   LayerSettingsBundle,
@@ -92,15 +102,17 @@ function scoreSearchMatch(
   q: string,
   qCompact: string
 ): number {
+  const qNorm = normalizeCatalogToken(q);
   let best = 0;
   for (const raw of primaryFields) {
     if (!raw) continue;
     const s = raw.toLowerCase();
     const sc = s.replace(/\s+/g, '');
-    if (s === q || sc === qCompact) return 120;
-    if (s.startsWith(q) || sc.startsWith(qCompact)) {
+    const sn = normalizeCatalogToken(raw);
+    if (s === q || sc === qCompact || (qNorm && sn === qNorm)) return 120;
+    if (s.startsWith(q) || sc.startsWith(qCompact) || (qNorm && sn.startsWith(qNorm))) {
       if (best < 90) best = 90;
-    } else if (s.includes(q) || sc.includes(qCompact)) {
+    } else if (s.includes(q) || sc.includes(qCompact) || (qNorm && sn.includes(qNorm))) {
       if (best < 60) best = 60;
     }
   }
@@ -109,11 +121,12 @@ function scoreSearchMatch(
     if (!raw) continue;
     const s = raw.toLowerCase();
     const sc = s.replace(/\s+/g, '');
-    if (s === q || sc === qCompact) {
+    const sn = normalizeCatalogToken(raw);
+    if (s === q || sc === qCompact || (qNorm && sn === qNorm)) {
       if (best < 100) best = 100;
-    } else if (s.startsWith(q) || sc.startsWith(qCompact)) {
+    } else if (s.startsWith(q) || sc.startsWith(qCompact) || (qNorm && sn.startsWith(qNorm))) {
       if (best < 72) best = 72;
-    } else if (s.includes(q) || sc.includes(qCompact)) {
+    } else if (s.includes(q) || sc.includes(qCompact) || (qNorm && sn.includes(qNorm))) {
       if (best < 42) best = 42;
     }
   }
@@ -265,18 +278,24 @@ export function ControlSidebar({
     const map = new Map<number, (typeof DSO_CATALOG)[number]>();
     for (const d of DSO_CATALOG) {
       const m = /^M(\d+)$/.exec(d.id);
-      if (m) map.set(Number(m[1]), d);
+      if (m) {
+        map.set(Number(m[1]), {
+          ...d,
+          altId: d.altId ? formatCatalogCode(d.altId) : undefined,
+        });
+      }
     }
     for (const d of catalogs.dsosBright) {
       const m = /^M(\d+)$/.exec(d.id);
       if (m) {
         const num = Number(m[1]);
         const prev = map.get(num);
+        const mergedAlt = d.altId || prev?.altId;
         map.set(num, {
           ...d,
           name: d.name || prev?.name,
           koName: d.koName || prev?.koName,
-          altId: d.altId || prev?.altId,
+          altId: mergedAlt ? formatCatalogCode(mergedAlt) : undefined,
         });
       }
     }
@@ -289,20 +308,51 @@ export function ControlSidebar({
     const q = query.trim().toLowerCase();
     const qCompact = q.replace(/\s+/g, '');
     if (!q) return messierList;
-    return messierList.filter((d) => {
-      const hay = `${d.id} ${d.altId ?? ''} ${d.name ?? ''} ${d.koName ?? ''} ${d.con}`.toLowerCase();
-      return hay.includes(q) || hay.replace(/\s+/g, '').includes(qCompact);
-    });
+    const scored: { item: (typeof messierList)[number]; score: number; num: number }[] = [];
+    for (const d of messierList) {
+      const mNum = Number(d.id.slice(1)) || 999;
+      const aliases = getDsoSearchAliases(d);
+      const score = scoreSearchMatch(
+        [
+          ...aliases,
+          `messier ${mNum}`,
+          `메시에 ${mNum}`,
+          d.koName,
+          d.name,
+        ],
+        [d.con, d.type],
+        q,
+        qCompact
+      );
+      if (score > 0) scored.push({ item: d, score, num: mNum });
+    }
+    scored.sort((a, b) => b.score - a.score || a.num - b.num);
+    return scored.map((s) => s.item);
   }, [messierList, query]);
 
   const filteredCaldwell = useMemo(() => {
     const q = query.trim().toLowerCase();
     const qCompact = q.replace(/\s+/g, '');
     if (!q) return CALDWELL_CATALOG;
-    return CALDWELL_CATALOG.filter((c) => {
-      const hay = `${c.caldwellId} caldwell ${c.caldwellNumber} 콜드웰 ${c.caldwellNumber} ${c.id} ${c.name ?? ''} ${c.koName ?? ''} ${c.con}`.toLowerCase();
-      return hay.includes(q) || hay.replace(/\s+/g, '').includes(qCompact);
-    });
+    const scored: { item: (typeof CALDWELL_CATALOG)[number]; score: number }[] = [];
+    for (const c of CALDWELL_CATALOG) {
+      const aliases = getDsoSearchAliases(c, c.caldwellId);
+      const score = scoreSearchMatch(
+        [
+          ...aliases,
+          `caldwell ${c.caldwellNumber}`,
+          `콜드웰 ${c.caldwellNumber}`,
+          c.koName,
+          c.name,
+        ],
+        [c.con, c.type],
+        q,
+        qCompact
+      );
+      if (score > 0) scored.push({ item: c, score });
+    }
+    scored.sort((a, b) => b.score - a.score || a.item.caldwellNumber - b.item.caldwellNumber);
+    return scored.map((s) => s.item);
   }, [query]);
 
   const ngcIcList = useMemo(() => {
@@ -320,7 +370,7 @@ export function ControlSidebar({
 
     const extractNgcIc = (raw?: string): { key: string; catalog: 'ngc' | 'ic'; displayId: string } | null => {
       if (!raw) return null;
-      const m = /^(NGC|IC)\s*(\d+[A-Z]?)$/i.exec(raw.trim());
+      const m = /^(NGC|IC)\s*[-_]?\s*0*(\d+[A-Z]?)$/i.exec(raw.trim());
       if (!m) return null;
       const prefix = m[1].toUpperCase();
       const num = m[2].toUpperCase();
@@ -331,14 +381,20 @@ export function ControlSidebar({
       };
     };
 
-    const addEntry = (dso: DeepSkyObject, preferredCrossId?: string) => {
-      const fromId = extractNgcIc(dso.id);
-      const fromAlt = !fromId ? extractNgcIc(dso.altId) : null;
-      const info = fromId || fromAlt;
-      if (!info) return;
-      const crossId =
-        preferredCrossId ??
-        (fromId ? dso.altId : dso.id !== info.displayId ? dso.id : undefined);
+    const mergeCrossId = (existing?: string, incoming?: string): string | undefined => {
+      if (!incoming) return existing;
+      if (!existing) return incoming;
+      const parts = existing.split(' · ').map((p) => p.trim());
+      const incomingNorm = normalizeCatalogToken(incoming);
+      if (parts.some((p) => normalizeCatalogToken(p) === incomingNorm)) return existing;
+      return `${existing} · ${incoming}`;
+    };
+
+    const upsertByInfo = (
+      info: { key: string; catalog: 'ngc' | 'ic'; displayId: string },
+      dso: DeepSkyObject,
+      crossId?: string
+    ) => {
       const prev = byKey.get(info.key);
       if (!prev) {
         byKey.set(info.key, {
@@ -351,7 +407,7 @@ export function ControlSidebar({
       } else {
         byKey.set(info.key, {
           ...prev,
-          crossId: prev.crossId || crossId,
+          crossId: mergeCrossId(prev.crossId, crossId),
           dso: {
             ...prev.dso,
             name: prev.dso.name || dso.name,
@@ -359,6 +415,26 @@ export function ControlSidebar({
             altId: prev.dso.altId || dso.altId,
           },
         });
+      }
+    };
+
+    const addEntry = (dso: DeepSkyObject, preferredCrossId?: string) => {
+      const fromId = extractNgcIc(dso.id);
+      const fromAlt = !fromId ? extractNgcIc(dso.altId) : null;
+      const info = fromId || fromAlt;
+      if (info) {
+        const crossId =
+          preferredCrossId ??
+          (fromId ? dso.altId : dso.id !== info.displayId ? dso.id : undefined);
+        upsertByInfo(info, dso, crossId ? formatCatalogCode(crossId) : undefined);
+      }
+      if (preferredCrossId) {
+        for (const extra of getExtraAliasesForKnownId(preferredCrossId, dso.id)) {
+          const extraInfo = extractNgcIc(extra);
+          if (extraInfo) {
+            upsertByInfo(extraInfo, dso, formatCatalogCode(preferredCrossId));
+          }
+        }
       }
     };
 
@@ -386,8 +462,9 @@ export function ControlSidebar({
     const scored: { item: (typeof pool)[number]; score: number }[] = [];
     for (const item of pool) {
       const numOnly = item.key.replace(/^(NGC|IC)/, '');
+      const crossParts = item.crossId ? item.crossId.split(' · ') : [];
       const score = scoreSearchMatch(
-        [item.displayId, item.key, numOnly, item.crossId, item.dso.koName, item.dso.name],
+        [item.displayId, item.key, numOnly, ...crossParts, item.dso.koName, item.dso.name],
         [item.dso.con, item.dso.type],
         q,
         qCompact
@@ -563,20 +640,23 @@ export function ControlSidebar({
 
     // 4. DSOs (Messier -> Caldwell -> Bright DSO -> Dark Nebulae -> Deep NGC/IC)
     const seenDsoIds = new Set<string>();
-    const normDsoKey = (id?: string) => (id ? id.replace(/\s+/g, '').toUpperCase() : '');
+    const normDsoKey = (id?: string) => normalizeCatalogToken(id);
 
     for (const dso of messierList) {
       const k1 = normDsoKey(dso.id);
       const k2 = normDsoKey(dso.altId);
       if (k1) seenDsoIds.add(k1);
       if (k2) seenDsoIds.add(k2);
+      const mNum = dso.id.replace(/^M/i, '');
+      const aliases = getDsoSearchAliases(dso);
       const score = scoreSearchMatch(
-        [dso.id, dso.altId, dso.koName, dso.name],
+        [...aliases, `messier ${mNum}`, `메시에 ${mNum}`, dso.koName, dso.name],
         [dso.con],
         q,
         qCompact
       );
       if (score > 0) {
+        const secList = getSecondaryDesignations(dso.id, dso.altId);
         results.push({
           kind: 'dso',
           key: `dso:${dso.id}`,
@@ -585,7 +665,7 @@ export function ControlSidebar({
           dso,
           badge: '메시에',
           primaryId: dso.id,
-          secondaryId: dso.altId,
+          secondaryId: secList.length > 0 ? secList.join(' · ') : undefined,
         });
       }
     }
@@ -595,10 +675,10 @@ export function ControlSidebar({
       const k2 = normDsoKey(entry.id);
       if (k1) seenDsoIds.add(k1);
       if (k2) seenDsoIds.add(k2);
+      const aliases = getDsoSearchAliases(entry, entry.caldwellId);
       const score = scoreSearchMatch(
         [
-          entry.caldwellId,
-          entry.id,
+          ...aliases,
           entry.koName,
           entry.name,
           `caldwell ${entry.caldwellNumber}`,
@@ -609,6 +689,7 @@ export function ControlSidebar({
         qCompact
       );
       if (score > 0) {
+        const secList = getSecondaryDesignations(entry.caldwellId, entry.id);
         results.push({
           kind: 'dso',
           key: `dso:${entry.caldwellId}`,
@@ -617,7 +698,7 @@ export function ControlSidebar({
           dso: entry,
           badge: '콜드웰',
           primaryId: entry.caldwellId,
-          secondaryId: entry.id,
+          secondaryId: secList.length > 0 ? secList.join(' · ') : formatCatalogCode(entry.id),
         });
       }
     }
@@ -648,8 +729,8 @@ export function ControlSidebar({
             mag: dso.mag,
             dso,
             badge: dso.type === 'DARK' ? '암흑' : pool.badge,
-            primaryId: dso.id,
-            secondaryId: dso.altId,
+            primaryId: formatCatalogCode(dso.id),
+            secondaryId: dso.altId ? formatCatalogCode(dso.altId) : undefined,
           });
         }
       }
@@ -1150,9 +1231,12 @@ export function ControlSidebar({
                       const isActive = selected?.kind === 'star' && selected.data.id === star.id;
                       const hz = equatorialToHorizontal(star.ra, star.dec, lstDeg, observer.lat);
                       const below = hz.altDeg < 0;
-                      const primaryTitle = star.koName || star.name || star.bayer || star.id;
+                      const primaryTitle = formatObjectDisplayName(
+                        star.koName,
+                        star.name,
+                        star.bayer || star.id
+                      );
                       const subInfo = [
-                        star.name && star.koName ? star.name : undefined,
                         star.bayer,
                         star.hip ? `HIP ${star.hip}` : undefined,
                         star.con || undefined,
@@ -1178,6 +1262,7 @@ export function ControlSidebar({
                                 항성
                               </span>
                               <span
+                                title={primaryTitle}
                                 className={`font-semibold truncate tracking-[-0.04em] ${
                                   below ? belowHorizonTextCls : ui.textPrimary
                                 }`}
@@ -1210,7 +1295,11 @@ export function ControlSidebar({
                       const isActive = selected?.kind === 'double' && selected.data.id === sys.id;
                       const hz = equatorialToHorizontal(sys.ra, sys.dec, lstDeg, observer.lat);
                       const below = hz.altDeg < 0;
-                      const title = sys.koName || sys.name || sys.bayer || sys.disc;
+                      const title = formatObjectDisplayName(
+                        sys.koName,
+                        sys.name,
+                        sys.bayer || sys.disc
+                      );
                       return (
                         <button
                           key={item.key}
@@ -1230,6 +1319,7 @@ export function ControlSidebar({
                                 {sys.isMultiple ? `다중 ${sys.compCount}성` : '이중성'}
                               </span>
                               <span
+                                title={title}
                                 className={`font-semibold truncate tracking-[-0.04em] ${
                                   below ? belowHorizonTextCls : ui.textPrimary
                                 }`}
@@ -1262,6 +1352,11 @@ export function ControlSidebar({
                       (selected.data.id === dso.id || selected.data.altId === primaryId);
                     const hz = equatorialToHorizontal(dso.ra, dso.dec, lstDeg, observer.lat);
                     const below = hz.altDeg < 0;
+                    const dsoTitle = formatObjectDisplayName(
+                      dso.koName,
+                      dso.name,
+                      secondaryId || dso.id
+                    );
                     return (
                       <button
                         key={item.key}
@@ -1288,11 +1383,12 @@ export function ControlSidebar({
                               {primaryId}
                             </span>
                             <span
+                              title={dsoTitle}
                               className={`font-semibold truncate tracking-[-0.04em] ${
                                 below ? belowHorizonTextCls : ui.textPrimary
                               }`}
                             >
-                              {dso.koName || dso.name || secondaryId || dso.id}
+                              {dsoTitle}
                             </span>
                           </div>
                           <span
@@ -1329,6 +1425,8 @@ export function ControlSidebar({
                   const isActive = selected?.kind === 'dso' && selected.data.id === dso.id;
                   const hz = equatorialToHorizontal(dso.ra, dso.dec, lstDeg, observer.lat);
                   const below = hz.altDeg < 0;
+                  const secDesignations = getSecondaryDesignations(dso.id, dso.altId);
+                  const dsoTitle = formatObjectDisplayName(dso.koName, dso.name, dso.id);
                   return (
                     <button
                       key={dso.id}
@@ -1348,11 +1446,12 @@ export function ControlSidebar({
                             {dso.id}
                           </span>
                           <span
+                            title={dsoTitle}
                             className={`font-semibold truncate tracking-[-0.04em] ${
                               below ? belowHorizonTextCls : ui.textPrimary
                             }`}
                           >
-                            {dso.koName || dso.name || dso.id}
+                            {dsoTitle}
                           </span>
                         </div>
                         <span
@@ -1368,7 +1467,7 @@ export function ControlSidebar({
                           below ? belowHorizonSubCls : ui.textMuted
                         }`}
                       >
-                        {dso.altId ? `${dso.altId} · ` : ''}
+                        {secDesignations.length > 0 ? `${secDesignations.join(' · ')} · ` : ''}
                         {dso.con} · {formatCompactRaDec(dso.ra, dso.dec)}
                       </div>
                     </button>
@@ -1388,6 +1487,12 @@ export function ControlSidebar({
                     (selected.data.id === entry.id || selected.data.altId === entry.caldwellId);
                   const hz = equatorialToHorizontal(entry.ra, entry.dec, lstDeg, observer.lat);
                   const below = hz.altDeg < 0;
+                  const secDesignations = getSecondaryDesignations(entry.caldwellId, entry.id);
+                  const entryTitle = formatObjectDisplayName(
+                    entry.koName,
+                    entry.name,
+                    formatCatalogCode(entry.id)
+                  );
                   return (
                     <button
                       key={entry.caldwellId}
@@ -1407,11 +1512,12 @@ export function ControlSidebar({
                             {entry.caldwellId}
                           </span>
                           <span
+                            title={entryTitle}
                             className={`font-semibold truncate tracking-[-0.04em] ${
                               below ? belowHorizonTextCls : ui.textPrimary
                             }`}
                           >
-                            {entry.koName || entry.name || entry.id}
+                            {entryTitle}
                           </span>
                         </div>
                         <span
@@ -1427,7 +1533,10 @@ export function ControlSidebar({
                           below ? belowHorizonSubCls : ui.textMuted
                         }`}
                       >
-                        {entry.id} · {entry.con} · {formatCompactRaDec(entry.ra, entry.dec)}
+                        {secDesignations.length > 0
+                          ? secDesignations.join(' · ')
+                          : formatCatalogCode(entry.id)}{' '}
+                        · {entry.con} · {formatCompactRaDec(entry.ra, entry.dec)}
                       </div>
                     </button>
                   );
@@ -1464,6 +1573,11 @@ export function ControlSidebar({
                         selected.data.id.replace(/\s+/g, '').toUpperCase() === item.key);
                     const hz = equatorialToHorizontal(dso.ra, dso.dec, lstDeg, observer.lat);
                     const below = hz.altDeg < 0;
+                    const ngcTitle = formatObjectDisplayName(
+                      dso.koName,
+                      dso.name,
+                      crossId || dso.type
+                    );
                     return (
                       <button
                         key={item.key}
@@ -1483,11 +1597,12 @@ export function ControlSidebar({
                               {displayId}
                             </span>
                             <span
+                              title={ngcTitle}
                               className={`font-semibold truncate tracking-[-0.04em] ${
                                 below ? belowHorizonTextCls : ui.textPrimary
                               }`}
                             >
-                              {dso.koName || dso.name || crossId || dso.type}
+                              {ngcTitle}
                             </span>
                           </div>
                           <span
@@ -4287,6 +4402,244 @@ export function ControlSidebar({
               </div>
               )}
             </div>
+
+            {/* Sensor FOV PNG Footer Caption Settings */}
+            {(() => {
+              const captionCfg: SensorExportCaptionConfig = {
+                ...DEFAULT_SENSOR_EXPORT_CAPTION,
+                ...(optics.sensorExportCaption ?? {}),
+              };
+              const updateCaption = (patch: Partial<SensorExportCaptionConfig>) => {
+                onChangeOptics((prev) => ({
+                  ...prev,
+                  sensorExportCaption: {
+                    ...DEFAULT_SENSOR_EXPORT_CAPTION,
+                    ...(prev.sensorExportCaption ?? {}),
+                    ...patch,
+                  },
+                }));
+              };
+              const toggleItems: {
+                key: Exclude<keyof SensorExportCaptionConfig, 'customNote'>;
+                label: string;
+              }[] = [
+                { key: 'showTargetName', label: '중심 천체명' },
+                { key: 'showCoordinates', label: '적경·적위 좌표' },
+                { key: 'showDateTime', label: '관측 일시' },
+                { key: 'showLocation', label: '관측지 이름' },
+                { key: 'showConstellation', label: '별자리명' },
+                { key: 'showEquipmentFov', label: '장비·센서 화각' },
+                { key: 'showRotation', label: '좌표계·회전각' },
+                { key: 'showNoxChartBrand', label: 'NoxChart 표기' },
+              ];
+              const enabledCount = toggleItems.filter((item) => captionCfg[item.key]).length;
+              const isModified =
+                toggleItems.some(
+                  (item) => captionCfg[item.key] !== DEFAULT_SENSOR_EXPORT_CAPTION[item.key]
+                ) || captionCfg.customNote.length > 0;
+
+              // Build compact live preview matching exportSensorFovPng layout
+              const previewEquip =
+                optics.sensorEquipmentLabel && !optics.sensorEquipmentLabel.startsWith('FOV_')
+                  ? optics.sensorEquipmentLabel
+                  : '촬영 센서';
+              const previewFov = `${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°`;
+              const previewRow1Left = captionCfg.showTargetName
+                ? captionCfg.showCoordinates
+                  ? 'M42 오리온 대성운 (RA 05h 35m, Dec -05° 23′)'
+                  : 'M42 오리온 대성운'
+                : captionCfg.showCoordinates
+                ? 'RA 05h 35m · Dec -05° 23′'
+                : '';
+              const previewDate = new Date(observer.timestampMs);
+              const previewDateStr = `${previewDate.getFullYear()}-${String(
+                previewDate.getMonth() + 1
+              ).padStart(2, '0')}-${String(previewDate.getDate()).padStart(2, '0')} ${String(
+                previewDate.getHours()
+              ).padStart(2, '0')}:${String(previewDate.getMinutes()).padStart(2, '0')}`;
+              const previewRow1Right = [
+                captionCfg.showLocation && observer.name.trim() ? observer.name.trim() : '',
+                captionCfg.showDateTime ? previewDateStr : '',
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              const previewRow2Left = [
+                captionCfg.showConstellation ? '오리온자리 (Ori)' : '',
+                captionCfg.showEquipmentFov ? `${previewEquip} (${previewFov})` : '',
+                captionCfg.customNote.trim(),
+              ]
+                .filter(Boolean)
+                .join(' / ');
+              const normRot = optics.sensorRotationLocked
+                ? 0
+                : ((optics.sensorRotationDeg % 360) + 360) % 360;
+              const previewRot = captionCfg.showRotation
+                ? normRot > 0.05 && normRot < 359.95
+                  ? `J2000 · 지평 회전 ${Math.round(normRot)}°`
+                  : 'J2000 적도좌표'
+                : '';
+              const hasPreviewRow1 = Boolean(previewRow1Left || previewRow1Right);
+              const hasPreviewRow2 = Boolean(
+                previewRow2Left || previewRot || captionCfg.showNoxChartBrand
+              );
+
+              return (
+                <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+                  <div className="flex items-center justify-between gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('optics_sensor_caption')}
+                      aria-expanded={isSectionOpen('optics_sensor_caption')}
+                      className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                    >
+                      <ChevronDown
+                        className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                          isSectionOpen('optics_sensor_caption') ? '' : '-rotate-90'
+                        }`}
+                      />
+                      <Image className="w-3.5 h-3.5 shrink-0" />
+                      <span>촬영센서 PNG 하단 설명</span>
+                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {isModified && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateCaption({ ...DEFAULT_SENSOR_EXPORT_CAPTION })
+                          }
+                          title="하단 설명 항목을 기본값으로 되돌립니다"
+                          className={`inline-flex items-center gap-0.5 text-[9.5px] tracking-[-0.04em] underline underline-offset-2 ${ui.accentText} hover:opacity-80`}
+                        >
+                          <RotateCcw className="w-2.5 h-2.5" />
+                          <span>기본값</span>
+                        </button>
+                      )}
+                      <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
+                        {enabledCount}/{toggleItems.length}
+                      </span>
+                    </div>
+                  </div>
+
+                  {isSectionOpen('optics_sensor_caption') && (
+                    <div className="space-y-2">
+                      <p
+                        className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
+                      >
+                        촬영센서 화각 PNG 저장 시 사진 하단 여백에 포함할 설명 항목을 선택합니다.
+                      </p>
+
+                      {/* 2-Column Checkbox Grid */}
+                      <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+                        {toggleItems.map((item) => (
+                          <label
+                            key={item.key}
+                            className={`flex items-center justify-between gap-1.5 px-2 py-1 border rounded text-[10.5px] cursor-pointer select-none transition-colors ${
+                              captionCfg[item.key] ? ui.panelMuted : ui.panel
+                            } ${ui.border}`}
+                          >
+                            <span
+                              className={`truncate tracking-[-0.04em] ${
+                                captionCfg[item.key] ? ui.textPrimary : ui.textMuted
+                              }`}
+                            >
+                              {item.label}
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={captionCfg[item.key]}
+                              onChange={(e) =>
+                                updateCaption({ [item.key]: e.target.checked })
+                              }
+                              className={`w-3.5 h-3.5 shrink-0 cursor-pointer ${
+                                theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
+                              }`}
+                            />
+                          </label>
+                        ))}
+                      </div>
+
+                      {/* Custom Note / Photographer Input */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <label
+                            htmlFor="sensor-caption-custom-note"
+                            className={`text-[10px] font-medium tracking-[-0.04em] ${ui.textSecondary}`}
+                          >
+                            추가 메모 · 촬영자 표기
+                          </label>
+                          {captionCfg.customNote.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => updateCaption({ customNote: '' })}
+                              className={`text-[9.5px] tracking-[-0.04em] underline underline-offset-2 ${ui.textMuted} hover:opacity-80`}
+                            >
+                              지우기
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          id="sensor-caption-custom-note"
+                          type="text"
+                          maxLength={80}
+                          value={captionCfg.customNote}
+                          onChange={(e) => updateCaption({ customNote: e.target.value })}
+                          placeholder="예: 촬영자 홍길동 · 듀얼밴드 필터"
+                          className={`w-full px-2 py-1.5 text-[10.5px] border rounded focus:outline-none ${ui.input}`}
+                        />
+                      </div>
+
+                      {/* Live Mini Preview of PNG Footer Bar */}
+                      <div className="space-y-1">
+                        <div className={`text-[9.5px] font-medium tracking-[-0.04em] ${ui.textMuted}`}>
+                          하단 설명 미리보기
+                        </div>
+                        {hasPreviewRow1 || hasPreviewRow2 ? (
+                          <div className="rounded border border-slate-300 bg-white px-2 py-1.5 text-slate-900 space-y-0.5 shadow-inner">
+                            {hasPreviewRow1 && (
+                              <div className="flex items-baseline justify-between gap-2 text-[9px] leading-tight">
+                                <span className="font-bold text-slate-900 truncate">
+                                  {previewRow1Left}
+                                </span>
+                                {previewRow1Right && (
+                                  <span className="font-mono text-[8.5px] text-slate-600 shrink-0 truncate max-w-[48%]">
+                                    {previewRow1Right}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {hasPreviewRow2 && (
+                              <div className="flex items-baseline justify-between gap-2 text-[8.5px] leading-tight">
+                                <span className="text-slate-600 truncate">
+                                  {previewRow2Left}
+                                </span>
+                                {(previewRot || captionCfg.showNoxChartBrand) && (
+                                  <span className="shrink-0 whitespace-nowrap text-[8px] text-slate-500">
+                                    {previewRot}
+                                    {previewRot && captionCfg.showNoxChartBrand ? ' · ' : ''}
+                                    {captionCfg.showNoxChartBrand && (
+                                      <>
+                                        <span>Created with </span>
+                                        <span className="font-bold text-slate-900">NoxChart</span>
+                                      </>
+                                    )}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div
+                            className={`rounded border border-dashed px-2 py-1.5 text-center text-[9.5px] ${ui.border} ${ui.textMuted}`}
+                          >
+                            하단 설명 없음 (천체 사진만 저장)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </>
         )}
 

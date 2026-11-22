@@ -2,6 +2,8 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookmarkCheck,
   BookmarkPlus,
+  BookOpen,
+  Calendar,
   Check,
   CheckCircle2,
   CheckSquare,
@@ -13,8 +15,10 @@ import {
   Download,
   FolderPlus,
   ListChecks,
+  MapPin,
   Navigation,
   Pencil,
+  Plus,
   Route,
   Sparkles,
   Square,
@@ -22,6 +26,7 @@ import {
   Target,
   Trash2,
   Upload,
+  Wrench,
   X,
 } from 'lucide-react';
 import { CALDWELL_CATALOG } from '../data/caldwell';
@@ -33,10 +38,15 @@ import {
   ChallengeCheckpoint,
   ChallengeTrack,
   ChartViewState,
+  EquipmentLockerState,
+  ObservationLogEntry,
+  ObservationLogStoreState,
+  ObservationSeeingGrade,
   ObserverConfig,
   ObservingListGroup,
   ObservingSessionEntry,
   OpticsSettings,
+  SavedObservingSite,
   SelectedItem,
   ThemeMode,
 } from '../types/astronomy';
@@ -52,27 +62,45 @@ import {
   getDsoTypeLabel,
   getLSTDeg,
 } from '../utils/astronomy';
+import {
+  formatCatalogCode,
+  formatObjectDisplayName,
+  getSecondaryDesignations,
+} from '../utils/catalogNames';
 import { computePlanetOrientation } from '../utils/planetRenderer';
 import { getSolarSystemBodies } from '../utils/solarSystem';
+import {
+  buildActiveEquipmentSummary,
+  formatObservationDateTime,
+  fromDateTimeLocalValue,
+  getSeeingLabel,
+  getSelectedObjectMeta,
+  SEEING_OPTIONS,
+  toDateTimeLocalValue,
+} from '../utils/observationLogStorage';
+import { GuidedTourState, TourStop } from '../utils/tonightTour';
 import { getUiTheme } from '../utils/themeClasses';
 import { AsterismPanel } from './AsterismPanel';
 import { ChallengePanel } from './ChallengePanel';
+import { ObservationLogPanel } from './ObservationLogPanel';
 
 interface ObjectInspectorProps {
   selected: SelectedItem | null;
   centerLocked: boolean;
   solarTrails: Record<string, number>;
-  activeTab: 'detail' | 'session' | 'challenge' | 'asterism';
+  activeTab: 'detail' | 'session' | 'challenge' | 'asterism' | 'log';
   theme: ThemeMode;
   observer: ObserverConfig;
   optics: OpticsSettings;
+  equipmentLocker: EquipmentLockerState;
+  savedSites: SavedObservingSite[];
   catalogs: CatalogSnapshot;
   sessionPlan: ObservingSessionEntry[];
   tonightManualEntries: ObservingSessionEntry[];
   observingLists: ObservingListGroup[];
   tonightListId: string | null;
   challenges: ChallengeTrack[];
-  onTabChange: (tab: 'detail' | 'session' | 'challenge' | 'asterism') => void;
+  onTabChange: (tab: 'detail' | 'session' | 'challenge' | 'asterism' | 'log') => void;
   onClose: () => void;
   onSelect: (item: SelectedItem | null) => void;
   onToggleCenterLock: () => void;
@@ -125,6 +153,15 @@ interface ObjectInspectorProps {
   onDeleteChallengeTrack: (trackId: string) => void;
   onResetBuiltInChallenge: (trackId: string) => void;
   onImportChallenges: (tracks: ChallengeTrack[]) => { addedCount: number; updatedCount: number };
+  // Guided Auto-Tour ("오늘의 투어" & Challenge Track Auto-Tour)
+  tourState: GuidedTourState;
+  tonightTourStops: TourStop[];
+  onStartTonightTour: (startIndex?: number) => void;
+  onStartChallengeTour: (track: ChallengeTrack, startIndex?: number) => void;
+  onToggleTourPlay: () => void;
+  onStopTour: () => void;
+  onJumpTourStop: (index: number) => void;
+  onChangeTourDwellSec: (sec: number) => void;
   // Custom Asterism Layers & Presets
   asterismStore: AsterismStoreState;
   asterismMode: boolean;
@@ -147,6 +184,31 @@ interface ObjectInspectorProps {
     layers: AsterismLayer[],
     objects: AsterismObject[]
   ) => { addedCount: number };
+  // Observation Logbook & Observed Status
+  observationLogStore: ObservationLogStoreState;
+  onSaveObservationLog: (entry: ObservationLogEntry) => void;
+  onDeleteObservationLog: (logId: string) => void;
+  onToggleObjectObserved: (
+    meta: {
+      objectId: string;
+      objectKind: 'star' | 'dso' | 'planet' | 'double';
+      objectName: string;
+      constellation?: string;
+      raDeg: number;
+      decDeg: number;
+    },
+    forceObserved?: boolean
+  ) => void;
+  onFocusObservationTarget: (target: {
+    objectId: string;
+    objectKind: 'star' | 'dso' | 'planet' | 'double';
+    raDeg: number;
+    decDeg: number;
+  }) => void;
+  onImportObservationLogs: (incoming: ObservationLogStoreState) => {
+    addedLogs: number;
+    updatedLogs: number;
+  };
 }
 
 export function ObjectInspector({
@@ -157,6 +219,8 @@ export function ObjectInspector({
   theme,
   observer,
   optics,
+  equipmentLocker,
+  savedSites,
   catalogs,
   sessionPlan,
   tonightManualEntries,
@@ -206,6 +270,14 @@ export function ObjectInspector({
   onDeleteChallengeTrack,
   onResetBuiltInChallenge,
   onImportChallenges,
+  tourState,
+  tonightTourStops,
+  onStartTonightTour,
+  onStartChallengeTour,
+  onToggleTourPlay,
+  onStopTour,
+  onJumpTourStop,
+  onChangeTourDwellSec,
   asterismStore,
   asterismMode,
   asterismSelectedId,
@@ -224,6 +296,12 @@ export function ObjectInspector({
   onToggleAsterismPreset,
   onFocusAsterismPreset,
   onImportAsterismBundle,
+  observationLogStore,
+  onSaveObservationLog,
+  onDeleteObservationLog,
+  onToggleObjectObserved,
+  onFocusObservationTarget,
+  onImportObservationLogs,
 }: ObjectInspectorProps) {
   const ui = getUiTheme(theme);
   const skylistInputRef = useRef<HTMLInputElement>(null);
@@ -237,6 +315,19 @@ export function ObjectInspector({
   const [expandedListIds, setExpandedListIds] = useState<Record<string, boolean>>({});
   const [detailTargetListId, setDetailTargetListId] = useState<string>('__tonight__');
   const [recommend25Active, setRecommend25Active] = useState(false);
+  const [detailLogDraft, setDetailLogDraft] = useState<{
+    id: string | null;
+    observedAtLocal: string;
+    location: string;
+    equipment: string;
+    seeing: ObservationSeeingGrade;
+    rating: number;
+    notes: string;
+  } | null>(null);
+
+  useEffect(() => {
+    setDetailLogDraft(null);
+  }, [selected?.data.id]);
 
   useEffect(() => {
     if (
@@ -520,15 +611,15 @@ export function ObjectInspector({
 
   return (
     <aside
-      className={`no-print w-[270px] shrink-0 h-full border-l flex flex-col overflow-hidden ${ui.panel}`}
+      className={`no-print w-[292px] shrink-0 h-full border-l flex flex-col overflow-hidden ${ui.panel}`}
     >
       {/* Header Tabs */}
       <div className={`flex items-center justify-between gap-1 border-b px-1.5 py-1.5 ${ui.divider}`}>
-        <div className="flex items-center gap-1 min-w-0 flex-1">
+        <div className="flex items-center gap-0.5 min-w-0 flex-1">
           <button
             type="button"
             onClick={() => onTabChange('detail')}
-            className={`px-1.5 py-1 text-[10px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'detail' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
@@ -538,25 +629,27 @@ export function ObjectInspector({
           <button
             type="button"
             onClick={() => onTabChange('session')}
-            className={`px-1.5 py-1 text-[10px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'session' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
-            관측목록({sessionPlan.length})
+            관측목록{sessionPlan.length > 0 ? `(${sessionPlan.length})` : ''}
           </button>
           <button
             type="button"
             onClick={() => onTabChange('challenge')}
-            className={`px-1.5 py-1 text-[10px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
+            className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
               activeTab === 'challenge' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
             <span>챌린지</span>
-            {challenges.some((t) => t.activeOnChart) && (
+            {(tourState.active || challenges.some((t) => t.activeOnChart)) && (
               <span
-                className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"
+                className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                  tourState.active ? 'bg-cyan-400 animate-pulse' : 'bg-amber-400'
+                }`}
                 aria-hidden="true"
               />
             )}
@@ -565,15 +658,31 @@ export function ObjectInspector({
             type="button"
             onClick={() => onTabChange('asterism')}
             title="성군 작도 레이어 및 대표 성군 프리셋 설정"
-            className={`px-1.5 py-1 text-[10px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
+            className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
               activeTab === 'asterism' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
             <span>작도</span>
             {asterismStore.objects.length > 0 && (
-              <span className="font-mono text-[9px] tabular-nums opacity-80">
+              <span className="font-mono text-[8.5px] tabular-nums opacity-80">
                 {asterismStore.objects.length}
+              </span>
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => onTabChange('log')}
+            title="관측기록 관리 (일시·장비·장소·관측내용)"
+            className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
+              activeTab === 'log' ? ui.buttonActive : ui.buttonIdle
+            }`}
+            style={{ borderRadius: '4px' }}
+          >
+            <span>관측기록</span>
+            {observationLogStore.logs.length > 0 && (
+              <span className="font-mono text-[8.5px] tabular-nums opacity-80">
+                {observationLogStore.logs.length}
               </span>
             )}
           </button>
@@ -599,23 +708,43 @@ export function ObjectInspector({
               <div className="space-y-0.5">
                 <div className={`text-[10px] font-mono tracking-[-0.04em] truncate ${ui.textMuted}`}>
                   {selected.kind === 'dso'
-                    ? `${selected.data.id}${selected.data.altId ? ` · ${selected.data.altId}` : ''} · ${selected.data.con}`
+                    ? (() => {
+                        const primaryCode = formatCatalogCode(selected.data.id) || selected.data.id;
+                        const secs = getSecondaryDesignations(primaryCode, selected.data.altId);
+                        return [primaryCode, ...secs, selected.data.con].filter(Boolean).join(' · ');
+                      })()
                     : selected.kind === 'planet'
-                    ? `${selected.data.symbol} ${selected.data.name} · 태양계`
+                    ? `${selected.data.symbol} 태양계 · ${selected.data.category}`
                     : selected.kind === 'double'
                     ? `${selected.data.disc} · ${selected.data.id}${selected.data.con ? ` · ${selected.data.con}` : ''}`
-                    : `${selected.data.bayer ?? selected.data.id}${selected.data.hip ? ` · HIP ${selected.data.hip}` : ''} · ${selected.data.con}`}
+                    : `${selected.data.bayer ?? selected.data.id}${selected.data.hip ? ` · HIP ${selected.data.hip}` : ''}${selected.data.con ? ` · ${selected.data.con}` : ''}`}
                 </div>
                 <h2
                   className={`text-[15px] font-semibold leading-tight tracking-[-0.04em] break-keep ${ui.textPrimary}`}
                 >
                   {selected.kind === 'dso'
-                    ? selected.data.koName || selected.data.name || selected.data.id
+                    ? formatObjectDisplayName(
+                        selected.data.koName,
+                        selected.data.name,
+                        formatCatalogCode(selected.data.id) || selected.data.id
+                      )
                     : selected.kind === 'planet'
-                    ? selected.data.koName
+                    ? formatObjectDisplayName(
+                        selected.data.koName,
+                        selected.data.name,
+                        selected.data.id
+                      )
                     : selected.kind === 'double'
-                    ? selected.data.koName || selected.data.name || selected.data.bayer || selected.data.disc
-                    : selected.data.koName || selected.data.name || selected.data.bayer || selected.data.id}
+                    ? formatObjectDisplayName(
+                        selected.data.koName,
+                        selected.data.name,
+                        selected.data.bayer || selected.data.disc
+                      )
+                    : formatObjectDisplayName(
+                        selected.data.koName,
+                        selected.data.name,
+                        selected.data.bayer || selected.data.id
+                      )}
                 </h2>
                 <div className={`text-[10.5px] tracking-[-0.04em] truncate ${ui.textSecondary}`}>
                   {selected.kind === 'dso'
@@ -1074,25 +1203,415 @@ export function ObjectInspector({
                 </div>
               )}
 
-              {/* Observation Log / Notes */}
-              <div className="space-y-1">
-                <label className={`block font-semibold tracking-[-0.05em] ${ui.textPrimary}`}>
-                  관측 메모 (자동 저장)
-                </label>
-                <textarea
-                  rows={3}
-                  value={sessionEntry?.notes ?? ''}
-                  onChange={(e) => {
-                    if (!sessionEntry) {
-                      onToggleSessionItem(selected, effectiveDetailListId);
-                    }
-                    onUpdateNotes(selected.data.id, e.target.value, effectiveDetailListId);
-                  }}
-                  placeholder="시상, 아이피스, 필터, 관측 소감 기록..."
-                  className={`w-full p-2 border text-[10.5px] tracking-[-0.03em] leading-snug resize-none ${ui.input}`}
-                  style={{ borderRadius: '5px' }}
-                />
-              </div>
+              {/* Observed Status & Observation Logs for Selected Object */}
+              {(() => {
+                const targetMeta = getSelectedObjectMeta(selected);
+                const objectLogs = observationLogStore.logs.filter(
+                  (l) => l.objectId === targetMeta.objectId
+                );
+                const explicitStatus = observationLogStore.observedMap[targetMeta.objectId];
+                const isObserved = explicitStatus
+                  ? explicitStatus.observed
+                  : objectLogs.length > 0 || Boolean(sessionEntry?.observed);
+                const activeEquipSummary = buildActiveEquipmentSummary(equipmentLocker, optics);
+
+                const openNewDetailLog = () => {
+                  setDetailLogDraft({
+                    id: null,
+                    observedAtLocal: toDateTimeLocalValue(obsTimeMs),
+                    location: observer.name.trim(),
+                    equipment: activeEquipSummary,
+                    seeing: '',
+                    rating: 0,
+                    notes: '',
+                  });
+                };
+
+                const openEditDetailLog = (log: ObservationLogEntry) => {
+                  setDetailLogDraft({
+                    id: log.id,
+                    observedAtLocal: toDateTimeLocalValue(log.observedAt),
+                    location: log.location,
+                    equipment: log.equipment,
+                    seeing: log.seeing ?? '',
+                    rating: log.rating ?? 0,
+                    notes: log.notes,
+                  });
+                };
+
+                const handleSaveDetailLog = (e: React.FormEvent) => {
+                  e.preventDefault();
+                  if (!detailLogDraft) return;
+                  const now = Date.now();
+                  const existing = detailLogDraft.id
+                    ? observationLogStore.logs.find((l) => l.id === detailLogDraft.id)
+                    : undefined;
+                  const entry: ObservationLogEntry = {
+                    id: existing?.id ?? `obslog_${now}_${Math.random().toString(36).slice(2, 7)}`,
+                    objectId: targetMeta.objectId,
+                    objectKind: targetMeta.objectKind,
+                    objectName: targetMeta.objectName,
+                    constellation: targetMeta.constellation,
+                    raDeg: targetMeta.raDeg,
+                    decDeg: targetMeta.decDeg,
+                    observedAt: fromDateTimeLocalValue(detailLogDraft.observedAtLocal, obsTimeMs),
+                    location: detailLogDraft.location.trim(),
+                    equipment: detailLogDraft.equipment.trim(),
+                    seeing: detailLogDraft.seeing,
+                    transparency: existing?.transparency ?? '',
+                    rating: detailLogDraft.rating > 0 ? detailLogDraft.rating : undefined,
+                    notes: detailLogDraft.notes.trim(),
+                    createdAt: existing?.createdAt ?? now,
+                    updatedAt: now,
+                  };
+                  onSaveObservationLog(entry);
+                  setDetailLogDraft(null);
+                };
+
+                return (
+                  <div className={`border p-2 space-y-2 ${ui.border}`} style={{ borderRadius: '6px' }}>
+                    {/* Header: Observed Toggle + Add Log Button */}
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span
+                        className={`font-semibold flex items-center gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
+                      >
+                        <BookOpen className="w-3 h-3 shrink-0" />
+                        <span>관측 여부 · 기록</span>
+                        {objectLogs.length > 0 && (
+                          <span className={`font-mono text-[9.5px] ${ui.textMuted}`}>
+                            ({objectLogs.length})
+                          </span>
+                        )}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => (detailLogDraft ? setDetailLogDraft(null) : openNewDetailLog())}
+                        className={`px-1.5 py-0.5 border text-[9.5px] font-medium flex items-center gap-0.5 whitespace-nowrap shrink-0 transition-colors ${
+                          detailLogDraft ? ui.buttonIdle : ui.buttonActive
+                        }`}
+                        style={{ borderRadius: '4px' }}
+                      >
+                        {detailLogDraft ? (
+                          <>
+                            <X className="w-2.5 h-2.5" />
+                            <span>닫기</span>
+                          </>
+                        ) : (
+                          <>
+                            <Plus className="w-2.5 h-2.5" />
+                            <span>기록 작성</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+
+                    {/* Observed Status Toggle Bar */}
+                    <button
+                      type="button"
+                      onClick={() => onToggleObjectObserved(targetMeta, !isObserved)}
+                      className={`w-full py-1.5 px-2 border text-[10.5px] font-semibold flex items-center justify-between gap-1.5 transition-colors ${
+                        isObserved
+                          ? theme === 'white'
+                            ? 'bg-emerald-50 border-emerald-400 text-emerald-800'
+                            : theme === 'red'
+                            ? 'bg-[#2A0505] border-[#DC2626] text-[#FF6B6B]'
+                            : 'bg-emerald-950/60 border-emerald-500/60 text-emerald-300'
+                          : ui.buttonIdle
+                      }`}
+                      style={{ borderRadius: '5px' }}
+                    >
+                      <span className="flex items-center gap-1.5">
+                        {isObserved ? (
+                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                        ) : (
+                          <Circle className="w-3.5 h-3.5 shrink-0 opacity-60" />
+                        )}
+                        <span>{isObserved ? '관측 완료' : '미관측 (클릭하여 완료 표시)'}</span>
+                      </span>
+                      {isObserved && explicitStatus?.updatedAt && (
+                        <span className="font-mono text-[9px] opacity-75">
+                          {formatObservationDateTime(explicitStatus.updatedAt).slice(0, 10)}
+                        </span>
+                      )}
+                    </button>
+
+                    {/* Inline Quick Add / Edit Observation Log Form */}
+                    {detailLogDraft && (
+                      <form
+                        onSubmit={handleSaveDetailLog}
+                        className={`border p-2 space-y-1.5 ${ui.panelMuted} ${ui.border}`}
+                        style={{ borderRadius: '5px' }}
+                      >
+                        <div className="space-y-0.5">
+                          <div className="flex items-center justify-between gap-1">
+                            <label className={`text-[9.5px] ${ui.textMuted}`}>관측 일시</label>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setDetailLogDraft({
+                                  ...detailLogDraft,
+                                  observedAtLocal: toDateTimeLocalValue(Date.now()),
+                                })
+                              }
+                              className={`text-[9px] underline underline-offset-2 ${ui.accentText}`}
+                            >
+                              현재 시각
+                            </button>
+                          </div>
+                          <input
+                            type="datetime-local"
+                            value={detailLogDraft.observedAtLocal}
+                            onChange={(e) =>
+                              setDetailLogDraft({
+                                ...detailLogDraft,
+                                observedAtLocal: e.target.value,
+                              })
+                            }
+                            className={`w-full px-1.5 py-1 border text-[10px] font-mono ${ui.input}`}
+                            style={{ borderRadius: '4px' }}
+                          />
+                        </div>
+
+                        <div className="space-y-0.5">
+                          <div className="flex items-center justify-between gap-1">
+                            <label className={`text-[9.5px] ${ui.textMuted}`}>관측 장소</label>
+                            {savedSites.length > 0 && (
+                              <select
+                                value=""
+                                onChange={(e) => {
+                                  if (e.target.value) {
+                                    setDetailLogDraft({
+                                      ...detailLogDraft,
+                                      location: e.target.value,
+                                    });
+                                  }
+                                }}
+                                aria-label="저장된 관측지 선택"
+                                className={`max-w-[120px] px-1 py-0.5 border text-[9px] ${ui.input}`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                <option value="">관측지 선택…</option>
+                                {savedSites.map((site) => (
+                                  <option key={site.id} value={site.name}>
+                                    {site.name}
+                                  </option>
+                                ))}
+                              </select>
+                            )}
+                          </div>
+                          <input
+                            type="text"
+                            value={detailLogDraft.location}
+                            onChange={(e) =>
+                              setDetailLogDraft({ ...detailLogDraft, location: e.target.value })
+                            }
+                            placeholder="예: 강원 화천 조경철천문대"
+                            className={`w-full px-1.5 py-1 border text-[10px] ${ui.input}`}
+                            style={{ borderRadius: '4px' }}
+                          />
+                        </div>
+
+                        <div className="space-y-0.5">
+                          <div className="flex items-center justify-between gap-1">
+                            <label className={`text-[9.5px] ${ui.textMuted}`}>사용 장비</label>
+                            {activeEquipSummary && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setDetailLogDraft({
+                                    ...detailLogDraft,
+                                    equipment: activeEquipSummary,
+                                  })
+                                }
+                                className={`text-[9px] underline underline-offset-2 ${ui.accentText}`}
+                              >
+                                활성 장비
+                              </button>
+                            )}
+                          </div>
+                          <input
+                            type="text"
+                            value={detailLogDraft.equipment}
+                            onChange={(e) =>
+                              setDetailLogDraft({ ...detailLogDraft, equipment: e.target.value })
+                            }
+                            placeholder="예: 150mm 뉴턴 + 25mm 아이피스"
+                            className={`w-full px-1.5 py-1 border text-[10px] ${ui.input}`}
+                            style={{ borderRadius: '4px' }}
+                          />
+                        </div>
+
+                        <div className="flex items-center justify-between gap-1.5">
+                          <select
+                            value={detailLogDraft.seeing}
+                            onChange={(e) =>
+                              setDetailLogDraft({
+                                ...detailLogDraft,
+                                seeing: e.target.value as ObservationSeeingGrade,
+                              })
+                            }
+                            aria-label="시상 등급"
+                            className={`flex-1 px-1.5 py-1 border text-[9.5px] ${ui.input}`}
+                            style={{ borderRadius: '4px' }}
+                          >
+                            {SEEING_OPTIONS.map((opt) => (
+                              <option key={opt.value || 'none'} value={opt.value}>
+                                시상: {opt.label}
+                              </option>
+                            ))}
+                          </select>
+                          <div className="flex items-center gap-0.5 shrink-0">
+                            {[1, 2, 3, 4, 5].map((n) => (
+                              <button
+                                key={n}
+                                type="button"
+                                onClick={() =>
+                                  setDetailLogDraft({
+                                    ...detailLogDraft,
+                                    rating: detailLogDraft.rating === n ? 0 : n,
+                                  })
+                                }
+                                className="p-0.5"
+                                title={`별점 ${n}점`}
+                              >
+                                <Star
+                                  className={`w-3 h-3 ${
+                                    n <= detailLogDraft.rating
+                                      ? theme === 'red'
+                                        ? 'fill-red-500 text-red-500'
+                                        : 'fill-amber-400 text-amber-400'
+                                      : ui.textMuted
+                                  }`}
+                                />
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        <textarea
+                          rows={3}
+                          value={detailLogDraft.notes}
+                          onChange={(e) =>
+                            setDetailLogDraft({ ...detailLogDraft, notes: e.target.value })
+                          }
+                          placeholder="관측 소감, 보인 형태, 배율·필터 느낌 등..."
+                          className={`w-full p-1.5 border text-[10px] leading-snug resize-y ${ui.input}`}
+                          style={{ borderRadius: '4px' }}
+                        />
+
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            type="button"
+                            onClick={() => setDetailLogDraft(null)}
+                            className={`px-2 py-1 border text-[9.5px] ${ui.buttonIdle}`}
+                            style={{ borderRadius: '4px' }}
+                          >
+                            취소
+                          </button>
+                          <button
+                            type="submit"
+                            className={`px-2 py-1 border text-[9.5px] font-semibold ${ui.buttonActive}`}
+                            style={{ borderRadius: '4px' }}
+                          >
+                            {detailLogDraft.id ? '수정 저장' : '기록 저장'}
+                          </button>
+                        </div>
+                      </form>
+                    )}
+
+                    {/* Saved Logs for this Object */}
+                    {objectLogs.length > 0 ? (
+                      <div className={`divide-y ${ui.divider}`}>
+                        {objectLogs.map((log) => {
+                          const seeingTxt = getSeeingLabel(log.seeing);
+                          return (
+                            <div key={log.id} className="py-1.5 first:pt-0.5 last:pb-0 space-y-1">
+                              <div className="flex items-center justify-between gap-1">
+                                <span
+                                  className={`inline-flex items-center gap-1 font-mono text-[9.5px] tabular-nums ${ui.textSecondary}`}
+                                >
+                                  <Calendar className={`w-2.5 h-2.5 shrink-0 ${ui.textMuted}`} />
+                                  <span>{formatObservationDateTime(log.observedAt)}</span>
+                                </span>
+                                <div className="flex items-center gap-1 shrink-0">
+                                  {seeingTxt && (
+                                    <span className={`text-[9px] font-mono ${ui.accentText}`}>
+                                      {seeingTxt}
+                                    </span>
+                                  )}
+                                  {log.rating && log.rating > 0 ? (
+                                    <span
+                                      className={`text-[9px] ${
+                                        theme === 'red' ? 'text-red-400' : 'text-amber-400'
+                                      }`}
+                                    >
+                                      {'★'.repeat(log.rating)}
+                                    </span>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    onClick={() => openEditDetailLog(log)}
+                                    title="기록 수정"
+                                    className={`p-0.5 ${ui.textMuted} hover:opacity-100`}
+                                  >
+                                    <Pencil className="w-2.5 h-2.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onDeleteObservationLog(log.id)}
+                                    title="기록 삭제"
+                                    className={`p-0.5 ${ui.textMuted} hover:text-rose-400`}
+                                  >
+                                    <Trash2 className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              </div>
+                              {(log.location || log.equipment) && (
+                                <div className={`space-y-0.5 text-[9.5px] ${ui.textMuted}`}>
+                                  {log.location && (
+                                    <div className="flex items-center gap-1 min-w-0">
+                                      <MapPin className="w-2.5 h-2.5 shrink-0" />
+                                      <span className="truncate">{log.location}</span>
+                                    </div>
+                                  )}
+                                  {log.equipment && (
+                                    <div className="flex items-center gap-1 min-w-0">
+                                      <Wrench className="w-2.5 h-2.5 shrink-0" />
+                                      <span className="truncate">{log.equipment}</span>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                              {log.notes && (
+                                <p
+                                  className={`text-[10px] leading-snug whitespace-pre-wrap break-keep ${ui.textPrimary}`}
+                                >
+                                  {log.notes}
+                                </p>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      !detailLogDraft && (
+                        <p className={`text-[10px] leading-snug break-keep ${ui.textMuted}`}>
+                          아직 기록이 없습니다. ‘기록 작성’을 눌러 일시·장소·장비·관측 내용을 남겨보세요.
+                        </p>
+                      )
+                    )}
+
+                    <button
+                      type="button"
+                      onClick={() => onTabChange('log')}
+                      className={`w-full py-1 px-1.5 border text-[9.5px] tracking-[-0.04em] font-medium transition-colors ${ui.buttonIdle}`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      전체 관측기록 탭에서 관리 ({observationLogStore.logs.length}건) →
+                    </button>
+                  </div>
+                );
+              })()}
             </>
           ) : (
             <div className={`py-10 px-1 text-center space-y-2 ${ui.textMuted}`}>
@@ -1136,6 +1655,14 @@ export function ObjectInspector({
             onDeleteTrack={onDeleteChallengeTrack}
             onResetBuiltInTrack={onResetBuiltInChallenge}
             onImportTracks={onImportChallenges}
+            tourState={tourState}
+            tonightTourStops={tonightTourStops}
+            onStartTonightTour={onStartTonightTour}
+            onStartChallengeTour={onStartChallengeTour}
+            onToggleTourPlay={onToggleTourPlay}
+            onStopTour={onStopTour}
+            onJumpTourStop={onJumpTourStop}
+            onChangeTourDwellSec={onChangeTourDwellSec}
           />
         ) : activeTab === 'asterism' ? (
           <AsterismPanel
@@ -1158,6 +1685,21 @@ export function ObjectInspector({
             onTogglePreset={onToggleAsterismPreset}
             onFocusPreset={onFocusAsterismPreset}
             onImportBundle={onImportAsterismBundle}
+          />
+        ) : activeTab === 'log' ? (
+          <ObservationLogPanel
+            theme={theme}
+            selected={selected}
+            observer={observer}
+            optics={optics}
+            equipmentLocker={equipmentLocker}
+            savedSites={savedSites}
+            store={observationLogStore}
+            onSaveLog={onSaveObservationLog}
+            onDeleteLog={onDeleteObservationLog}
+            onToggleObservedStatus={onToggleObjectObserved}
+            onFocusTarget={onFocusObservationTarget}
+            onImportStore={onImportObservationLogs}
           />
         ) : (
           /* Observing Session Plan Tab: 오늘 밤 관측목록 / 목록관리 */
@@ -1361,10 +1903,26 @@ export function ObjectInspector({
                     const isManual = manualEntryIdSet.has(entry.id);
                     const title =
                       item.kind === 'dso'
-                        ? `${item.data.id}${item.data.koName ? ` · ${item.data.koName}` : ''}`
+                        ? (() => {
+                            const displayName = formatObjectDisplayName(
+                              item.data.koName,
+                              item.data.name
+                            );
+                            return `${formatCatalogCode(item.data.id) || item.data.id}${
+                              displayName ? ` · ${displayName}` : ''
+                            }`;
+                          })()
                         : item.kind === 'double'
-                        ? `${item.data.koName || item.data.name || item.data.bayer || item.data.disc} (${item.data.sep.toFixed(1)}″)`
-                        : `${item.data.koName || item.data.name || item.data.id}`;
+                        ? `${formatObjectDisplayName(
+                            item.data.koName,
+                            item.data.name,
+                            item.data.bayer || item.data.disc
+                          )} (${item.data.sep.toFixed(1)}″)`
+                        : formatObjectDisplayName(
+                            item.data.koName,
+                            item.data.name,
+                            item.data.id
+                          );
 
                     const rowBgClass = isBelowHorizon
                       ? theme === 'white'
@@ -1879,10 +2437,26 @@ export function ObjectInspector({
                                   const isBelowHorizon = hz.altDeg < 0;
                                   const title =
                                     item.kind === 'dso'
-                                      ? `${item.data.id}${item.data.koName ? ` · ${item.data.koName}` : ''}`
+                                      ? (() => {
+                                          const displayName = formatObjectDisplayName(
+                                            item.data.koName,
+                                            item.data.name
+                                          );
+                                          return `${formatCatalogCode(item.data.id) || item.data.id}${
+                                            displayName ? ` · ${displayName}` : ''
+                                          }`;
+                                        })()
                                       : item.kind === 'double'
-                                      ? `${item.data.koName || item.data.name || item.data.bayer || item.data.disc}`
-                                      : `${item.data.koName || item.data.name || item.data.id}`;
+                                      ? formatObjectDisplayName(
+                                          item.data.koName,
+                                          item.data.name,
+                                          item.data.bayer || item.data.disc
+                                        )
+                                      : formatObjectDisplayName(
+                                          item.data.koName,
+                                          item.data.name,
+                                          item.data.id
+                                        );
                                   const rowBgClass = isBelowHorizon
                                     ? theme === 'white'
                                       ? 'bg-slate-100/85'

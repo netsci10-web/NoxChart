@@ -21,6 +21,7 @@ import {
   AsterismVertex,
   ChallengeTrack,
   ChartViewState,
+  DEFAULT_SENSOR_EXPORT_CAPTION,
   DeepSkyObject,
   HipsSettings,
   LayerSettings,
@@ -48,6 +49,7 @@ import {
   unprojectStereographic,
 } from '../utils/astronomy';
 import { hitTestAsterisms } from '../utils/asterismRenderer';
+import { formatCatalogCode, formatObjectDisplayName } from '../utils/catalogNames';
 import { renderStarChart, RenderResult } from '../utils/chartRenderer';
 import { getPlanetRenderer } from '../utils/planetRenderer';
 import { getSolarSystemBodies } from '../utils/solarSystem';
@@ -58,12 +60,15 @@ import { HipsBackground, HipsBackgroundHandle } from './HipsBackground';
 export interface StarChartCanvasHandle {
   exportPng: () => void;
   exportSensorFovPng: (equipmentName?: string) => void;
+  renderPrintableChart: (options?: { title?: string }) => string | null;
+  cancelSmoothCenter: () => void;
   smoothCenterOn: (
     targetRaDeg: number,
     targetDecDeg: number,
     options?: {
       targetFsz?: number;
       durationMs?: number;
+      arcZoomOut?: boolean;
       onComplete?: () => void;
     }
   ) => void;
@@ -91,6 +96,7 @@ interface StarChartCanvasProps {
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
   onSelect: (item: SelectedItem | null, options?: { hideSelectionMark?: boolean }) => void;
   onUnlockCenter?: () => void;
+  onUserCameraInteract?: () => void;
   onChallengeChartPick?: (pick: {
     item: SelectedItem | null;
     raDeg: number;
@@ -404,6 +410,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       onChangeView,
       onSelect,
       onUnlockCenter,
+      onUserCameraInteract,
       onChallengeChartPick,
       onUndoChallengeCheckpoint,
       asterismMode,
@@ -516,6 +523,9 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
     const ui = getUiTheme(theme);
 
+    const latestViewRef = useRef(view);
+    latestViewRef.current = view;
+
     const smoothCenterOn = useCallback(
       (
         targetRaDeg: number,
@@ -523,15 +533,17 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         options?: {
           targetFsz?: number;
           durationMs?: number;
+          arcZoomOut?: boolean;
           onComplete?: () => void;
         }
       ) => {
         cancelCenterAnim();
-        const startRaRad = view.ra * 15 * DEG2RAD;
-        const startDecRad = view.dec * DEG2RAD;
+        const curView = latestViewRef.current;
+        const startRaRad = curView.ra * 15 * DEG2RAD;
+        const startDecRad = curView.dec * DEG2RAD;
         const endRaRad = targetRaDeg * DEG2RAD;
         const endDecRad = targetDecDeg * DEG2RAD;
-        const startFsz = view.fsz;
+        const startFsz = curView.fsz;
         const endFsz =
           options?.targetFsz !== undefined
             ? Math.max(MIN_FSZ_DEG, Math.min(180, options.targetFsz))
@@ -563,19 +575,28 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         }
 
         const angularDeg = omega * RAD2DEG;
-        const autoDuration = Math.round(
-          Math.min(780, Math.max(420, 380 + angularDeg * 4.5 + (hasFszChange ? 160 : 0)))
-        );
+        const useArc = Boolean(options?.arcZoomOut && angularDeg >= 6);
+        const midFsz = useArc
+          ? Math.min(115, Math.max(startFsz, endFsz, Math.min(95, angularDeg * 1.15)))
+          : Math.max(startFsz, endFsz);
+        const animateFsz = hasFszChange || (useArc && midFsz > startFsz * 1.15);
+
+        const autoDuration = useArc
+          ? Math.round(Math.min(2500, Math.max(1150, 1050 + angularDeg * 14)))
+          : Math.round(
+              Math.min(780, Math.max(420, 380 + angularDeg * 4.5 + (hasFszChange ? 160 : 0)))
+            );
         const durationMs = options?.durationMs ?? autoDuration;
         const t0 = performance.now();
         const sinOmega = Math.sin(omega);
         const logStartFsz = Math.log(Math.max(MIN_FSZ_DEG, startFsz));
+        const logMidFsz = Math.log(Math.max(MIN_FSZ_DEG, midFsz));
         const logEndFsz = Math.log(Math.max(MIN_FSZ_DEG, endFsz));
 
         const step = (now: number) => {
           const raw = Math.min(1, (now - t0) / durationMs);
           // Smooth cubic ease-in-out when zooming + slewing, cubic ease-out for short pans
-          const eased = hasFszChange
+          const eased = animateFsz
             ? raw < 0.5
               ? 4 * raw * raw * raw
               : 1 - Math.pow(-2 * raw + 2, 3) / 2
@@ -598,15 +619,21 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           const len = Math.hypot(x, y, z) || 1;
           const raDeg = ((Math.atan2(y / len, x / len) * RAD2DEG) + 360) % 360;
           const decDeg = Math.asin(Math.max(-1, Math.min(1, z / len))) * RAD2DEG;
-          const nextFsz = hasFszChange
-            ? Math.exp(logStartFsz * (1 - eased) + logEndFsz * eased)
+          const nextFsz = animateFsz
+            ? useArc
+              ? Math.exp(
+                  (1 - eased) * (1 - eased) * logStartFsz +
+                    2 * (1 - eased) * eased * logMidFsz +
+                    eased * eased * logEndFsz
+                )
+              : Math.exp(logStartFsz * (1 - eased) + logEndFsz * eased)
             : startFsz;
 
           onChangeView((prev) => ({
             ...prev,
             ra: ((raDeg / 15) % 24 + 24) % 24,
             dec: Math.max(-89.999, Math.min(89.999, decDeg)),
-            ...(hasFszChange ? { fsz: nextFsz } : {}),
+            ...(animateFsz ? { fsz: nextFsz } : {}),
           }));
 
           if (raw < 1) {
@@ -619,11 +646,12 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
         centerAnimRef.current = requestAnimationFrame(step);
       },
-      [view.ra, view.dec, view.fsz, onChangeView, cancelCenterAnim]
+      [onChangeView, cancelCenterAnim]
     );
 
     useImperativeHandle(ref, () => ({
       smoothCenterOn,
+      cancelSmoothCenter: cancelCenterAnim,
       exportPng: () => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -631,6 +659,142 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         link.download = `noxchart-${view.coordSystem}-ra${view.ra.toFixed(2)}-dec${view.dec.toFixed(1)}-fsz${view.fsz < 1 ? view.fsz.toFixed(3) : view.fsz.toFixed(0)}.png`;
         link.href = canvas.toDataURL('image/png');
         link.click();
+      },
+      renderPrintableChart: (options?: { title?: string }) => {
+        const outW = 2200;
+        const chartH = 1440;
+        const footerH = 115;
+        const totalH = chartH + footerH;
+
+        const outCanvas = document.createElement('canvas');
+        outCanvas.width = outW;
+        outCanvas.height = totalH;
+        const outCtx = outCanvas.getContext('2d');
+        if (!outCtx) return null;
+
+        outCtx.fillStyle = '#FFFFFF';
+        outCtx.fillRect(0, 0, outW, totalH);
+
+        const printHips: HipsSettings = { ...hips, enabled: false, opacity: 0 };
+        const vecCanvas = document.createElement('canvas');
+        vecCanvas.width = outW;
+        vecCanvas.height = chartH;
+        const vecCtx = vecCanvas.getContext('2d');
+        if (!vecCtx) return null;
+
+        const stats = renderStarChart(
+          vecCtx,
+          outW,
+          chartH,
+          view,
+          'white',
+          layers,
+          optics,
+          observer,
+          printHips,
+          catalogs,
+          selected,
+          null,
+          sessionIds,
+          solarTrails,
+          sessionPlan,
+          challenges,
+          undefined,
+          false,
+          {
+            store: asterismStore,
+            drawingActive: false,
+            selectedObjectId: null,
+            draft: null,
+            hoverSnap: null,
+          }
+        );
+
+        outCtx.drawImage(vecCanvas, 0, 0);
+
+        // Crisp chart frame border
+        outCtx.save();
+        outCtx.strokeStyle = '#0F172A';
+        outCtx.lineWidth = 2;
+        outCtx.strokeRect(1, 1, outW - 2, chartH - 2);
+
+        // White paper metadata footer bar
+        outCtx.fillStyle = '#FFFFFF';
+        outCtx.fillRect(0, chartH, outW, footerH);
+        outCtx.strokeStyle = '#CBD5E1';
+        outCtx.lineWidth = 1.5;
+        outCtx.beginPath();
+        outCtx.moveTo(0, chartH + 1);
+        outCtx.lineTo(outW, chartH + 1);
+        outCtx.stroke();
+
+        const centerRaDeg = ((view.ra * 15) % 360 + 360) % 360;
+        const centerDecDeg = view.dec;
+        const centerObj = findCenterNamedObject(
+          centerRaDeg,
+          centerDecDeg,
+          view.fsz,
+          observer,
+          catalogs,
+          selected
+        );
+        const constellationLabel = findConstellationLabel(
+          centerRaDeg,
+          centerDecDeg,
+          centerObj?.conAbbr,
+          catalogs
+        );
+        const padX = 28;
+        const heading = options?.title?.trim()
+          ? `${options.title.trim()} — NoxChart`
+          : centerObj
+          ? `${centerObj.label} — NoxChart 인쇄용 성도`
+          : 'NoxChart 인쇄용 성도';
+        const coordLine = `중심 RA ${formatRA(centerRaDeg)} · Dec ${formatDec(centerDecDeg)}${
+          constellationLabel ? ` · ${constellationLabel}` : ''
+        } · ${view.coordSystem === 'horizontal' ? '지평좌표계(Alt/Az)' : '적도좌표계(RA/Dec)'}${
+          view.flipH || view.flipV
+            ? ` · 반전(${view.flipH ? '좌우' : ''}${view.flipH && view.flipV ? '+' : ''}${
+                view.flipV ? '상하' : ''
+              })`
+            : ''
+        }`;
+
+        const fovTxt =
+          view.fsz >= 10
+            ? `${view.fsz.toFixed(1)}°`
+            : view.fsz >= 1
+            ? `${view.fsz.toFixed(2)}°`
+            : `${(view.fsz * 60).toFixed(1)}′`;
+        const rightTop = `시야각(FOV) ${fovTxt}  ·  항성 ≤${stats.magLimit.toFixed(1)}m  ·  DSO ${
+          layers.showDso ? `≤${stats.dsoMagLimit.toFixed(1)}m` : 'OFF'
+        }`;
+        const dateTimeTxt = formatExportDateTime(observer.timestampMs);
+        const latStr = `${Math.abs(observer.lat).toFixed(2)}°${observer.lat >= 0 ? 'N' : 'S'}`;
+        const lonStr = `${Math.abs(observer.lon).toFixed(2)}°${observer.lon >= 0 ? 'E' : 'W'}`;
+        const rightBottom = `${dateTimeTxt}  ·  ${observer.name || '관측지'} (${latStr}, ${lonStr})`;
+
+        outCtx.fillStyle = '#0F172A';
+        outCtx.textBaseline = 'middle';
+        outCtx.textAlign = 'left';
+        outCtx.font = '700 30px "Pretendard", "Noto Sans KR", "IBM Plex Sans", sans-serif';
+        outCtx.fillText(heading, padX, chartH + 40);
+
+        outCtx.fillStyle = '#334155';
+        outCtx.font = '500 21px "IBM Plex Mono", "Noto Sans KR", monospace';
+        outCtx.fillText(coordLine, padX, chartH + 82);
+
+        outCtx.textAlign = 'right';
+        outCtx.fillStyle = '#0F172A';
+        outCtx.font = '600 22px "IBM Plex Mono", "Noto Sans KR", monospace';
+        outCtx.fillText(rightTop, outW - padX, chartH + 40);
+
+        outCtx.fillStyle = '#475569';
+        outCtx.font = '500 20px "IBM Plex Mono", "Noto Sans KR", monospace';
+        outCtx.fillText(rightBottom, outW - padX, chartH + 82);
+
+        outCtx.restore();
+        return outCanvas.toDataURL('image/png');
       },
       exportSensorFovPng: (equipmentName?: string) => {
         if (
@@ -655,14 +819,91 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           outW = Math.max(64, Math.round(LONG_SIDE * (tanW / tanH)));
         }
 
-        const barH = Math.round(Math.max(82, Math.min(116, outW * 0.066)));
-        const totalH = photoH + barH;
-
         const rawSensorRot = optics.sensorRotationLocked
           ? 0
           : optics.sensorRotationDeg ?? 0;
         const normSensorRot = ((rawSensorRot % 360) + 360) % 360;
         const sensorRotActive = normSensorRot > 0.05 && normSensorRot < 359.95;
+
+        const captionCfg = {
+          ...DEFAULT_SENSOR_EXPORT_CAPTION,
+          ...(optics.sensorExportCaption ?? {}),
+        };
+
+        // Precompute footer caption strings based on user's configured caption items
+        const centerRaDeg = ((view.ra * 15) % 360 + 360) % 360;
+        const centerDecDeg = view.dec;
+        const coordCompact = `RA ${formatRA(centerRaDeg)}, Dec ${formatDec(centerDecDeg)}`;
+        const centerObj =
+          captionCfg.showTargetName || captionCfg.showConstellation
+            ? findCenterNamedObject(
+                centerRaDeg,
+                centerDecDeg,
+                Math.min(sensorW, sensorH),
+                observer,
+                catalogs,
+                selected
+              )
+            : null;
+
+        let row1Left = '';
+        if (captionCfg.showTargetName && centerObj) {
+          row1Left = captionCfg.showCoordinates
+            ? `${centerObj.label} (${coordCompact})`
+            : centerObj.label;
+        } else if (captionCfg.showCoordinates) {
+          row1Left = `RA ${formatRA(centerRaDeg)} · Dec ${formatDec(centerDecDeg)}`;
+        }
+
+        const dateTimeText = formatExportDateTime(observer.timestampMs);
+        const locationText = observer.name.trim();
+        const row1RightParts: string[] = [];
+        if (captionCfg.showLocation && locationText) row1RightParts.push(locationText);
+        if (captionCfg.showDateTime) row1RightParts.push(dateTimeText);
+        const row1Right = row1RightParts.join('  ·  ');
+
+        const constellationLabel = captionCfg.showConstellation
+          ? findConstellationLabel(
+              centerRaDeg,
+              centerDecDeg,
+              centerObj?.conAbbr,
+              catalogs
+            )
+          : null;
+        const rawEquipName = (equipmentName ?? '').trim();
+        const equipDisplayName =
+          rawEquipName && !rawEquipName.startsWith('FOV_') ? rawEquipName : '촬영 센서';
+        const fovSizeText = `${sensorW.toFixed(2)}° × ${sensorH.toFixed(2)}°`;
+        const customNoteText = captionCfg.customNote.trim();
+
+        const row2LeftParts: string[] = [];
+        if (captionCfg.showConstellation && constellationLabel) {
+          row2LeftParts.push(constellationLabel);
+        }
+        if (captionCfg.showEquipmentFov) {
+          row2LeftParts.push(`${equipDisplayName} (${fovSizeText})`);
+        }
+        if (customNoteText) {
+          row2LeftParts.push(customNoteText);
+        }
+        const row2Left = row2LeftParts.join('  /  ');
+
+        const rotationNote = captionCfg.showRotation
+          ? sensorRotActive
+            ? `J2000 · 지평 회전 ${Math.round(normSensorRot)}°`
+            : 'J2000 적도좌표'
+          : '';
+        const showBrand = captionCfg.showNoxChartBrand;
+
+        const hasRow1 = Boolean(row1Left || row1Right);
+        const hasRow2 = Boolean(row2Left || rotationNote || showBrand);
+        const barH =
+          hasRow1 && hasRow2
+            ? Math.round(Math.max(82, Math.min(116, outW * 0.066)))
+            : hasRow1 || hasRow2
+            ? Math.round(Math.max(54, Math.min(76, outW * 0.044)))
+            : 0;
+        const totalH = photoH + barH;
 
         const sensorView: ChartViewState = {
           ...view,
@@ -779,104 +1020,135 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         }
         outCtx.restore();
 
-        // Draw crisp white metadata footer bar below the photographic frame
-        const centerRaDeg = ((view.ra * 15) % 360 + 360) % 360;
-        const centerDecDeg = view.dec;
-        const coordCompact = `RA ${formatRA(centerRaDeg)}, Dec ${formatDec(centerDecDeg)}`;
-        const centerObj = findCenterNamedObject(
-          centerRaDeg,
-          centerDecDeg,
-          Math.min(sensorW, sensorH),
-          observer,
-          catalogs,
-          selected
-        );
-        const primaryTargetText = centerObj
-          ? `${centerObj.label} (${coordCompact})`
-          : `RA ${formatRA(centerRaDeg)} · Dec ${formatDec(centerDecDeg)}`;
+        // Draw crisp white metadata footer bar below the photographic frame (if any item enabled)
+        if (barH > 0) {
+          outCtx.save();
+          outCtx.fillStyle = '#FFFFFF';
+          outCtx.fillRect(0, photoH, outW, barH);
 
-        const dateTimeText = formatExportDateTime(observer.timestampMs);
-        const constellationLabel = findConstellationLabel(
-          centerRaDeg,
-          centerDecDeg,
-          centerObj?.conAbbr,
-          catalogs
-        );
-        const rawEquipName = (equipmentName ?? '').trim();
-        const equipDisplayName =
-          rawEquipName && !rawEquipName.startsWith('FOV_') ? rawEquipName : '촬영 센서';
-        const fovSizeText = `${sensorW.toFixed(2)}° × ${sensorH.toFixed(2)}°`;
-        const secondaryMetaText = constellationLabel
-          ? `${constellationLabel}  /  ${equipDisplayName} (${fovSizeText})`
-          : `${equipDisplayName} (${fovSizeText})`;
+          // Subtle top separator hairline
+          outCtx.strokeStyle = '#CBD5E1';
+          outCtx.lineWidth = 1.5;
+          outCtx.beginPath();
+          outCtx.moveTo(0, photoH + 0.75);
+          outCtx.lineTo(outW, photoH + 0.75);
+          outCtx.stroke();
 
-        outCtx.save();
-        outCtx.fillStyle = '#FFFFFF';
-        outCtx.fillRect(0, photoH, outW, barH);
+          const padX = Math.round(Math.max(22, outW * 0.022));
+          const twoRows = hasRow1 && hasRow2;
+          const row1Y = twoRows
+            ? photoH + Math.round(barH * 0.36)
+            : photoH + Math.round(barH * 0.52);
+          const row2Y = twoRows
+            ? photoH + Math.round(barH * 0.72)
+            : photoH + Math.round(barH * 0.52);
+          const refBarH = twoRows ? barH : Math.round(barH * 1.48);
+          const baseFontPx = Math.round(Math.max(14, Math.min(22, refBarH * 0.21)));
+          const subFontPx = Math.round(Math.max(12, Math.min(18, refBarH * 0.17)));
+          const dateFontPx = Math.round(Math.max(13, Math.min(19, refBarH * 0.185)));
+          const fontFamily =
+            '"Pretendard", "Noto Sans KR", "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif';
+          const monoFontFamily = '"IBM Plex Mono", "Pretendard", monospace';
 
-        // Subtle top separator hairline
-        outCtx.strokeStyle = '#CBD5E1';
-        outCtx.lineWidth = 1.5;
-        outCtx.beginPath();
-        outCtx.moveTo(0, photoH + 0.75);
-        outCtx.lineTo(outW, photoH + 0.75);
-        outCtx.stroke();
+          outCtx.textBaseline = 'middle';
 
-        const padX = Math.round(Math.max(22, outW * 0.022));
-        const row1Y = photoH + Math.round(barH * 0.36);
-        const row2Y = photoH + Math.round(barH * 0.72);
-        const baseFontPx = Math.round(Math.max(14, Math.min(22, barH * 0.21)));
-        const subFontPx = Math.round(Math.max(12, Math.min(18, barH * 0.17)));
-        const dateFontPx = Math.round(Math.max(13, Math.min(19, barH * 0.185)));
-        const fontFamily =
-          '"Pretendard", "Noto Sans KR", "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif';
-        const monoFontFamily = '"IBM Plex Mono", "Pretendard", monospace';
+          // Row 1: Target + Coordinates (Left) | Location + DateTime (Right)
+          if (hasRow1) {
+            let row1RightWidth = 0;
+            if (row1Right) {
+              outCtx.textAlign = 'right';
+              let datePx = dateFontPx;
+              const maxRightW = row1Left ? Math.round((outW - padX * 2) * 0.48) : outW - padX * 2;
+              outCtx.font = `600 ${datePx}px ${monoFontFamily}`;
+              while (datePx > 10 && outCtx.measureText(row1Right).width > maxRightW) {
+                datePx -= 1;
+                outCtx.font = `600 ${datePx}px ${monoFontFamily}`;
+              }
+              outCtx.fillStyle = '#334155';
+              row1RightWidth = Math.min(maxRightW, outCtx.measureText(row1Right).width);
+              outCtx.fillText(row1Right, outW - padX, row1Y, maxRightW);
+            }
 
-        // Row 1 Right: Date & Time
-        outCtx.textBaseline = 'middle';
-        outCtx.textAlign = 'right';
-        outCtx.font = `600 ${dateFontPx}px ${monoFontFamily}`;
-        outCtx.fillStyle = '#334155';
-        const dateWidth = outCtx.measureText(dateTimeText).width;
-        outCtx.fillText(dateTimeText, outW - padX, row1Y);
+            if (row1Left) {
+              const maxPrimaryW = Math.max(
+                160,
+                outW - padX * 2 - (row1RightWidth > 0 ? row1RightWidth + 28 : 0)
+              );
+              let primaryPx = baseFontPx;
+              outCtx.textAlign = 'left';
+              outCtx.font = `700 ${primaryPx}px ${fontFamily}`;
+              while (primaryPx > 11 && outCtx.measureText(row1Left).width > maxPrimaryW) {
+                primaryPx -= 1;
+                outCtx.font = `700 ${primaryPx}px ${fontFamily}`;
+              }
+              outCtx.fillStyle = '#0F172A';
+              outCtx.fillText(row1Left, padX, row1Y, maxPrimaryW);
+            }
+          }
 
-        // Row 1 Left: Center Named Object (if present) + Equatorial Position (auto-fit if long)
-        const maxPrimaryW = Math.max(200, outW - padX * 2 - dateWidth - 28);
-        let primaryPx = baseFontPx;
-        outCtx.textAlign = 'left';
-        outCtx.font = `700 ${primaryPx}px ${fontFamily}`;
-        while (primaryPx > 11 && outCtx.measureText(primaryTargetText).width > maxPrimaryW) {
-          primaryPx -= 1;
-          outCtx.font = `700 ${primaryPx}px ${fontFamily}`;
+          // Row 2: Constellation / Equipment (FOV) / Custom Note (Left) | J2000 Rotation + NoxChart Attribution (Right)
+          if (hasRow2) {
+            const rightPx = Math.max(11, subFontPx - 1);
+            const brandPrefix = 'Created with ';
+            const brandName = 'NoxChart';
+            const sepText = '  ·  ';
+
+            let row2RightWidth = 0;
+            if (showBrand || rotationNote) {
+              let cursorX = outW - padX;
+              outCtx.textAlign = 'right';
+
+              if (showBrand) {
+                outCtx.font = `700 ${rightPx}px ${fontFamily}`;
+                const brandNameW = outCtx.measureText(brandName).width;
+                outCtx.fillStyle = '#0F172A';
+                outCtx.fillText(brandName, cursorX, row2Y);
+                cursorX -= brandNameW;
+
+                outCtx.font = `500 ${rightPx}px ${fontFamily}`;
+                const prefixW = outCtx.measureText(brandPrefix).width;
+                outCtx.fillStyle = '#64748B';
+                outCtx.fillText(brandPrefix, cursorX, row2Y);
+                cursorX -= prefixW;
+              }
+
+              if (rotationNote) {
+                if (showBrand) {
+                  outCtx.font = `500 ${rightPx}px ${monoFontFamily}`;
+                  const sepW = outCtx.measureText(sepText).width;
+                  outCtx.fillStyle = '#94A3B8';
+                  outCtx.fillText(sepText, cursorX, row2Y);
+                  cursorX -= sepW;
+                }
+                outCtx.font = `500 ${Math.max(11, rightPx - 1)}px ${monoFontFamily}`;
+                const rotW = outCtx.measureText(rotationNote).width;
+                outCtx.fillStyle = '#64748B';
+                outCtx.fillText(rotationNote, cursorX, row2Y);
+                cursorX -= rotW;
+              }
+
+              row2RightWidth = outW - padX - cursorX;
+            }
+
+            if (row2Left) {
+              const maxSubW = Math.max(
+                140,
+                outW - padX * 2 - (row2RightWidth > 0 ? row2RightWidth + 24 : 0)
+              );
+              let subPx = subFontPx;
+              outCtx.textAlign = 'left';
+              outCtx.font = `500 ${subPx}px ${fontFamily}`;
+              while (subPx > 10 && outCtx.measureText(row2Left).width > maxSubW) {
+                subPx -= 1;
+                outCtx.font = `500 ${subPx}px ${fontFamily}`;
+              }
+              outCtx.fillStyle = '#475569';
+              outCtx.fillText(row2Left, padX, row2Y, maxSubW);
+            }
+          }
+
+          outCtx.restore();
         }
-        outCtx.fillStyle = '#0F172A';
-        outCtx.fillText(primaryTargetText, padX, row1Y, maxPrimaryW);
-
-        // Row 2 Left: Constellation Name / Equipment Type (Full FOV Size)
-        const maxSubW = Math.max(200, outW - padX * 2);
-        let subPx = subFontPx;
-        outCtx.font = `500 ${subPx}px ${fontFamily}`;
-        while (subPx > 10 && outCtx.measureText(secondaryMetaText).width > maxSubW) {
-          subPx -= 1;
-          outCtx.font = `500 ${subPx}px ${fontFamily}`;
-        }
-        outCtx.fillStyle = '#475569';
-        outCtx.fillText(secondaryMetaText, padX, row2Y, maxSubW);
-
-        // Row 2 Right: Subtle equatorial / rotation note if ample horizontal space
-        const subTextW = outCtx.measureText(secondaryMetaText).width;
-        const rightNote = sensorRotActive
-          ? `J2000 · 지평 회전 ${Math.round(normSensorRot)}°`
-          : 'J2000 적도좌표';
-        outCtx.font = `500 ${Math.max(11, subFontPx - 2)}px ${monoFontFamily}`;
-        const rightNoteW = outCtx.measureText(rightNote).width;
-        if (subTextW + rightNoteW + 32 < maxSubW) {
-          outCtx.textAlign = 'right';
-          outCtx.fillStyle = '#64748B';
-          outCtx.fillText(rightNote, outW - padX, row2Y);
-        }
-
-        outCtx.restore();
 
         const safeEquip = (equipmentName ?? '')
           .trim()
@@ -887,7 +1159,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           .slice(0, 64);
         const equipSegment = safeEquip ? `-${safeEquip}` : '';
         const rotSegment = sensorRotActive ? `-rot${Math.round(normSensorRot)}` : '';
-        const filename = `noxchart-사진화각${equipSegment}-${sensorW.toFixed(2)}x${sensorH.toFixed(2)}deg${rotSegment}-ra${view.ra.toFixed(2)}-dec${view.dec.toFixed(1)}.png`;
+        const filename = `noxchart-sensor-fov${equipSegment}-${sensorW.toFixed(2)}x${sensorH.toFixed(2)}deg${rotSegment}-ra${view.ra.toFixed(2)}-dec${view.dec.toFixed(1)}.png`;
 
         const link = document.createElement('a');
         link.download = filename;
@@ -1138,6 +1410,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
     const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
       cancelCenterAnim();
+      onUserCameraInteract?.();
       try {
         e.currentTarget.setPointerCapture(e.pointerId);
       } catch {
@@ -1538,6 +1811,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
     const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
       cancelCenterAnim();
+      onUserCameraInteract?.();
       e.preventDefault();
       const factor = e.deltaY > 0 ? 1.14 : 0.875;
       onChangeView((prev) => ({
@@ -1584,6 +1858,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       const parsed = parseFovInputDeg(raw);
       if (parsed !== null) {
         cancelCenterAnim();
+        onUserCameraInteract?.();
         onChangeView((p) => ({ ...p, fsz: parsed }));
       }
     };
@@ -1683,12 +1958,28 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                 <span className={`truncate ${ui.accentText}`}>
                   중심 추적:{' '}
                   {selected.kind === 'dso'
-                    ? selected.data.koName || selected.data.id
+                    ? formatObjectDisplayName(
+                        selected.data.koName,
+                        selected.data.name,
+                        formatCatalogCode(selected.data.id) || selected.data.id
+                      )
                     : selected.kind === 'planet'
-                    ? selected.data.koName
+                    ? formatObjectDisplayName(
+                        selected.data.koName,
+                        selected.data.name,
+                        selected.data.id
+                      )
                     : selected.kind === 'double'
-                    ? selected.data.koName || selected.data.name || selected.data.disc
-                    : selected.data.koName || selected.data.name || selected.data.bayer || selected.data.id}
+                    ? formatObjectDisplayName(
+                        selected.data.koName,
+                        selected.data.name,
+                        selected.data.bayer || selected.data.disc
+                      )
+                    : formatObjectDisplayName(
+                        selected.data.koName,
+                        selected.data.name,
+                        selected.data.bayer || selected.data.id
+                      )}
                 </span>
               </>
             )}
@@ -1937,14 +2228,19 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             {hoveredTarget.item.kind === 'dso' ? (
               <div>
                 <div className="font-semibold font-mono">
-                  {hoveredTarget.item.data.id}
-                  {hoveredTarget.item.data.koName
-                    ? ` · ${hoveredTarget.item.data.koName}`
-                    : hoveredTarget.item.data.name
-                    ? ` · ${hoveredTarget.item.data.name}`
-                    : ''}
+                  {formatCatalogCode(hoveredTarget.item.data.id) || hoveredTarget.item.data.id}
+                  {(() => {
+                    const displayName = formatObjectDisplayName(
+                      hoveredTarget.item.data.koName,
+                      hoveredTarget.item.data.name
+                    );
+                    return displayName ? ` · ${displayName}` : '';
+                  })()}
                 </div>
                 <div className={`text-[11px] font-mono tabular-nums ${ui.textMuted}`}>
+                  {hoveredTarget.item.data.altId
+                    ? `${formatCatalogCode(hoveredTarget.item.data.altId)} · `
+                    : ''}
                   {getDsoTypeLabel(hoveredTarget.item.data.type)} · {hoveredTarget.item.data.mag.toFixed(1)}m ·{' '}
                   {hoveredTarget.item.data.majAx.toFixed(1)}′
                 </div>
@@ -1952,7 +2248,12 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             ) : hoveredTarget.item.kind === 'planet' ? (
               <div>
                 <div className="font-semibold">
-                  {hoveredTarget.item.data.symbol} {hoveredTarget.item.data.koName} ({hoveredTarget.item.data.name})
+                  {hoveredTarget.item.data.symbol}{' '}
+                  {formatObjectDisplayName(
+                    hoveredTarget.item.data.koName,
+                    hoveredTarget.item.data.name,
+                    hoveredTarget.item.data.id
+                  )}
                 </div>
                 <div className={`text-[11px] font-mono tabular-nums ${ui.textMuted}`}>
                   {hoveredTarget.item.data.category} · {hoveredTarget.item.data.mag.toFixed(1)}m ·{' '}
@@ -1964,10 +2265,11 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             ) : hoveredTarget.item.kind === 'double' ? (
               <div>
                 <div className="font-semibold">
-                  {hoveredTarget.item.data.koName ||
-                    hoveredTarget.item.data.name ||
-                    hoveredTarget.item.data.bayer ||
-                    hoveredTarget.item.data.disc}
+                  {formatObjectDisplayName(
+                    hoveredTarget.item.data.koName,
+                    hoveredTarget.item.data.name,
+                    hoveredTarget.item.data.bayer || hoveredTarget.item.data.disc
+                  )}
                   {' · '}
                   <span className={ui.accentText}>
                     {hoveredTarget.item.data.isMultiple
@@ -1984,10 +2286,11 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             ) : (
               <div>
                 <div className="font-semibold">
-                  {hoveredTarget.item.data.koName ||
-                    hoveredTarget.item.data.name ||
-                    hoveredTarget.item.data.bayer ||
-                    hoveredTarget.item.data.id}
+                  {formatObjectDisplayName(
+                    hoveredTarget.item.data.koName,
+                    hoveredTarget.item.data.name,
+                    hoveredTarget.item.data.bayer || hoveredTarget.item.data.id
+                  )}
                 </div>
                 <div className={`text-[11px] font-mono tabular-nums ${ui.textMuted}`}>
                   {hoveredTarget.item.data.bayer ||

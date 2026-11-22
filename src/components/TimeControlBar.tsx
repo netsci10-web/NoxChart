@@ -7,9 +7,8 @@ import {
   Play,
   Plus,
   RotateCcw,
-  Star,
 } from 'lucide-react';
-import { LayerSettings, ObserverConfig, ThemeMode } from '../types/astronomy';
+import { ObserverConfig, ThemeMode } from '../types/astronomy';
 
 type TimeUnit = 'year' | 'month' | 'day' | 'hour' | 'minute' | 'second';
 
@@ -81,21 +80,13 @@ function addTimeUnit(baseMs: number, unit: TimeUnit, delta: number): number {
 interface TimeControlBarProps {
   theme: ThemeMode;
   observer: ObserverConfig;
-  layers: LayerSettings;
-  magLimit: number;
-  dsoMagLimit: number;
   onChangeObserver: (updater: (prev: ObserverConfig) => ObserverConfig) => void;
-  onChangeLayers: React.Dispatch<React.SetStateAction<LayerSettings>>;
 }
 
 export function TimeControlBar({
   theme,
   observer,
-  layers,
-  magLimit,
-  dsoMagLimit,
   onChangeObserver,
-  onChangeLayers,
 }: TimeControlBarProps) {
   const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
   const [selectedUnit, setSelectedUnit] = useState<TimeUnit>('hour');
@@ -429,98 +420,6 @@ export function TimeControlBar({
           }`}
         >
           {formatTimeRateBadge(observer.timeRateSecPerSec)}
-        </div>
-      </div>
-
-      {/* Limiting Magnitude Display + Slider */}
-      <div
-        className={`flex items-center gap-1.5 h-7 rounded-lg border px-2 shrink-0 ${capsuleCls} ${
-          theme === 'white'
-            ? 'text-slate-700'
-            : theme === 'red'
-            ? 'text-[#DC2626]'
-            : 'text-slate-300'
-        }`}
-        title="현재 시야각 기준 항성 및 DSO 한계등급 조절"
-      >
-        <span className="text-[11px] font-medium whitespace-nowrap">한계등급</span>
-        <span
-          className={`rounded-md border px-1.5 py-0.5 flex items-center gap-1 font-mono text-[11px] font-bold tabular-nums whitespace-nowrap leading-none ${
-            theme === 'white'
-              ? 'bg-sky-50 border-sky-200 text-sky-700'
-              : theme === 'red'
-              ? 'bg-[#200303] border-[#5A1212] text-[#FF3B3B]'
-              : 'bg-[#162235] border-[#2C3E5C] text-[#22D3EE]'
-          }`}
-        >
-          <Star className="w-3 h-3 fill-current shrink-0" />
-          <span>{magLimit.toFixed(1)}</span>
-        </span>
-        <span
-          className={`rounded-md border px-1.5 py-0.5 flex items-center font-mono text-[11px] font-bold tabular-nums whitespace-nowrap leading-none ${
-            theme === 'white'
-              ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-              : theme === 'red'
-              ? 'bg-[#200303] border-[#5A1212] text-[#EF4444]'
-              : 'bg-[#162235] border-[#2C3E5C] text-[#10B981]'
-          }`}
-        >
-          DSO{' '}
-          {layers.showDso
-            ? dsoMagLimit.toFixed(1)
-            : layers.showMessierCatalog && layers.showCaldwellCatalog
-            ? 'M+C'
-            : layers.showMessierCatalog
-            ? 'M'
-            : layers.showCaldwellCatalog
-            ? 'C'
-            : 'OFF'}
-        </span>
-        <div className="flex items-center gap-1.5 pl-0.5">
-          <input
-            type="range"
-            min={-3.0}
-            max={3.0}
-            step={0.2}
-            value={layers.magOffset}
-            onChange={(e) => {
-              const nextMag = Number(e.target.value);
-              onChangeLayers((p) => {
-                const delta = nextMag - p.magOffset;
-                const nextDso = Math.max(
-                  -4.0,
-                  Math.min(4.0, Number((p.dsoMagOffset + delta).toFixed(1)))
-                );
-                return { ...p, magOffset: nextMag, dsoMagOffset: nextDso };
-              });
-            }}
-            aria-label="한계 등급 보정"
-            title="한계 등급 보정 (-3.0m ~ +3.0m)"
-            className={`w-16 sm:w-20 h-1.5 cursor-pointer ${
-              theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
-            }`}
-          />
-          <button
-            type="button"
-            onClick={() =>
-              onChangeLayers((p) => ({ ...p, magOffset: 0, dsoMagOffset: 0 }))
-            }
-            title="클릭하여 한계 등급 보정 초기화 (0.0m)"
-            className={`font-mono text-[10.5px] tabular-nums whitespace-nowrap w-10 text-right hover:opacity-100 transition-opacity ${
-              layers.magOffset !== 0 || layers.dsoMagOffset !== 0
-                ? theme === 'white'
-                  ? 'text-sky-700 font-semibold'
-                  : theme === 'red'
-                  ? 'text-[#FF3B3B] font-semibold'
-                  : 'text-cyan-400 font-semibold'
-                : 'opacity-70'
-            }`}
-          >
-            {layers.magOffset >= 0
-              ? `+${layers.magOffset.toFixed(1)}`
-              : layers.magOffset.toFixed(1)}
-            m
-          </button>
         </div>
       </div>
     </div>

@@ -10,6 +10,8 @@ import {
   Star,
 } from '../types/astronomy';
 import { DEG2RAD, getDsoLimitingMagnitude, getLimitingMagnitude } from '../utils/astronomy';
+import { formatCatalogCode, normalizeCatalogToken } from '../utils/catalogNames';
+import { CALDWELL_CATALOG } from './caldwell';
 import { CONSTELLATIONS as FALLBACK_CONSTELLATIONS } from './constellations';
 import { DSO_CATALOG as FALLBACK_DSOS } from './dso';
 import { BRIGHT_STARS as FALLBACK_STARS } from './stars';
@@ -189,11 +191,71 @@ function mapGaiaStar(t: GaiaStarTuple): Star {
   };
 }
 
+interface DsoNameFallback {
+  altId?: string;
+  name?: string;
+  koName?: string;
+}
+
+const dsoFallbackByToken = (() => {
+  const map = new Map<string, DsoNameFallback>();
+  const register = (keyRaw: string | undefined, meta: DsoNameFallback) => {
+    const token = normalizeCatalogToken(keyRaw);
+    if (!token) return;
+    const prev = map.get(token);
+    map.set(token, {
+      altId: prev?.altId || meta.altId,
+      name: prev?.name || meta.name,
+      koName: prev?.koName || meta.koName,
+    });
+  };
+  for (const d of FALLBACK_DSOS) {
+    const meta: DsoNameFallback = {
+      altId: d.altId ? formatCatalogCode(d.altId) : undefined,
+      name: d.name,
+      koName: d.koName,
+    };
+    register(d.id, meta);
+    if (d.altId) {
+      register(d.altId, {
+        altId: formatCatalogCode(d.id),
+        name: d.name,
+        koName: d.koName,
+      });
+    }
+  }
+  for (const c of CALDWELL_CATALOG) {
+    register(c.id, {
+      altId: c.caldwellId,
+      name: c.name,
+      koName: c.koName,
+    });
+    register(c.caldwellId, {
+      altId: formatCatalogCode(c.id),
+      name: c.name,
+      koName: c.koName,
+    });
+  }
+  return map;
+})();
+
 function mapDso(t: DsoTuple): DeepSkyObject {
-  const [id, altId, type, ra, dec, mag, majAx, minAx, pa, name, koName, con] = t;
+  const [rawId, rawAltId, type, ra, dec, mag, majAx, minAx, pa, rawName, rawKoName, con] = t;
+  const id = rawId;
+  const formattedAlt = rawAltId ? formatCatalogCode(rawAltId) : undefined;
+  const fb =
+    dsoFallbackByToken.get(normalizeCatalogToken(id)) ||
+    (formattedAlt ? dsoFallbackByToken.get(normalizeCatalogToken(formattedAlt)) : undefined);
+
+  const resolvedAlt = formattedAlt || fb?.altId;
+  const altId =
+    resolvedAlt && normalizeCatalogToken(resolvedAlt) !== normalizeCatalogToken(id)
+      ? resolvedAlt
+      : undefined;
+
   return {
     id,
-    altId: altId || undefined,
+    altId,
     type,
     ra,
     dec,
@@ -201,8 +263,8 @@ function mapDso(t: DsoTuple): DeepSkyObject {
     majAx,
     minAx,
     pa,
-    name: name || undefined,
-    koName: koName || undefined,
+    name: rawName || fb?.name || undefined,
+    koName: rawKoName || fb?.koName || undefined,
     con,
   };
 }
