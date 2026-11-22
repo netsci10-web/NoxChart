@@ -22,6 +22,7 @@ import {
   RotateCcw,
   Save,
   Search,
+  SlidersHorizontal,
   Trash2,
   Trophy,
   Upload,
@@ -57,6 +58,8 @@ interface ChallengePanelProps {
   catalogs: CatalogSnapshot;
   challengeOpacity: number;
   onChangeChallengeOpacity: (opacity: number) => void;
+  challengeLineWidth: number;
+  onChangeChallengeLineWidth: (lineWidth: number) => void;
   draft: ChallengeTrack | null;
   isCreatingDraft: boolean;
   pickAllowEmpty: boolean;
@@ -115,6 +118,8 @@ export function ChallengePanel({
   catalogs,
   challengeOpacity,
   onChangeChallengeOpacity,
+  challengeLineWidth,
+  onChangeChallengeLineWidth,
   draft,
   isCreatingDraft,
   pickAllowEmpty,
@@ -146,6 +151,7 @@ export function ChallengePanel({
   const [expandedCpId, setExpandedCpId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ChallengeTrack | null>(null);
+  const [settingsOpen, setSettingsOpen] = useState(true);
 
   useEffect(() => {
     if (!deleteTarget) return;
@@ -499,31 +505,82 @@ export function ChallengePanel({
   const progressFillColor =
     theme === 'white' ? '#D97706' : theme === 'red' ? '#EF4444' : '#FBBF24';
 
-  const renderOpacityBar = () => (
+  const renderChallengeSettings = () => (
     <div
-      className={`border px-2 py-1.5 space-y-1 ${ui.border}`}
+      className={`border px-2 py-1.5 space-y-2 ${ui.border}`}
       style={{ borderRadius: '6px' }}
     >
-      <div className="flex items-center justify-between gap-1 text-[10px]">
-        <span className={`font-medium whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-          챌린지 투명도
+      <button
+        type="button"
+        onClick={() => setSettingsOpen((o) => !o)}
+        aria-expanded={settingsOpen}
+        className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+      >
+        <span className={`flex items-center gap-1 text-[10.5px] font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+          <ChevronDown
+            className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+              settingsOpen ? '' : '-rotate-90'
+            }`}
+          />
+          <SlidersHorizontal className="w-3 h-3 shrink-0" />
+          <span>챌린지 설정</span>
         </span>
-        <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
-          {Math.round(challengeOpacity * 100)}%
+        <span className={`font-mono text-[9.5px] tabular-nums whitespace-nowrap ${ui.textMuted}`}>
+          {challengeLineWidth.toFixed(1)}px · {Math.round(challengeOpacity * 100)}%
         </span>
-      </div>
-      <input
-        type="range"
-        min={0.05}
-        max={1}
-        step={0.05}
-        value={challengeOpacity}
-        onChange={(e) => onChangeChallengeOpacity(Number(e.target.value))}
-        aria-label="챌린지 성도 표시 투명도"
-        className={`w-full h-1.5 cursor-pointer ${
-          theme === 'red' ? 'accent-red-600' : 'accent-amber-500'
-        }`}
-      />
+      </button>
+
+      {settingsOpen && (
+        <div className={`pt-1.5 border-t space-y-2 ${ui.divider}`}>
+          {/* 1. 챌린지 선 굵기 */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-1 text-[10px]">
+              <span className={`font-medium whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                챌린지 선 굵기
+              </span>
+              <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
+                {challengeLineWidth.toFixed(1)}px
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0.3}
+              max={3.0}
+              step={0.1}
+              value={challengeLineWidth}
+              onChange={(e) => onChangeChallengeLineWidth(Number(e.target.value))}
+              aria-label="챌린지 노선 선 굵기"
+              className={`w-full h-1.5 cursor-pointer ${
+                theme === 'red' ? 'accent-red-600' : 'accent-amber-500'
+              }`}
+            />
+          </div>
+
+          {/* 2. 챌린지 투명도 */}
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-1 text-[10px]">
+              <span className={`font-medium whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                챌린지 투명도
+              </span>
+              <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
+                {Math.round(challengeOpacity * 100)}%
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0.05}
+              max={1}
+              step={0.05}
+              value={challengeOpacity}
+              onChange={(e) => onChangeChallengeOpacity(Number(e.target.value))}
+              aria-label="챌린지 성도 표시 투명도"
+              className={`w-full h-1.5 cursor-pointer ${
+                theme === 'red' ? 'accent-red-600' : 'accent-amber-500'
+              }`}
+            />
+          </div>
+        </div>
+      )}
     </div>
   );
 
@@ -532,7 +589,7 @@ export function ChallengePanel({
     const activeNotice = draftNotice || notice;
     return (
       <div className="space-y-2.5">
-        {renderOpacityBar()}
+        {renderChallengeSettings()}
         <div className="flex items-center justify-between gap-1">
           <button
             type="button"
@@ -695,7 +752,7 @@ export function ChallengePanel({
                     type="button"
                     onClick={() => onChangeDraft((p) => (p ? { ...p, lineColor: col } : p))}
                     className={`w-4 h-4 rounded-full border transition-transform ${
-                      draft.lineColor === col
+                      draft.lineColor.toLowerCase() === col.toLowerCase()
                         ? 'scale-110 ring-2 ring-amber-400 border-white'
                         : 'border-white/30 opacity-75 hover:opacity-100'
                     }`}
@@ -703,6 +760,46 @@ export function ChallengePanel({
                     aria-label={`노선 색상 ${col}`}
                   />
                 ))}
+                {(() => {
+                  const isCustomSelected = !LINE_COLOR_SWATCHES.some(
+                    (c) => c.toLowerCase() === (draft.lineColor || '').toLowerCase()
+                  );
+                  const pickerValue = /^#[0-9a-f]{6}$/i.test(draft.lineColor)
+                    ? draft.lineColor
+                    : '#FACC15';
+                  return (
+                    <label
+                      title={`커스텀 노선 색 선택${isCustomSelected ? ` (${draft.lineColor})` : ''}`}
+                      className={`relative w-4 h-4 rounded-full border cursor-pointer flex items-center justify-center transition-transform shrink-0 ${
+                        isCustomSelected
+                          ? 'scale-110 ring-2 ring-amber-400 border-white'
+                          : 'border-white/50 opacity-85 hover:opacity-100'
+                      }`}
+                      style={
+                        isCustomSelected
+                          ? { backgroundColor: draft.lineColor }
+                          : {
+                              background:
+                                'conic-gradient(from 0deg, #EF4444, #F59E0B, #10B981, #38BDF8, #A78BFA, #EC4899, #EF4444)',
+                            }
+                      }
+                    >
+                      {!isCustomSelected && (
+                        <Plus className="w-2.5 h-2.5 text-white drop-shadow-[0_1px_1px_rgba(0,0,0,0.9)]" />
+                      )}
+                      <input
+                        type="color"
+                        value={pickerValue}
+                        onChange={(e) => {
+                          const nextColor = e.target.value;
+                          onChangeDraft((p) => (p ? { ...p, lineColor: nextColor } : p));
+                        }}
+                        aria-label="커스텀 노선 색 선택"
+                        className="sr-only"
+                      />
+                    </label>
+                  );
+                })()}
               </div>
             </div>
           </div>
@@ -973,7 +1070,7 @@ export function ChallengePanel({
 
     return (
       <div className="space-y-2.5">
-        {renderOpacityBar()}
+        {renderChallengeSettings()}
         {/* Top Action Bar */}
         <div className="flex items-center justify-between gap-1">
           <button
@@ -1356,7 +1453,7 @@ export function ChallengePanel({
 
   return (
     <div className="space-y-2.5">
-      {renderOpacityBar()}
+      {renderChallengeSettings()}
       {/* Header & File I/O Toolbar */}
       <div className="flex items-center justify-between gap-1">
         <span className={`font-semibold tracking-[-0.05em] flex items-center gap-1 ${ui.textPrimary}`}>

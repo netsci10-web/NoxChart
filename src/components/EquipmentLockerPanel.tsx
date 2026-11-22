@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
   Check,
+  ChevronDown,
   Download,
   Package,
   Pencil,
@@ -216,6 +217,7 @@ export function EquipmentLockerPanel({
 }: EquipmentLockerPanelProps) {
   const ui = getUiTheme(theme);
   const [activeTab, setActiveTab] = useState<EquipmentCategory>('telescope');
+  const [panelOpen, setPanelOpen] = useState(true);
   const [formOpen, setFormOpen] = useState(false);
   const [registerMode, setRegisterMode] = useState<'preset' | 'custom'>('preset');
   const [cameraPresetFilter, setCameraPresetFilter] = useState<'all' | 'smart' | 'standard'>('all');
@@ -454,12 +456,20 @@ export function EquipmentLockerPanel({
     <div className="space-y-2">
       {/* Header + .skylist Save/Load */}
       <div className="flex items-center justify-between gap-1">
-        <span
-          className={`font-semibold flex items-center gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
+        <button
+          type="button"
+          onClick={() => setPanelOpen((o) => !o)}
+          aria-expanded={panelOpen}
+          className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
         >
+          <ChevronDown
+            className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+              panelOpen ? '' : '-rotate-90'
+            }`}
+          />
           <Package className="w-3.5 h-3.5 shrink-0" />
           <span>내 장비함 ({locker.items.length})</span>
-        </span>
+        </button>
         <div className="flex items-center gap-1 shrink-0">
           <input
             ref={fileInputRef}
@@ -491,6 +501,8 @@ export function EquipmentLockerPanel({
         </div>
       </div>
 
+      {panelOpen && (
+      <div className="space-y-2">
       {statusMsg && (
         <div
           className={`px-2 py-1 border text-[10px] tracking-[-0.04em] rounded ${summaryBoxCls} ${ui.accentText}`}
@@ -1101,6 +1113,8 @@ export function EquipmentLockerPanel({
           <Plus className="w-3 h-3 shrink-0" />
           <span>{CATEGORY_TABS.find((c) => c.id === activeTab)?.label} 추가 등록</span>
         </button>
+      )}
+      </div>
       )}
     </div>
   );

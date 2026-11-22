@@ -66,6 +66,7 @@ export function sanitizeLayerSettings(
   return {
     showGridEq: readBool(obj.showGridEq, fallback.showGridEq),
     showGridAltAz: readBool(obj.showGridAltAz, fallback.showGridAltAz),
+    gridLineWidth: clampNum(obj.gridLineWidth, fallback.gridLineWidth, 0.2, 2.5),
     showHorizon: readBool(obj.showHorizon, fallback.showHorizon),
     showTerrain: readBool(obj.showTerrain, fallback.showTerrain),
     showEcliptic: readBool(obj.showEcliptic, fallback.showEcliptic),
@@ -142,6 +143,7 @@ export function sanitizeLayerSettings(
       0,
       100
     ),
+    dsoOpacity: clampNum(obj.dsoOpacity, fallback.dsoOpacity, 0.05, 1.0),
     showStarLabels: readBool(obj.showStarLabels, fallback.showStarLabels),
     showProperStarNames: readBool(
       obj.showProperStarNames,
@@ -169,6 +171,12 @@ export function sanitizeLayerSettings(
       fallback.challengeOpacity,
       0.05,
       1.0
+    ),
+    challengeLineWidth: clampNum(
+      obj.challengeLineWidth,
+      fallback.challengeLineWidth,
+      0.3,
+      3.0
     ),
   };
 }
@@ -275,6 +283,7 @@ export function downloadLayerSettingsFile(
 const RECOGNIZED_LAYER_KEYS: (keyof LayerSettings)[] = [
   'showGridEq',
   'showGridAltAz',
+  'gridLineWidth',
   'showHorizon',
   'showTerrain',
   'showEcliptic',
@@ -284,6 +293,7 @@ const RECOGNIZED_LAYER_KEYS: (keyof LayerSettings)[] = [
   'showSolarSystem',
   'showDoubleStars',
   'showDso',
+  'dsoOpacity',
   'showStarLabels',
   'showFieldStars',
   'magOffset',

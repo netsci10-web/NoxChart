@@ -9,8 +9,6 @@ import {
   Download,
   Globe2,
   Moon,
-  PanelLeftClose,
-  PanelLeftOpen,
   Printer,
   Share2,
   Star,
@@ -49,6 +47,8 @@ import {
   HipsSettings,
   LayerSettings,
   ObserverConfig,
+  ObservingListGroup,
+  ObservingListsState,
   ObservingSessionEntry,
   OpticsSettings,
   SavedObservingSite,
@@ -91,6 +91,30 @@ import { getSolarSystemBodies, getSolarSystemDailyTrail } from './utils/solarSys
 import { getUiTheme } from './utils/themeClasses';
 
 const SESSION_STORAGE_KEY = 'sidereal_atlas_session_v1';
+const OBSERVING_LISTS_STORAGE_KEY = 'sidereal_atlas_observing_lists_v1';
+const DEFAULT_OBSERVING_LIST_ID = 'list_default';
+const DEFAULT_OBSERVING_LIST_NAME = '기본 관측 목록';
+
+function stripSkylistExtension(fileName?: string): string {
+  if (!fileName) return '';
+  return fileName
+    .trim()
+    .replace(/\.(skylist|txt)$/i, '')
+    .trim();
+}
+
+function makeUniqueListName(baseName: string, existing: ObservingListGroup[]): string {
+  const cleaned = baseName.trim() || DEFAULT_OBSERVING_LIST_NAME;
+  const used = new Set(existing.map((l) => l.name.trim().toLowerCase()));
+  if (!used.has(cleaned.toLowerCase())) return cleaned;
+  let n = 2;
+  while (used.has(`${cleaned} (${n})`.toLowerCase())) n++;
+  return `${cleaned} (${n})`;
+}
+
+function makeObservingListId(): string {
+  return `olist_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`;
+}
 const EQUIPMENT_STORAGE_KEY = 'noxchart_equipment_v1';
 const OPTICS_STORAGE_KEY = 'noxchart_optics_v1';
 const APP_PREFS_STORAGE_KEY = 'noxchart_app_prefs_v1';
@@ -165,6 +189,7 @@ const DEFAULT_THEME: ThemeMode = 'dark';
 const DEFAULT_LAYERS: LayerSettings = {
   showGridEq: false,
   showGridAltAz: true,
+  gridLineWidth: 0.8,
   showHorizon: true,
   showTerrain: true,
   showEcliptic: false,
@@ -193,6 +218,7 @@ const DEFAULT_LAYERS: LayerSettings = {
   dsoSymbolDensityPct: 30,
   showDsoLabels: true,
   dsoLabelDensityPct: 7,
+  dsoOpacity: 1.0,
   showStarLabels: true,
   showProperStarNames: false,
   starLabelDensityPct: 7,
@@ -213,6 +239,7 @@ const DEFAULT_LAYERS: LayerSettings = {
   },
   highlightSessionPlan: false,
   challengeOpacity: 1.0,
+  challengeLineWidth: 0.8,
 };
 
 const DEFAULT_HIPS: HipsSettings = {
@@ -566,7 +593,7 @@ export default function App() {
 
       // If Center-Lock Tracking is active, keep the tracked object locked to viewport center
       // across time acceleration in BOTH Horizontal (Alt/Az) and Equatorial (RA/Dec) modes
-      if (centerLockedRef.current && activeSelected) {
+      if (centerLockedRef.current && activeSelected && !slewingToCenterRef.current) {
         lockedHzRef.current = null;
         const targetRa = ((activeSelected.data.ra / 15) % 24 + 24) % 24;
         const targetDec = Math.max(-89.999, Math.min(89.999, activeSelected.data.dec));
@@ -653,17 +680,102 @@ export default function App() {
     layers.dsoMagOffset
   );
 
-  const [sessionPlan, setSessionPlan] = useState<ObservingSessionEntry[]>(() => {
+  const [observingListsState, setObservingListsState] = useState<ObservingListsState>(() => {
     try {
-      const raw = localStorage.getItem(SESSION_STORAGE_KEY);
-      if (raw) return JSON.parse(raw) as ObservingSessionEntry[];
+      const rawLists = localStorage.getItem(OBSERVING_LISTS_STORAGE_KEY);
+      if (rawLists) {
+        const parsed = JSON.parse(rawLists) as Partial<ObservingListsState>;
+        if (parsed && Array.isArray(parsed.lists)) {
+          const validLists = parsed.lists.map((l, idx) => ({
+            id: typeof l.id === 'string' && l.id ? l.id : `olist_restored_${idx}`,
+            name: typeof l.name === 'string' && l.name.trim() ? l.name.trim() : `관측 목록 ${idx + 1}`,
+            createdAt: typeof l.createdAt === 'number' ? l.createdAt : Date.now() + idx,
+            entries: Array.isArray(l.entries) ? l.entries : [],
+          }));
+          const hasTonight =
+            typeof parsed.tonightListId === 'string' &&
+            validLists.some((l) => l.id === parsed.tonightListId);
+          return {
+            lists: validLists,
+            tonightListId: hasTonight ? parsed.tonightListId! : null,
+            tonightEntries: Array.isArray(parsed.tonightEntries) ? parsed.tonightEntries : [],
+            tonightLinkedOverrides:
+              parsed.tonightLinkedOverrides && typeof parsed.tonightLinkedOverrides === 'object'
+                ? parsed.tonightLinkedOverrides
+                : {},
+          };
+        }
+      }
+      // One-time migration from legacy flat observing list
+      const legacyRaw = localStorage.getItem(SESSION_STORAGE_KEY);
+      if (legacyRaw) {
+        const legacyEntries = JSON.parse(legacyRaw) as ObservingSessionEntry[];
+        if (Array.isArray(legacyEntries)) {
+          return {
+            lists: [
+              {
+                id: DEFAULT_OBSERVING_LIST_ID,
+                name: DEFAULT_OBSERVING_LIST_NAME,
+                createdAt: Date.now(),
+                entries: [],
+              },
+            ],
+            tonightListId: null,
+            tonightEntries: legacyEntries,
+            tonightLinkedOverrides: {},
+          };
+        }
+      }
     } catch {
       // Ignore storage parse failure
     }
-    return [];
+    return {
+      lists: [
+        {
+          id: DEFAULT_OBSERVING_LIST_ID,
+          name: DEFAULT_OBSERVING_LIST_NAME,
+          createdAt: Date.now(),
+          entries: [],
+        },
+      ],
+      tonightListId: null,
+      tonightEntries: [],
+      tonightLinkedOverrides: {},
+    };
   });
-  const sessionPlanRef = useRef<ObservingSessionEntry[]>(sessionPlan);
-  sessionPlanRef.current = sessionPlan;
+  const observingListsRef = useRef<ObservingListsState>(observingListsState);
+  observingListsRef.current = observingListsState;
+
+  const activeTonightList = useMemo(() => {
+    if (!observingListsState.tonightListId) return null;
+    return (
+      observingListsState.lists.find((l) => l.id === observingListsState.tonightListId) ?? null
+    );
+  }, [observingListsState.lists, observingListsState.tonightListId]);
+
+  const sessionPlan = useMemo(() => {
+    const manual = observingListsState.tonightEntries;
+    const manualIds = new Set(manual.map((e) => e.id));
+    if (!activeTonightList) return manual;
+
+    const overrides = observingListsState.tonightLinkedOverrides ?? {};
+    const linkedProjected: ObservingSessionEntry[] = [];
+    for (const entry of activeTonightList.entries) {
+      if (manualIds.has(entry.id)) continue;
+      const ov = overrides[entry.id];
+      if (ov?.excluded) continue;
+      linkedProjected.push({
+        ...entry,
+        observed: ov?.observed !== undefined ? ov.observed : entry.observed,
+        notes: ov?.notes !== undefined ? ov.notes : entry.notes,
+      });
+    }
+    return [...manual, ...linkedProjected];
+  }, [
+    observingListsState.tonightEntries,
+    observingListsState.tonightLinkedOverrides,
+    activeTonightList,
+  ]);
 
   const [challenges, setChallenges] = useState<ChallengeTrack[]>(() => {
     try {
@@ -700,19 +812,23 @@ export default function App() {
     return DEFAULT_EQUIPMENT_LOCKER;
   });
 
-  // Ensure deep catalogs are loaded if saved observing list contains NGC/IC/HIP/WDS objects
+  // Ensure deep catalogs are loaded if any saved observing list or tonight session contains NGC/IC/HIP/WDS objects
   useEffect(() => {
-    if (sessionPlan.length === 0) return;
-    if (sessionPlan.some((e) => e.kind === 'dso')) {
+    const allEntries = [
+      ...observingListsState.tonightEntries,
+      ...observingListsState.lists.flatMap((l) => l.entries),
+    ];
+    if (allEntries.length === 0) return;
+    if (allEntries.some((e) => e.kind === 'dso')) {
       void ensureDeepDsos();
     }
-    if (sessionPlan.some((e) => e.kind === 'star')) {
+    if (allEntries.some((e) => e.kind === 'star')) {
       void ensureDeepStars();
     }
-    if (sessionPlan.some((e) => e.kind === 'double')) {
+    if (allEntries.some((e) => e.kind === 'double')) {
       void ensureDoubleStars();
     }
-  }, [sessionPlan]);
+  }, [observingListsState]);
 
   // Sync URL query params continuously using History API replaceState
   useEffect(() => {
@@ -722,14 +838,14 @@ export default function App() {
     return () => window.clearTimeout(timer);
   }, [view, theme]);
 
-  // Persist observing session plan
+  // Persist categorized observing lists locally
   useEffect(() => {
     try {
-      localStorage.setItem(SESSION_STORAGE_KEY, JSON.stringify(sessionPlan));
+      localStorage.setItem(OBSERVING_LISTS_STORAGE_KEY, JSON.stringify(observingListsState));
     } catch {
       // Ignore storage quota errors
     }
-  }, [sessionPlan]);
+  }, [observingListsState]);
 
   // Persist Challenge Tracks & progress locally
   useEffect(() => {
@@ -933,27 +1049,56 @@ export default function App() {
     );
   };
 
+  const slewingToCenterRef = useRef(false);
+
   const handleUnlockCenter = useCallback(() => {
+    slewingToCenterRef.current = false;
     if (centerLockedRef.current) {
       centerLockedRef.current = false;
       setCenterLocked(false);
     }
   }, []);
 
+  const handleJumpCardinal = useCallback(
+    (azDeg: number) => {
+      handleUnlockCenter();
+      const lstDeg = getLSTDeg(observer.timestampMs, observer.lon);
+      const eq = horizontalToEquatorial(30, azDeg, lstDeg, observer.lat);
+      const nextRa = ((eq.raDeg / 15) % 24 + 24) % 24;
+      const nextDec = Math.max(-89.999, Math.min(89.999, eq.decDeg));
+      lockedHzRef.current = {
+        altDeg: 30,
+        azDeg,
+        ra: nextRa,
+        dec: nextDec,
+        lat: observer.lat,
+      };
+      handleChangeView((prev) => ({
+        ...prev,
+        ra: nextRa,
+        dec: nextDec,
+        fsz: 60,
+      }));
+    },
+    [handleUnlockCenter, observer.timestampMs, observer.lon, observer.lat, handleChangeView]
+  );
+
   const handleToggleCenterLock = useCallback(() => {
     const curSel = selectedRef.current;
     if (!curSel) {
+      slewingToCenterRef.current = false;
       centerLockedRef.current = false;
       setCenterLocked(false);
       return;
     }
     if (centerLockedRef.current) {
+      slewingToCenterRef.current = false;
       centerLockedRef.current = false;
       setCenterLocked(false);
       return;
     }
 
-    // Activate center-lock tracking and immediately center on the target
+    // Activate center-lock tracking, deactivate selection mark, and smoothly slew to the target
     let targetItem = curSel;
     if (curSel.kind === 'planet') {
       const obsMs = observerRef.current.useLiveTime
@@ -966,6 +1111,10 @@ export default function App() {
         setSelected(targetItem);
       }
     }
+
+    setOptics((prev) =>
+      prev.showSelectionMark ? { ...prev, showSelectionMark: false } : prev
+    );
 
     centerLockedRef.current = true;
     setCenterLocked(true);
@@ -984,12 +1133,24 @@ export default function App() {
         ? Math.max(0.05, Math.min(2.5, (targetItem.data.sep / 3600) * 80))
         : 14;
 
-    handleChangeView((p) => ({
-      ...p,
-      ra: ((targetItem.data.ra / 15) % 24 + 24) % 24,
-      dec: Math.max(-89.999, Math.min(89.999, targetItem.data.dec)),
-      fsz: Math.min(p.fsz, targetFsz),
-    }));
+    const desiredFsz = Math.min(viewRef.current.fsz, targetFsz);
+    if (canvasHandleRef.current) {
+      slewingToCenterRef.current = true;
+      canvasHandleRef.current.smoothCenterOn(targetItem.data.ra, targetItem.data.dec, {
+        targetFsz: desiredFsz,
+        durationMs: 650,
+        onComplete: () => {
+          slewingToCenterRef.current = false;
+        },
+      });
+    } else {
+      handleChangeView((p) => ({
+        ...p,
+        ra: ((targetItem.data.ra / 15) % 24 + 24) % 24,
+        dec: Math.max(-89.999, Math.min(89.999, targetItem.data.dec)),
+        fsz: desiredFsz,
+      }));
+    }
   }, [handleChangeView]);
 
   const handleToggleSolarTrail = useCallback(
@@ -1031,62 +1192,276 @@ export default function App() {
     setSolarTrails({});
   }, []);
 
-  const handleSelect = (item: SelectedItem | null) => {
+  const handleSelect = (
+    item: SelectedItem | null,
+    options?: { hideSelectionMark?: boolean }
+  ) => {
     const prevId = selectedRef.current?.data.id;
     const nextId = item?.data.id;
     if (!item || nextId !== prevId) {
+      slewingToCenterRef.current = false;
       centerLockedRef.current = false;
       setCenterLocked(false);
     }
     selectedRef.current = item;
     setSelected(item);
     if (item) {
+      const wantMark = !options?.hideSelectionMark;
       setOptics((prev) =>
-        prev.showSelectionMark ? prev : { ...prev, showSelectionMark: true }
+        prev.showSelectionMark === wantMark
+          ? prev
+          : { ...prev, showSelectionMark: wantMark }
       );
       setInspectorTab('detail');
       setRightOpen(true);
     }
   };
 
-  const handleToggleSessionItem = (item: SelectedItem) => {
-    setSessionPlan((prev) => {
-      const exists = prev.some((e) => e.id === item.data.id);
-      if (exists) {
-        return prev.filter((e) => e.id !== item.data.id);
+  const handleSetTonightList = useCallback((listId: string | null) => {
+    setObservingListsState((prev) => {
+      if (listId === null || prev.tonightListId === listId) {
+        return {
+          ...prev,
+          tonightListId: null,
+          tonightLinkedOverrides: {},
+        };
       }
-      return [
+      if (!prev.lists.some((l) => l.id === listId)) return prev;
+      return {
         ...prev,
-        {
-          id: item.data.id,
-          kind: item.kind,
-          addedAt: Date.now(),
-          observed: false,
-          notes: '',
-        },
-      ];
+        tonightListId: listId,
+        tonightLinkedOverrides: {},
+      };
     });
-  };
+  }, []);
 
-  const handleToggleObserved = (id: string) => {
-    setSessionPlan((prev) =>
-      prev.map((e) => (e.id === id ? { ...e, observed: !e.observed } : e))
-    );
-  };
-
-  const handleUpdateNotes = (id: string, notes: string) => {
-    setSessionPlan((prev) => {
-      const exists = prev.some((e) => e.id === id);
-      if (!exists) return prev;
-      return prev.map((e) => (e.id === id ? { ...e, notes } : e));
+  const handleCreateObservingList = useCallback((rawName: string): string => {
+    const newId = makeObservingListId();
+    setObservingListsState((prev) => {
+      const trimmed = rawName.trim();
+      const fallbackName = `관측 목록 ${prev.lists.length + 1}`;
+      const uniqueName = makeUniqueListName(trimmed || fallbackName, prev.lists);
+      const nextList: ObservingListGroup = {
+        id: newId,
+        name: uniqueName,
+        createdAt: Date.now(),
+        entries: [],
+      };
+      return {
+        ...prev,
+        lists: [...prev.lists, nextList],
+      };
     });
-  };
+    return newId;
+  }, []);
 
-  const handleAddRecommendedTonight = (items: SelectedItem[]) => {
-    setSessionPlan((prev) => {
-      const existingIds = new Set(prev.map((e) => e.id));
+  const handleRenameObservingList = useCallback((listId: string, rawName: string) => {
+    const trimmed = rawName.trim();
+    if (!trimmed) return;
+    setObservingListsState((prev) => ({
+      ...prev,
+      lists: prev.lists.map((l) => (l.id === listId ? { ...l, name: trimmed } : l)),
+    }));
+  }, []);
+
+  const handleDeleteObservingList = useCallback((listId: string) => {
+    setObservingListsState((prev) => {
+      const remaining = prev.lists.filter((l) => l.id !== listId);
+      const wasTonight = prev.tonightListId === listId;
+      return {
+        ...prev,
+        lists: remaining,
+        tonightListId: wasTonight ? null : prev.tonightListId,
+        tonightLinkedOverrides: wasTonight ? {} : prev.tonightLinkedOverrides,
+      };
+    });
+  }, []);
+
+  const handleToggleSessionItem = useCallback(
+    (item: SelectedItem, targetListId?: string) => {
+      setObservingListsState((prev) => {
+        // Tonight's own session: NEVER mutates managed lists in 목록관리
+        if (!targetListId || targetListId === '__tonight__') {
+          const itemId = item.data.id;
+          const inManual = prev.tonightEntries.some((e) => e.id === itemId);
+          const linkedList = prev.tonightListId
+            ? prev.lists.find((l) => l.id === prev.tonightListId) ?? null
+            : null;
+          const inLinked = Boolean(linkedList?.entries.some((e) => e.id === itemId));
+          const overrides = prev.tonightLinkedOverrides ?? {};
+          const isExcluded = Boolean(overrides[itemId]?.excluded);
+
+          if (inManual) {
+            const nextManual = prev.tonightEntries.filter((e) => e.id !== itemId);
+            const nextOverrides = inLinked
+              ? { ...overrides, [itemId]: { ...overrides[itemId], excluded: true } }
+              : overrides;
+            return {
+              ...prev,
+              tonightEntries: nextManual,
+              tonightLinkedOverrides: nextOverrides,
+            };
+          }
+
+          if (inLinked && !isExcluded) {
+            return {
+              ...prev,
+              tonightLinkedOverrides: {
+                ...overrides,
+                [itemId]: { ...overrides[itemId], excluded: true },
+              },
+            };
+          }
+
+          const nextOverrides = { ...overrides };
+          if (nextOverrides[itemId]?.excluded) {
+            delete nextOverrides[itemId];
+          }
+          return {
+            ...prev,
+            tonightEntries: [
+              ...prev.tonightEntries,
+              {
+                id: itemId,
+                kind: item.kind,
+                addedAt: Date.now(),
+                observed: false,
+                notes: '',
+              },
+            ],
+            tonightLinkedOverrides: nextOverrides,
+          };
+        }
+
+        // Explicit managed list edit (목록관리 or selected target list in 천체 정보)
+        return {
+          ...prev,
+          lists: prev.lists.map((l) => {
+            if (l.id !== targetListId) return l;
+            const exists = l.entries.some((e) => e.id === item.data.id);
+            const nextEntries = exists
+              ? l.entries.filter((e) => e.id !== item.data.id)
+              : [
+                  ...l.entries,
+                  {
+                    id: item.data.id,
+                    kind: item.kind,
+                    addedAt: Date.now(),
+                    observed: false,
+                    notes: '',
+                  },
+                ];
+            return { ...l, entries: nextEntries };
+          }),
+        };
+      });
+    },
+    []
+  );
+
+  const handleToggleObserved = useCallback((id: string, targetListId?: string) => {
+    setObservingListsState((prev) => {
+      if (!targetListId || targetListId === '__tonight__') {
+        const inManual = prev.tonightEntries.some((e) => e.id === id);
+        if (inManual) {
+          return {
+            ...prev,
+            tonightEntries: prev.tonightEntries.map((e) =>
+              e.id === id ? { ...e, observed: !e.observed } : e
+            ),
+          };
+        }
+        const linkedList = prev.tonightListId
+          ? prev.lists.find((l) => l.id === prev.tonightListId) ?? null
+          : null;
+        const linkedEntry = linkedList?.entries.find((e) => e.id === id);
+        if (!linkedEntry) return prev;
+        const overrides = prev.tonightLinkedOverrides ?? {};
+        const currentObserved =
+          overrides[id]?.observed !== undefined ? overrides[id].observed : linkedEntry.observed;
+        return {
+          ...prev,
+          tonightLinkedOverrides: {
+            ...overrides,
+            [id]: { ...overrides[id], observed: !currentObserved },
+          },
+        };
+      }
+
+      return {
+        ...prev,
+        lists: prev.lists.map((l) =>
+          l.id === targetListId
+            ? {
+                ...l,
+                entries: l.entries.map((e) =>
+                  e.id === id ? { ...e, observed: !e.observed } : e
+                ),
+              }
+            : l
+        ),
+      };
+    });
+  }, []);
+
+  const handleUpdateNotes = useCallback(
+    (id: string, notes: string, targetListId?: string) => {
+      setObservingListsState((prev) => {
+        if (!targetListId || targetListId === '__tonight__') {
+          const inManual = prev.tonightEntries.some((e) => e.id === id);
+          if (inManual) {
+            return {
+              ...prev,
+              tonightEntries: prev.tonightEntries.map((e) =>
+                e.id === id ? { ...e, notes } : e
+              ),
+            };
+          }
+          const linkedList = prev.tonightListId
+            ? prev.lists.find((l) => l.id === prev.tonightListId) ?? null
+            : null;
+          const linkedEntry = linkedList?.entries.find((e) => e.id === id);
+          if (!linkedEntry) return prev;
+          const overrides = prev.tonightLinkedOverrides ?? {};
+          return {
+            ...prev,
+            tonightLinkedOverrides: {
+              ...overrides,
+              [id]: { ...overrides[id], notes },
+            },
+          };
+        }
+
+        return {
+          ...prev,
+          lists: prev.lists.map((l) => {
+            if (l.id !== targetListId) return l;
+            if (!l.entries.some((e) => e.id === id)) return l;
+            return {
+              ...l,
+              entries: l.entries.map((e) => (e.id === id ? { ...e, notes } : e)),
+            };
+          }),
+        };
+      });
+    },
+    []
+  );
+
+  const handleAddRecommendedTonight = useCallback((items: SelectedItem[]) => {
+    setObservingListsState((prev) => {
+      const linkedList = prev.tonightListId
+        ? prev.lists.find((l) => l.id === prev.tonightListId) ?? null
+        : null;
+      const overrides = prev.tonightLinkedOverrides ?? {};
+      const visibleIds = new Set<string>(prev.tonightEntries.map((e) => e.id));
+      if (linkedList) {
+        for (const e of linkedList.entries) {
+          if (!overrides[e.id]?.excluded) visibleIds.add(e.id);
+        }
+      }
       const additions: ObservingSessionEntry[] = items
-        .filter((it) => !existingIds.has(it.data.id))
+        .filter((it) => !visibleIds.has(it.data.id))
         .map((it) => ({
           id: it.data.id,
           kind: it.kind,
@@ -1094,9 +1469,13 @@ export default function App() {
           observed: false,
           notes: '',
         }));
-      return [...prev, ...additions];
+      if (additions.length === 0) return prev;
+      return {
+        ...prev,
+        tonightEntries: [...prev.tonightEntries, ...additions],
+      };
     });
-  };
+  }, []);
 
   const applyEquipmentToOptics = useCallback(
     (nextLocker: EquipmentLockerState, triggeredCat?: EquipmentCategory) => {
@@ -1351,61 +1730,163 @@ export default function App() {
     [applyEquipmentToOptics]
   );
 
-  const handleImportSkylistSession = useCallback(async (fileText: string) => {
-    await Promise.all([
-      ensureCoreCatalogs(),
-      ensureDeepDsos(),
-      ensureDeepStars(),
-      ensureDoubleStars(),
-    ]);
-    const parsed = parseSkylistObjects(fileText);
-    const snap = getCatalogSnapshot();
-    const obsMs = observerRef.current.useLiveTime
-      ? Date.now()
-      : observerRef.current.timestampMs;
-    const resolved = resolveSkylistObjects(parsed, snap, obsMs);
+  const handleImportSkylistSession = useCallback(
+    async (
+      fileText: string,
+      options?: { fileName?: string; targetListId?: string; makeTonight?: boolean }
+    ) => {
+      await Promise.all([
+        ensureCoreCatalogs(),
+        ensureDeepDsos(),
+        ensureDeepStars(),
+        ensureDoubleStars(),
+      ]);
+      const parsed = parseSkylistObjects(fileText);
+      const snap = getCatalogSnapshot();
+      const obsMs = observerRef.current.useLiveTime
+        ? Date.now()
+        : observerRef.current.timestampMs;
+      const resolved = resolveSkylistObjects(parsed, snap, obsMs);
 
-    const prev = sessionPlanRef.current;
-    const existingMap = new Map(prev.map((e) => [e.id, e]));
-    const next = [...prev];
-    let addedCount = 0;
-    for (const entry of resolved.entries) {
-      const existing = existingMap.get(entry.id);
-      if (!existing) {
-        next.push(entry);
-        existingMap.set(entry.id, entry);
-        addedCount++;
-      } else {
-        const idx = next.findIndex((x) => x.id === entry.id);
-        if (idx >= 0) {
-          next[idx] = {
-            ...existing,
-            observed: existing.observed || entry.observed,
-            notes: existing.notes || entry.notes,
+      const prevState = observingListsRef.current;
+
+      if (resolved.totalCount === 0) {
+        return {
+          matchedCount: 0,
+          addedCount: 0,
+          totalCount: 0,
+          unmatchedNames: [],
+          listName: '',
+          createdNewList: false,
+        };
+      }
+
+      // Case 1: Importing into an existing pre-created / selected list category
+      if (options?.targetListId) {
+        const targetList = prevState.lists.find((l) => l.id === options.targetListId);
+        if (targetList) {
+          const existingMap = new Map(targetList.entries.map((e) => [e.id, e]));
+          const nextEntries = [...targetList.entries];
+          let addedCount = 0;
+          for (const entry of resolved.entries) {
+            const existing = existingMap.get(entry.id);
+            if (!existing) {
+              nextEntries.push(entry);
+              existingMap.set(entry.id, entry);
+              addedCount++;
+            } else {
+              const idx = nextEntries.findIndex((x) => x.id === entry.id);
+              if (idx >= 0) {
+                nextEntries[idx] = {
+                  ...existing,
+                  observed: existing.observed || entry.observed,
+                  notes: existing.notes || entry.notes,
+                };
+              }
+            }
+          }
+          const nextState: ObservingListsState = {
+            ...prevState,
+            lists: prevState.lists.map((l) =>
+              l.id === targetList.id ? { ...l, entries: nextEntries } : l
+            ),
+            tonightListId: options.makeTonight ? targetList.id : prevState.tonightListId,
+            tonightLinkedOverrides: options.makeTonight ? {} : prevState.tonightLinkedOverrides,
+          };
+          observingListsRef.current = nextState;
+          setObservingListsState(nextState);
+          return {
+            matchedCount: resolved.matchedCount,
+            addedCount,
+            totalCount: resolved.totalCount,
+            unmatchedNames: resolved.unmatchedNames,
+            listName: targetList.name,
+            createdNewList: false,
           };
         }
       }
-    }
-    sessionPlanRef.current = next;
-    setSessionPlan(next);
 
-    return {
-      matchedCount: resolved.matchedCount,
-      addedCount,
-      totalCount: resolved.totalCount,
-      unmatchedNames: resolved.unmatchedNames,
-    };
-  }, []);
+      // Case 2: Importing as a brand-new list named after the imported file
+      const baseName = stripSkylistExtension(options?.fileName) || '가져온 관측 목록';
+      const newListName = makeUniqueListName(baseName, prevState.lists);
+      const newListId = makeObservingListId();
+      const newList: ObservingListGroup = {
+        id: newListId,
+        name: newListName,
+        createdAt: Date.now(),
+        entries: resolved.entries,
+      };
+      const shouldActivateTonight = Boolean(options?.makeTonight);
 
-  const handleExportSkylistSession = useCallback(() => {
+      const nextState: ObservingListsState = {
+        ...prevState,
+        lists: [...prevState.lists, newList],
+        tonightListId: shouldActivateTonight ? newListId : prevState.tonightListId,
+        tonightLinkedOverrides: shouldActivateTonight ? {} : prevState.tonightLinkedOverrides,
+      };
+      observingListsRef.current = nextState;
+      setObservingListsState(nextState);
+
+      return {
+        matchedCount: resolved.matchedCount,
+        addedCount: resolved.entries.length,
+        totalCount: resolved.totalCount,
+        unmatchedNames: resolved.unmatchedNames,
+        listName: newListName,
+        createdNewList: true,
+      };
+    },
+    []
+  );
+
+  const handleExportSkylistSession = useCallback((listId?: string) => {
     const obsMs = observerRef.current.useLiveTime
       ? Date.now()
       : observerRef.current.timestampMs;
     const snap = getCatalogSnapshot();
-    const content = exportObservingListToSkylist(sessionPlan, snap, obsMs);
+    const state = observingListsRef.current;
+
+    let entriesToExport: ObservingSessionEntry[] = [];
+    let exportLabel = '오늘밤_관측목록';
+
+    if (listId && listId !== '__tonight__') {
+      const targetList = state.lists.find((l) => l.id === listId);
+      if (!targetList || targetList.entries.length === 0) return;
+      entriesToExport = targetList.entries;
+      exportLabel = targetList.name;
+    } else {
+      const manual = state.tonightEntries;
+      const manualIds = new Set(manual.map((e) => e.id));
+      const linkedList = state.tonightListId
+        ? state.lists.find((l) => l.id === state.tonightListId) ?? null
+        : null;
+      const overrides = state.tonightLinkedOverrides ?? {};
+      const linkedProjected = linkedList
+        ? linkedList.entries
+            .filter((e) => !manualIds.has(e.id) && !overrides[e.id]?.excluded)
+            .map((e) => ({
+              ...e,
+              observed: overrides[e.id]?.observed ?? e.observed,
+              notes: overrides[e.id]?.notes ?? e.notes,
+            }))
+        : [];
+      entriesToExport = [...manual, ...linkedProjected];
+      if (entriesToExport.length === 0) return;
+      exportLabel = linkedList ? `오늘밤_${linkedList.name}` : '오늘밤_관측목록';
+    }
+
+    const content = exportObservingListToSkylist(entriesToExport, snap, obsMs);
+    const safeListName = exportLabel
+      .trim()
+      .replace(/[\\/:*?"<>|]+/g, '')
+      .replace(/\s+/g, '_')
+      .slice(0, 60);
     const today = new Date().toISOString().slice(0, 10);
-    downloadSkylistFile(content, `noxchart-observing-list-${today}.skylist`);
-  }, [sessionPlan]);
+    const filename = safeListName
+      ? `${safeListName}.skylist`
+      : `noxchart-observing-list-${today}.skylist`;
+    downloadSkylistFile(content, filename);
+  }, []);
 
   const handleApplySite = useCallback(
     (site: { name: string; lat: number; lon: number }) => {
@@ -2024,22 +2505,8 @@ export default function App() {
       <header
         className={`no-print h-12 shrink-0 border-b px-3 flex items-center justify-between gap-3 ${ui.header}`}
       >
-        {/* Left: Sidebar Toggle + Brand */}
+        {/* Left: Brand */}
         <div className="flex items-center gap-2.5 shrink-0">
-          <button
-            type="button"
-            onClick={() => setLeftOpen((o) => !o)}
-            title={leftOpen ? '제어 패널 숨기기' : '제어 패널 열기'}
-            aria-label="제어 패널 토글"
-            className={`p-1.5 border transition-colors ${ui.buttonIdle}`}
-            style={{ borderRadius: '4px' }}
-          >
-            {leftOpen ? (
-              <PanelLeftClose className="w-4 h-4" />
-            ) : (
-              <PanelLeftOpen className="w-4 h-4" />
-            )}
-          </button>
           <button
             type="button"
             onClick={handleResetToDefaults}
@@ -2173,6 +2640,45 @@ export default function App() {
             </button>
           </div>
 
+          {/* Cardinal Direction Quick-Jump Buttons (동/서/남/북 · 고도 30° · 화각 60°) */}
+          <div
+            className={`flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
+              theme === 'white'
+                ? 'bg-slate-100 border-slate-300'
+                : theme === 'red'
+                ? 'bg-[#100101] border-[#420C0C]'
+                : 'bg-[#0B1220] border-[#25334D]'
+            }`}
+            role="group"
+            aria-label="방위 바로가기"
+          >
+            {(
+              [
+                { label: '동', full: '동쪽', az: 90 },
+                { label: '서', full: '서쪽', az: 270 },
+                { label: '남', full: '남쪽', az: 180 },
+                { label: '북', full: '북쪽', az: 0 },
+              ] as const
+            ).map((dir) => (
+              <button
+                key={dir.label}
+                type="button"
+                onClick={() => handleJumpCardinal(dir.az)}
+                title={`${dir.full} 하늘 바로가기 (방위각 ${dir.az}° · 고도 30° · 화각 60°)`}
+                aria-label={`${dir.full} 하늘 바로가기 (고도 30도, 화각 60도)`}
+                className={`w-6 sm:w-7 h-7 rounded-md flex items-center justify-center text-[11px] font-semibold transition-colors shrink-0 ${
+                  theme === 'white'
+                    ? 'text-slate-600 hover:text-blue-700 hover:bg-white'
+                    : theme === 'red'
+                    ? 'text-[#DC2626] hover:text-[#FF5252] hover:bg-[#220404]'
+                    : 'text-slate-300 hover:text-[#22D3EE] hover:bg-[#182438]'
+                }`}
+              >
+                {dir.label}
+              </button>
+            ))}
+          </div>
+
           {/* Limiting Magnitude Display + Slider beside Horizontal Coordinate Switcher */}
           <div
             className={`hidden md:flex items-center gap-1.5 rounded-lg border px-2 py-0.5 shrink-0 ${
@@ -2257,21 +2763,22 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right: Session Plan, URL Share, PNG Export, Print */}
-        <div className="flex items-center gap-1.5 shrink-0">
+        {/* Right: Icon-Only Session Plan, Challenge, URL Share, PNG Export, Sensor FOV PNG, Print */}
+        <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
           <button
             type="button"
             onClick={() => {
               setInspectorTab('session');
               setRightOpen((o) => (inspectorTab === 'session' ? !o : true));
             }}
-            className={`px-2.5 py-1.5 border text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+            title={`관측 목록 (${sessionPlan.length})`}
+            aria-label={`관측 목록 (${sessionPlan.length})`}
+            className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${
               rightOpen && inspectorTab === 'session' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
-            <Bookmark className="w-3.5 h-3.5" />
-            <span>관측 목록 ({sessionPlan.length})</span>
+            <Bookmark className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
 
           <button
@@ -2281,16 +2788,16 @@ export default function App() {
               setRightOpen((o) => (inspectorTab === 'challenge' ? !o : true));
             }}
             title="계절별 관측 투어 및 챌린지 트랙"
-            className={`px-2.5 py-1.5 border text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+            aria-label="챌린지"
+            className={`relative w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${
               rightOpen && inspectorTab === 'challenge' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
-            <Trophy className="w-3.5 h-3.5" />
-            <span>챌린지</span>
+            <Trophy className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             {challenges.some((t) => t.activeOnChart) && (
               <span
-                className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"
+                className="absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full bg-amber-400"
                 aria-hidden="true"
               />
             )}
@@ -2299,25 +2806,29 @@ export default function App() {
           <button
             type="button"
             onClick={handleCopyShareUrl}
-            title="현재 좌표·배율 URL 복사"
-            className={`px-2.5 py-1.5 border text-xs font-medium flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${
+            title={copiedUrl ? '링크 복사됨' : '현재 좌표·배율 URL 복사'}
+            aria-label={copiedUrl ? '링크 복사됨' : '좌표 공유'}
+            className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${
               copiedUrl ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
-            {copiedUrl ? <Check className="w-3.5 h-3.5" /> : <Share2 className="w-3.5 h-3.5" />}
-            <span>{copiedUrl ? '링크 복사됨' : '좌표 공유'}</span>
+            {copiedUrl ? (
+              <Check className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            ) : (
+              <Share2 className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            )}
           </button>
 
           <button
             type="button"
             onClick={() => canvasHandleRef.current?.exportPng()}
             title="성도 PNG 이미지 저장"
-            className={`hidden lg:flex px-2.5 py-1.5 border text-xs font-medium items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
+            aria-label="성도 PNG 이미지 저장"
+            className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${ui.buttonIdle}`}
             style={{ borderRadius: '4px' }}
           >
-            <Download className="w-3.5 h-3.5" />
-            <span>PNG</span>
+            <Download className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
 
           {optics.showSensorBox && (
@@ -2327,11 +2838,11 @@ export default function App() {
                 canvasHandleRef.current?.exportSensorFovPng(activeSensorEquipmentName)
               }
               title={`사진 화각 영역만 PNG 저장 (${activeSensorEquipmentName} · ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°)`}
-              className={`flex px-2.5 py-1.5 border text-xs font-medium items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${ui.buttonActive}`}
+              aria-label="사진 화각 PNG 저장"
+              className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${ui.buttonActive}`}
               style={{ borderRadius: '4px' }}
             >
-              <Camera className="w-3.5 h-3.5" />
-              <span>사진화각</span>
+              <Camera className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
             </button>
           )}
 
@@ -2339,11 +2850,11 @@ export default function App() {
             type="button"
             onClick={handlePrintWhiteChart}
             title="종이 성도 인쇄 (인쇄용 화이트 모드)"
-            className={`hidden xl:flex px-2.5 py-1.5 border text-xs font-medium items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
+            aria-label="종이 성도 인쇄"
+            className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${ui.buttonIdle}`}
             style={{ borderRadius: '4px' }}
           >
-            <Printer className="w-3.5 h-3.5" />
-            <span>인쇄</span>
+            <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
         </div>
       </header>
@@ -2462,6 +2973,9 @@ export default function App() {
               optics={optics}
               catalogs={catalogs}
               sessionPlan={sessionPlan}
+              tonightManualEntries={observingListsState.tonightEntries}
+              observingLists={observingListsState.lists}
+              tonightListId={observingListsState.tonightListId}
               challenges={challenges}
               onTabChange={setInspectorTab}
               onClose={() => setRightOpen(false)}
@@ -2471,6 +2985,10 @@ export default function App() {
               onClearSolarTrails={handleClearSolarTrails}
               onChangeView={handleChangeView}
               onChangeOptics={setOptics}
+              onSetTonightList={handleSetTonightList}
+              onCreateObservingList={handleCreateObservingList}
+              onRenameObservingList={handleRenameObservingList}
+              onDeleteObservingList={handleDeleteObservingList}
               onToggleSessionItem={handleToggleSessionItem}
               onToggleObserved={handleToggleObserved}
               onUpdateNotes={handleUpdateNotes}
@@ -2480,6 +2998,10 @@ export default function App() {
               challengeOpacity={layers.challengeOpacity}
               onChangeChallengeOpacity={(opacity) =>
                 setLayers((p) => ({ ...p, challengeOpacity: opacity }))
+              }
+              challengeLineWidth={layers.challengeLineWidth}
+              onChangeChallengeLineWidth={(lineWidth) =>
+                setLayers((p) => ({ ...p, challengeLineWidth: lineWidth }))
               }
               challengeDraft={challengeDraft}
               challengeDraftIsNew={challengeDraftIsNew}
@@ -2505,6 +3027,26 @@ export default function App() {
             />
           )}
         </div>
+
+        {/* Right Edge Pull-Handle Tab */}
+        <button
+          type="button"
+          onClick={() => setRightOpen((o) => !o)}
+          title={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
+          aria-label={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
+          className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-14 w-5 border border-r-0 flex items-center justify-center transition-[right,background-color] duration-200 ease-out shadow-md ${ui.panel} hover:opacity-90`}
+          style={{
+            right: rightOpen ? '270px' : '0px',
+            borderTopLeftRadius: '6px',
+            borderBottomLeftRadius: '6px',
+          }}
+        >
+          {rightOpen ? (
+            <ChevronRight className="w-3.5 h-3.5" />
+          ) : (
+            <ChevronLeft className="w-3.5 h-3.5" />
+          )}
+        </button>
       </main>
 
       <ObservingSiteMapModal

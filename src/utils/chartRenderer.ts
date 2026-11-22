@@ -33,6 +33,7 @@ import {
   equatorialToHorizontal,
   findStarHopGuides,
   getDsoLimitingMagnitude,
+  getHorizonSensorScreenAngleDeg,
   getLimitingMagnitude,
   getLSTDeg,
   getPixelsPerDeg,
@@ -538,10 +539,11 @@ function drawDsoSymbol(
   color: string,
   palette: ThemePalette,
   proj: ProjectionParams,
-  dimmed: boolean
+  dimmed: boolean,
+  opacity = 1
 ): number {
   ctx.save();
-  ctx.globalAlpha = dimmed ? 0.18 : 0.92;
+  ctx.globalAlpha = (dimmed ? 0.18 : 0.92) * opacity;
   ctx.strokeStyle = color;
   ctx.fillStyle = color;
   ctx.lineWidth = 1.25;
@@ -1093,15 +1095,23 @@ function drawOpticalReticles(
       const normSensorRot = ((rawSensorRot % 360) + 360) % 360;
       const sensorRotActive = normSensorRot > 0.05 && normSensorRot < 359.95;
 
+      // Ground-based camera frame: reference 0° to the local horizon / Zenith direction
+      // so it rotates naturally over time (field rotation) in Equatorial view and stays level in Horizontal view.
+      const { screenDeg: screenSensorRotDeg } = getHorizonSensorScreenAngleDeg(
+        proj,
+        normSensorRot
+      );
+      const screenRotActive = screenSensorRotDeg > 0.05 && screenSensorRotDeg < 359.95;
+
       ctx.save();
       ctx.translate(cx, cy);
-      if (sensorRotActive) {
-        ctx.rotate(normSensorRot * DEG2RAD);
+      if (screenRotActive) {
+        ctx.rotate(screenSensorRotDeg * DEG2RAD);
       }
       ctx.strokeStyle = palette.reticleSensor;
       ctx.lineWidth = 1.3;
       ctx.strokeRect(-wPx / 2, -hPx / 2, wPx, hPx);
-      if (sensorRotActive && hPx >= 14) {
+      if ((screenRotActive || sensorRotActive) && hPx >= 14) {
         ctx.lineWidth = 1.6;
         ctx.beginPath();
         ctx.moveTo(0, -hPx / 2);
@@ -1110,7 +1120,10 @@ function drawOpticalReticles(
       }
       ctx.fillStyle = palette.reticleSensor;
       ctx.font = '500 10px "IBM Plex Mono", "Pretendard", monospace';
-      const rotTag = sensorRotActive ? ` · 회전 ${Math.round(normSensorRot)}°` : '';
+      const rotTag =
+        sensorRotActive || view.coordSystem === 'equatorial'
+          ? ` · 지평 ${Math.round(normSensorRot)}°`
+          : '';
       ctx.fillText(
         `FOV ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°${rotTag}`,
         -wPx / 2,
@@ -1126,6 +1139,7 @@ interface PassOptions {
   isInnerClip?: boolean;
   eyepieceFlipActive?: boolean;
   rotationDeg?: number;
+  sensorPhotoMode?: boolean;
 }
 
 function renderStarChartPass(
@@ -1159,6 +1173,7 @@ function renderStarChartPass(
     passOptions?.rotationDeg ?? 0
   );
   const isInnerClip = Boolean(passOptions?.isInnerClip);
+  const isSensorPhoto = Boolean(passOptions?.sensorPhotoMode);
 
   const pxPerDeg = getPixelsPerDeg(view.fsz, width, height);
   const magLimit = getLimitingMagnitude(view.fsz, layers.magOffset);
@@ -1233,6 +1248,8 @@ function renderStarChartPass(
     drawNebulaContours(ctx, catalogs.nebulaContours, proj, palette, observer, lstDeg);
   }
 
+  const gridLineWidth = Math.max(0.2, Math.min(2.5, layers.gridLineWidth ?? 0.8));
+
   // 3. Equatorial RA / Dec Grid
   if (layers.showGridEq) {
     const raStepDeg =
@@ -1242,14 +1259,14 @@ function renderStarChartPass(
 
     ctx.save();
     ctx.strokeStyle = palette.gridEq;
-    ctx.lineWidth = 0.85;
+    ctx.lineWidth = gridLineWidth;
     ctx.fillStyle = palette.gridEqText;
     ctx.font = '10px "IBM Plex Mono", monospace';
 
     for (let d = -75; d <= 75; d += decStepDeg) {
       if (d === 0) {
         ctx.save();
-        ctx.lineWidth = 1.25;
+        ctx.lineWidth = gridLineWidth * 1.45;
       }
       const pts: { raDeg: number; decDeg: number }[] = [];
       for (let r = 0; r <= 360; r += 5) {
@@ -1310,7 +1327,7 @@ function renderStarChartPass(
 
     ctx.save();
     ctx.strokeStyle = palette.gridAltAz;
-    ctx.lineWidth = 0.85;
+    ctx.lineWidth = gridLineWidth;
     ctx.fillStyle = palette.gridAltAzText;
     ctx.font = '10px "IBM Plex Mono", monospace';
 
@@ -1458,6 +1475,7 @@ function renderStarChartPass(
     text: string;
     color: string;
     font: string;
+    alpha?: number;
   };
   const labelCandidates: LabelCandidate[] = [];
 
@@ -1662,17 +1680,30 @@ function renderStarChartPass(
       candidate: LabelCandidate;
     }[] = [];
 
+    const dsoOpacity = Math.max(0.05, Math.min(1, layers.dsoOpacity ?? 1));
+
     for (const entry of pendingDsos) {
       if (!allowedDsoSet.has(entry)) continue;
       const { dso, pt, belowMinAlt, isSelected, isOnScreen, isKnownForced, labelPrefix } = entry;
 
       visibleDsoCount++;
-      const hideSelectedOverlay = isSelected && !optics.showSelectionMark;
-      let symR = 10;
+      const hideSelectedOverlay = !isSensorPhoto && isSelected && !optics.showSelectionMark;
+      let symR = isSensorPhoto ? 6 : 10;
 
-      if (!hideSelectedOverlay) {
+      if (!hideSelectedOverlay && !isSensorPhoto) {
         const symColor = palette.dsoColor[dso.type] ?? palette.dsoLabel;
-        symR = drawDsoSymbol(ctx, dso, pt.x, pt.y, pxPerDeg, symColor, palette, proj, belowMinAlt);
+        symR = drawDsoSymbol(
+          ctx,
+          dso,
+          pt.x,
+          pt.y,
+          pxPerDeg,
+          symColor,
+          palette,
+          proj,
+          belowMinAlt,
+          dsoOpacity
+        );
         if (dso.mag < 11.5 && dso.type !== 'DARK' && !belowMinAlt) {
           placer.registerObstacle(pt.x, pt.y, symR);
         }
@@ -1721,6 +1752,7 @@ function renderStarChartPass(
               isSelected || isKnownForced
                 ? '600 10.5px "IBM Plex Mono", monospace'
                 : '500 10.5px "IBM Plex Mono", monospace',
+            alpha: isSensorPhoto ? 1 : dsoOpacity,
           },
         });
       }
@@ -2056,38 +2088,40 @@ function renderStarChartPass(
   const visibleStarCount = drawableStars.length;
   const drawHalo = !hipsVisible || hips.opacity < 0.45;
 
-  ctx.save();
-  ctx.lineWidth = 1.15;
-  ctx.strokeStyle = palette.starHaloStroke;
+  if (!(isSensorPhoto && hipsVisible)) {
+    ctx.save();
+    ctx.lineWidth = 1.15;
+    ctx.strokeStyle = palette.starHaloStroke;
 
-  for (let i = 0; i < drawableStars.length; i++) {
-    const { star, x, y, radius, isBright, dimmed } = drawableStars[i];
-    const color = bvToStarColor(star.bv, theme, layers.showStarColors);
-    ctx.globalAlpha = dimmed ? 0.16 : 1.0;
+    for (let i = 0; i < drawableStars.length; i++) {
+      const { star, x, y, radius, isBright, dimmed } = drawableStars[i];
+      const color = bvToStarColor(star.bv, theme, layers.showStarColors);
+      ctx.globalAlpha = dimmed ? 0.16 : 1.0;
 
-    if (theme === 'dark' && isBright && star.mag < 2.1 && !hipsVisible && !dimmed) {
-      const glowR = radius * 2.6;
-      const grad = ctx.createRadialGradient(x, y, radius * 0.35, x, y, glowR);
-      grad.addColorStop(0, color);
-      grad.addColorStop(1, 'rgba(0,0,0,0)');
-      ctx.fillStyle = grad;
+      if (theme === 'dark' && isBright && star.mag < 2.1 && !hipsVisible && !dimmed) {
+        const glowR = radius * 2.6;
+        const grad = ctx.createRadialGradient(x, y, radius * 0.35, x, y, glowR);
+        grad.addColorStop(0, color);
+        grad.addColorStop(1, 'rgba(0,0,0,0)');
+        ctx.fillStyle = grad;
+        ctx.beginPath();
+        ctx.arc(x, y, glowR, 0, Math.PI * 2);
+        ctx.fill();
+      }
+
+      if (drawHalo && radius >= 1.2 && !dimmed) {
+        ctx.beginPath();
+        ctx.arc(x, y, radius + 0.55, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+
+      ctx.fillStyle = color;
       ctx.beginPath();
-      ctx.arc(x, y, glowR, 0, Math.PI * 2);
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.fill();
     }
-
-    if (drawHalo && radius >= 1.2 && !dimmed) {
-      ctx.beginPath();
-      ctx.arc(x, y, radius + 0.55, 0, Math.PI * 2);
-      ctx.stroke();
-    }
-
-    ctx.fillStyle = color;
-    ctx.beginPath();
-    ctx.arc(x, y, radius, 0, Math.PI * 2);
-    ctx.fill();
+    ctx.restore();
   }
-  ctx.restore();
 
   // 8f. WDS Double & Multiple Star Markers (─●─ for Double, ─(●)─ for Multiple) + Resolved Companions
   if (
@@ -2171,70 +2205,73 @@ function renderStarChartPass(
       const starR = getStarRadiusPogson(sys.mag, magLimit, view.fsz);
       const barHalf = Math.max(5.5, starR + 3.8);
       const ringR = Math.max(4.4, starR + 2.4);
-      const strokeCol = sys.isMultiple ? palette.multipleStarStroke : palette.doubleStarStroke;
 
-      ctx.globalAlpha = dimmed ? 0.2 : isSelected ? 1.0 : 0.88;
-      ctx.strokeStyle = strokeCol;
-      ctx.lineWidth = isSelected ? 1.55 : sys.isMultiple ? 1.2 : 1.1;
+      if (!isSensorPhoto) {
+        const strokeCol = sys.isMultiple ? palette.multipleStarStroke : palette.doubleStarStroke;
 
-      // Classic horizontal bisecting bar (─●─) for Double & Multiple Stars
-      ctx.beginPath();
-      ctx.moveTo(pt.x - barHalf, pt.y);
-      ctx.lineTo(pt.x + barHalf, pt.y);
-      ctx.stroke();
+        ctx.globalAlpha = dimmed ? 0.2 : isSelected ? 1.0 : 0.88;
+        ctx.strokeStyle = strokeCol;
+        ctx.lineWidth = isSelected ? 1.55 : sys.isMultiple ? 1.2 : 1.1;
 
-      // Concentric companion ring (─(●)─) distinguishing Multiple Star systems (3+ components)
-      if (sys.isMultiple) {
+        // Classic horizontal bisecting bar (─●─) for Double & Multiple Stars
         ctx.beginPath();
-        ctx.arc(pt.x, pt.y, ringR, 0, Math.PI * 2);
+        ctx.moveTo(pt.x - barHalf, pt.y);
+        ctx.lineTo(pt.x + barHalf, pt.y);
         ctx.stroke();
-      }
 
-      // Render resolved companion star(s) at real WDS PA & angular separation when zoomed in
-      const pairList =
-        sys.pairs && sys.pairs.length > 0
-          ? sys.pairs
-          : [{ comp: 'AB', sep: sys.sep, pa: sys.pa, mag1: sys.mag1, mag2: sys.mag2, disc: sys.disc }];
-      const cosDecSafe = Math.max(0.05, Math.cos(sys.dec * DEG2RAD));
-
-      for (let pIdx = 0; pIdx < pairList.length; pIdx++) {
-        const pair = pairList[pIdx];
-        // Only offset pairs anchored on primary 'A' (or single primary pair)
-        if (pIdx > 0 && !pair.comp.startsWith('A')) continue;
-        const sepPx = (pair.sep / 3600) * pxPerDeg;
-        if (sepPx < 4.2 || sepPx > Math.max(width, height) * 0.9) continue;
-
-        const sepDeg = pair.sep / 3600;
-        const paRad = pair.pa * DEG2RAD;
-        const compDec = Math.max(-89.999, Math.min(89.999, sys.dec + sepDeg * Math.cos(paRad)));
-        const compRa = ((sys.ra + (sepDeg * Math.sin(paRad)) / cosDecSafe) % 360 + 360) % 360;
-        const compPt = projectStereographic(compRa, compDec, proj, 24);
-        if (!compPt) continue;
-
-        const compR = Math.max(1.35, getStarRadiusPogson(pair.mag2, Math.max(magLimit, pair.mag2 + 1.2), view.fsz));
-        if (isSelected || hoveredId === sys.id || sepPx >= 9) {
-          ctx.save();
-          ctx.strokeStyle = strokeCol;
-          ctx.globalAlpha = dimmed ? 0.15 : isSelected ? 0.65 : 0.35;
-          ctx.lineWidth = 0.85;
-          ctx.setLineDash([2, 2]);
+        // Concentric companion ring (─(●)─) distinguishing Multiple Star systems (3+ components)
+        if (sys.isMultiple) {
           ctx.beginPath();
-          ctx.moveTo(pt.x, pt.y);
-          ctx.lineTo(compPt.x, compPt.y);
+          ctx.arc(pt.x, pt.y, ringR, 0, Math.PI * 2);
+          ctx.stroke();
+        }
+
+        // Render resolved companion star(s) at real WDS PA & angular separation when zoomed in
+        const pairList =
+          sys.pairs && sys.pairs.length > 0
+            ? sys.pairs
+            : [{ comp: 'AB', sep: sys.sep, pa: sys.pa, mag1: sys.mag1, mag2: sys.mag2, disc: sys.disc }];
+        const cosDecSafe = Math.max(0.05, Math.cos(sys.dec * DEG2RAD));
+
+        for (let pIdx = 0; pIdx < pairList.length; pIdx++) {
+          const pair = pairList[pIdx];
+          // Only offset pairs anchored on primary 'A' (or single primary pair)
+          if (pIdx > 0 && !pair.comp.startsWith('A')) continue;
+          const sepPx = (pair.sep / 3600) * pxPerDeg;
+          if (sepPx < 4.2 || sepPx > Math.max(width, height) * 0.9) continue;
+
+          const sepDeg = pair.sep / 3600;
+          const paRad = pair.pa * DEG2RAD;
+          const compDec = Math.max(-89.999, Math.min(89.999, sys.dec + sepDeg * Math.cos(paRad)));
+          const compRa = ((sys.ra + (sepDeg * Math.sin(paRad)) / cosDecSafe) % 360 + 360) % 360;
+          const compPt = projectStereographic(compRa, compDec, proj, 24);
+          if (!compPt) continue;
+
+          const compR = Math.max(1.35, getStarRadiusPogson(pair.mag2, Math.max(magLimit, pair.mag2 + 1.2), view.fsz));
+          if (isSelected || hoveredId === sys.id || sepPx >= 9) {
+            ctx.save();
+            ctx.strokeStyle = strokeCol;
+            ctx.globalAlpha = dimmed ? 0.15 : isSelected ? 0.65 : 0.35;
+            ctx.lineWidth = 0.85;
+            ctx.setLineDash([2, 2]);
+            ctx.beginPath();
+            ctx.moveTo(pt.x, pt.y);
+            ctx.lineTo(compPt.x, compPt.y);
+            ctx.stroke();
+            ctx.restore();
+          }
+
+          ctx.save();
+          ctx.globalAlpha = dimmed ? 0.2 : 0.96;
+          ctx.fillStyle = theme === 'white' ? '#1E293B' : theme === 'red' ? '#FCA5A5' : '#F8FAFC';
+          ctx.strokeStyle = strokeCol;
+          ctx.lineWidth = 0.9;
+          ctx.beginPath();
+          ctx.arc(compPt.x, compPt.y, compR, 0, Math.PI * 2);
+          ctx.fill();
           ctx.stroke();
           ctx.restore();
         }
-
-        ctx.save();
-        ctx.globalAlpha = dimmed ? 0.2 : 0.96;
-        ctx.fillStyle = theme === 'white' ? '#1E293B' : theme === 'red' ? '#FCA5A5' : '#F8FAFC';
-        ctx.strokeStyle = strokeCol;
-        ctx.lineWidth = 0.9;
-        ctx.beginPath();
-        ctx.arc(compPt.x, compPt.y, compR, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.stroke();
-        ctx.restore();
       }
 
       const hitR = Math.max(8, barHalf + 2);
@@ -2249,7 +2286,10 @@ function renderStarChartPass(
       });
 
       if (entry.isOnScreen && !dimmed) {
-        renderedOnScreenDoubles.push({ entry, markerR: Math.max(barHalf, ringR) });
+        renderedOnScreenDoubles.push({
+          entry,
+          markerR: isSensorPhoto ? 6 : Math.max(barHalf, ringR),
+        });
       }
     }
     ctx.restore();
@@ -3607,6 +3647,7 @@ function renderStarChartPass(
         : 'rgba(7, 12, 22, 0.88)';
     const jumpThreshold = Math.max(width, height) * 0.45;
     const challengeAlpha = Math.max(0.05, Math.min(1.0, layers.challengeOpacity ?? 1.0));
+    const challengeLineW = Math.max(0.3, Math.min(3.0, layers.challengeLineWidth ?? 0.8));
 
     ctx.save();
     for (const track of activeChallenges) {
@@ -3629,7 +3670,7 @@ function renderStarChartPass(
               ? 'rgba(248, 113, 113, 0.35)'
               : poly.color || 'rgba(147, 197, 253, 0.45)';
           ctx.strokeStyle = polyStroke;
-          ctx.lineWidth = 1.4;
+          ctx.lineWidth = Math.max(0.35, challengeLineW * 0.85);
           ctx.globalAlpha = (theme === 'white' ? 0.85 : 0.48) * challengeAlpha;
           ctx.setLineDash([7, 5]);
 
@@ -3694,17 +3735,17 @@ function renderStarChartPass(
           ctx.lineCap = 'round';
           ctx.globalAlpha = challengeAlpha;
           ctx.strokeStyle = goldGlow;
-          ctx.lineWidth = 6.2;
+          ctx.lineWidth = Math.max(1.2, challengeLineW * 2.5);
           drawProjectedCurve(ctx, arcPts, proj, false);
           ctx.strokeStyle = goldSolid;
-          ctx.lineWidth = 2.35;
+          ctx.lineWidth = Math.max(0.45, challengeLineW * 1.25);
           ctx.globalAlpha = 0.96 * challengeAlpha;
           drawProjectedCurve(ctx, arcPts, proj, false);
           ctx.restore();
         } else {
           ctx.save();
           ctx.strokeStyle = baseLineColor;
-          ctx.lineWidth = 1.55;
+          ctx.lineWidth = challengeLineW;
           ctx.globalAlpha = 0.78 * challengeAlpha;
           ctx.setLineDash([6, 4]);
           drawProjectedCurve(ctx, arcPts, proj, false);
@@ -3732,13 +3773,13 @@ function renderStarChartPass(
           const segLen = Math.hypot(dx, dy);
           if (segLen > 4 && segLen < jumpThreshold) {
             const ang = Math.atan2(dy, dx);
-            const sz = completed ? 5.5 : 4.2;
+            const sz = Math.max(3.0, challengeLineW * (completed ? 3.8 : 3.2));
             ctx.save();
             ctx.translate(pMid.x, pMid.y);
             ctx.rotate(ang);
             ctx.strokeStyle = completed ? goldSolid : baseLineColor;
             ctx.globalAlpha = (completed ? 0.95 : 0.72) * challengeAlpha;
-            ctx.lineWidth = completed ? 1.8 : 1.25;
+            ctx.lineWidth = Math.max(0.5, challengeLineW * (completed ? 1.15 : 0.9));
             ctx.beginPath();
             ctx.moveTo(-sz, -sz * 0.65);
             ctx.lineTo(0, 0);
@@ -3977,6 +4018,7 @@ function renderStarChartPass(
       height
     );
     if (pos) {
+      ctx.globalAlpha = cand.alpha ?? 1;
       if (hipsVisible) ctx.strokeText(cand.text, pos.x, pos.y);
       ctx.fillStyle = cand.color;
       ctx.fillText(cand.text, pos.x, pos.y);
@@ -4082,7 +4124,8 @@ export function renderStarChart(
   solarTrails?: Record<string, number>,
   sessionPlan?: ObservingSessionEntry[],
   challenges?: ChallengeTrack[],
-  overrideRotationDeg?: number
+  overrideRotationDeg?: number,
+  sensorPhotoMode?: boolean
 ): RenderResult {
   const rawFlipActive = view.flipH || view.flipV;
   const normEpRot = optics.showEyepiece
@@ -4096,6 +4139,7 @@ export function renderStarChart(
   const diagHalf = Math.hypot(width / 2, height / 2);
   const eyepieceSplitActive =
     overrideRotationDeg === undefined &&
+    !sensorPhotoMode &&
     optics.showEyepiece &&
     epTransformActive &&
     epRadiusPx >= 3 &&
@@ -4126,10 +4170,11 @@ export function renderStarChart(
       sessionIds,
       solarTrails,
       {
-        skipReticles: false,
+        skipReticles: Boolean(sensorPhotoMode),
         isInnerClip: false,
         eyepieceFlipActive: optics.showEyepiece && (fullFlipActive || fullRotDeg > 0),
         rotationDeg: fullRotDeg,
+        sensorPhotoMode: Boolean(sensorPhotoMode),
       },
       sessionPlan,
       challenges

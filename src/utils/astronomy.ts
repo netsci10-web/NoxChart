@@ -497,6 +497,44 @@ export function horizontalToEquatorial(
   };
 }
 
+/**
+ * Compute the clockwise screen-space angle (0..360°) of a ground/horizon-referenced
+ * photographic sensor frame (0° = local horizon level / Zenith up).
+ * In Horizontal mode the frame stays level with the ground while the sky rotates;
+ * in Equatorial mode the frame rotates smoothly over time with the parallactic angle.
+ */
+export function getHorizonSensorScreenAngleDeg(
+  proj: ProjectionParams,
+  sensorRotationDeg = 0
+): { screenDeg: number; zenithScreenDeg: number } {
+  const cx = proj.width / 2;
+  const cy = proj.height / 2;
+  const deltaAlt = proj.alt0Deg > 89.5 ? -0.1 : 0.1;
+  const eqZenith = horizontalToEquatorial(
+    proj.alt0Deg + deltaAlt,
+    proj.az0Deg,
+    proj.lstDeg,
+    proj.latDeg
+  );
+  const pZenith = projectStereographicRaw(eqZenith.raDeg, eqZenith.decDeg, proj);
+  let zenithScreenDeg = proj.flipV ? 180 : 0;
+  if (pZenith) {
+    const sign = deltaAlt > 0 ? 1 : -1;
+    const dxZ = (pZenith.x - cx) * sign;
+    const dyZ = (pZenith.y - cy) * sign;
+    if (Math.hypot(dxZ, dyZ) > 1e-6) {
+      zenithScreenDeg = Math.atan2(dxZ, -dyZ) * RAD2DEG;
+    }
+  }
+  const normUserRot = ((sensorRotationDeg % 360) + 360) % 360;
+  const handedness = proj.flipH !== proj.flipV ? -1 : 1;
+  const screenDeg = (((zenithScreenDeg + handedness * normUserRot) % 360) + 360) % 360;
+  return {
+    screenDeg,
+    zenithScreenDeg: ((zenithScreenDeg % 360) + 360) % 360,
+  };
+}
+
 export interface AltitudePoint {
   offsetHours: number;
   label: string;

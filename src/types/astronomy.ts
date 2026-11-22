@@ -103,6 +103,7 @@ export interface DoubleStarSystem {
 export interface LayerSettings {
   showGridEq: boolean;
   showGridAltAz: boolean;
+  gridLineWidth: number; // 0.2..2.5 좌표 그리드 선 굵기 (px)
   showHorizon: boolean;
   showTerrain: boolean;
   showEcliptic: boolean;
@@ -131,6 +132,7 @@ export interface LayerSettings {
   dsoSymbolDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to render)
   showDsoLabels: boolean;
   dsoLabelDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to label)
+  dsoOpacity: number; // 0.05..1.0 심우주 천체 심볼 · 라벨 진하기
   showStarLabels: boolean;
   showProperStarNames: boolean; // 알려진 항성 고유 이름 표시 (항성 이름 라벨 OFF 시에도 표시)
   starLabelDensityPct: number; // 0..100 (% of currently visible on-screen stars to label)
@@ -142,6 +144,7 @@ export interface LayerSettings {
   catalogFilter: 'all' | 'messier' | 'ngc' | 'ic' | 'barnard';
   highlightSessionPlan: boolean; // 관측 목록 강조 모드
   challengeOpacity: number; // 0.05..1.0 성도 위 챌린지 노선·마커 투명도
+  challengeLineWidth: number; // 0.3..3.0 성도 위 챌린지 노선 선 굵기 (px)
 }
 
 export interface MilkyWayLayer {
@@ -224,6 +227,23 @@ export interface ObservingSessionEntry {
   addedAt: number;
   observed: boolean;
   notes: string;
+}
+
+export interface ObservingListGroup {
+  id: string;
+  name: string;
+  createdAt: number;
+  entries: ObservingSessionEntry[];
+}
+
+export interface ObservingListsState {
+  lists: ObservingListGroup[];
+  tonightListId: string | null;
+  tonightEntries: ObservingSessionEntry[];
+  tonightLinkedOverrides?: Record<
+    string,
+    { observed?: boolean; notes?: string; excluded?: boolean }
+  >;
 }
 
 export interface StarHopGuide {

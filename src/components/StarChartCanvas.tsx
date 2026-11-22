@@ -9,10 +9,13 @@ import {
   Plus,
   Undo2,
 } from 'lucide-react';
+import { CALDWELL_CATALOG } from '../data/caldwell';
 import { CatalogSnapshot, GAIA_LIVE_MAX_FSZ } from '../data/catalogLoader';
+import { DSO_CATALOG } from '../data/dso';
 import {
   ChallengeTrack,
   ChartViewState,
+  DeepSkyObject,
   HipsSettings,
   LayerSettings,
   ObserverConfig,
@@ -23,6 +26,7 @@ import {
   ThemeMode,
 } from '../types/astronomy';
 import {
+  angularDistanceDeg,
   createProjectionParams,
   DEG2RAD,
   equatorialToHorizontal,
@@ -30,6 +34,7 @@ import {
   formatRA,
   getCompassDirection,
   getDsoTypeLabel,
+  getHorizonSensorScreenAngleDeg,
   getLSTDeg,
   getStereographicRadiusPx,
   RAD2DEG,
@@ -37,12 +42,22 @@ import {
 } from '../utils/astronomy';
 import { renderStarChart, RenderResult } from '../utils/chartRenderer';
 import { getPlanetRenderer } from '../utils/planetRenderer';
+import { getSolarSystemBodies } from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
 import { HipsBackground, HipsBackgroundHandle } from './HipsBackground';
 
 export interface StarChartCanvasHandle {
   exportPng: () => void;
   exportSensorFovPng: (equipmentName?: string) => void;
+  smoothCenterOn: (
+    targetRaDeg: number,
+    targetDecDeg: number,
+    options?: {
+      targetFsz?: number;
+      durationMs?: number;
+      onComplete?: () => void;
+    }
+  ) => void;
 }
 
 interface StarChartCanvasProps {
@@ -65,7 +80,7 @@ interface StarChartCanvasProps {
   challengePickAllowEmpty?: boolean;
   challengeDraftCount?: number;
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
-  onSelect: (item: SelectedItem | null) => void;
+  onSelect: (item: SelectedItem | null, options?: { hideSelectionMark?: boolean }) => void;
   onUnlockCenter?: () => void;
   onChallengeChartPick?: (pick: {
     item: SelectedItem | null;
@@ -76,6 +91,248 @@ interface StarChartCanvasProps {
 }
 
 const MIN_FSZ_DEG = 0.008;
+
+function formatExportDateTime(timestampMs: number): string {
+  const d = new Date(timestampMs);
+  const pad = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function formatDsoFooterName(dso: DeepSkyObject, caldwellId?: string): string {
+  const primaryCode =
+    caldwellId && !/^M\d+$/i.test(dso.id) ? `${caldwellId} (${dso.id})` : dso.id;
+  const common = dso.koName || dso.name;
+  return common ? `${primaryCode} ${common}` : primaryCode;
+}
+
+function formatSelectedFooterObject(
+  selected: SelectedItem
+): { label: string; conAbbr?: string } {
+  if (selected.kind === 'dso') {
+    const dso = selected.data;
+    const calMatch = CALDWELL_CATALOG.find(
+      (c) =>
+        c.id.replace(/\s+/g, '').toUpperCase() === dso.id.replace(/\s+/g, '').toUpperCase() ||
+        (dso.altId &&
+          c.id.replace(/\s+/g, '').toUpperCase() === dso.altId.replace(/\s+/g, '').toUpperCase())
+    );
+    return {
+      label: formatDsoFooterName(dso, calMatch?.caldwellId),
+      conAbbr: dso.con,
+    };
+  }
+  if (selected.kind === 'planet') {
+    const b = selected.data;
+    return {
+      label: b.name && b.name !== b.koName ? `${b.koName} (${b.name})` : b.koName,
+    };
+  }
+  if (selected.kind === 'double') {
+    const ds = selected.data;
+    const common = ds.koName || ds.name || ds.bayer;
+    return {
+      label: common ? `${common} (${ds.disc})` : ds.disc,
+      conAbbr: ds.con,
+    };
+  }
+  const st = selected.data;
+  const common = st.koName || st.name || st.bayer || st.id;
+  return {
+    label:
+      st.koName && st.bayer && st.koName !== st.bayer ? `${st.koName} (${st.bayer})` : common,
+    conAbbr: st.con,
+  };
+}
+
+function findCenterNamedObject(
+  centerRaDeg: number,
+  centerDecDeg: number,
+  sensorMinDeg: number,
+  observer: ObserverConfig,
+  catalogs: CatalogSnapshot,
+  selected: SelectedItem | null
+): { label: string; conAbbr?: string } | null {
+  const baseThresholdDeg = Math.min(0.45, Math.max(0.05, sensorMinDeg * 0.14));
+
+  // 1. Prefer the currently selected object if it is centered in the sensor frame
+  if (selected) {
+    const dist = angularDistanceDeg(
+      centerRaDeg,
+      centerDecDeg,
+      selected.data.ra,
+      selected.data.dec
+    );
+    const dsoRadiusDeg =
+      selected.kind === 'dso'
+        ? Math.min(2.0, ((selected.data.majAx || 0) / 60) * 0.55)
+        : 0;
+    if (dist <= Math.max(baseThresholdDeg, dsoRadiusDeg)) {
+      return formatSelectedFooterObject(selected);
+    }
+  }
+
+  // 2. Solar System objects (Sun, Moon, Planets, Dwarf Planets, Asteroids, Planetary Moons)
+  const solarBodies = getSolarSystemBodies(observer.timestampMs);
+  let bestSolar: { label: string; dist: number } | null = null;
+  for (const body of solarBodies) {
+    const dist = angularDistanceDeg(centerRaDeg, centerDecDeg, body.ra, body.dec);
+    const bodyRadiusDeg =
+      body.id === 'Sun' || body.id === 'Moon' ? 0.35 : baseThresholdDeg;
+    if (dist <= Math.max(baseThresholdDeg, bodyRadiusDeg)) {
+      if (!bestSolar || dist < bestSolar.dist) {
+        bestSolar = {
+          label:
+            body.name && body.name !== body.koName
+              ? `${body.koName} (${body.name})`
+              : body.koName,
+          dist,
+        };
+      }
+    }
+  }
+  if (bestSolar) {
+    return { label: bestSolar.label };
+  }
+
+  // 3. Deep Sky Objects (Messier, Caldwell, NGC, IC, Dark Nebulae)
+  const caldwellByKey = new Map<string, string>();
+  for (const c of CALDWELL_CATALOG) {
+    caldwellByKey.set(c.id.replace(/\s+/g, '').toUpperCase(), c.caldwellId);
+  }
+
+  const bestDsoState: { best: { label: string; conAbbr?: string; score: number } | null } = {
+    best: null,
+  };
+  const evalDso = (dso: DeepSkyObject, explicitCaldwellId?: string) => {
+    const dist = angularDistanceDeg(centerRaDeg, centerDecDeg, dso.ra, dso.dec);
+    const radiusDeg = Math.min(2.0, ((dso.majAx || 0) / 60) * 0.55);
+    const tol = Math.max(baseThresholdDeg, radiusDeg);
+    if (dist > tol) return;
+
+    const isMessier = /^M\d+$/i.test(dso.id);
+    const calId =
+      explicitCaldwellId ??
+      caldwellByKey.get(dso.id.replace(/\s+/g, '').toUpperCase()) ??
+      (dso.altId ? caldwellByKey.get(dso.altId.replace(/\s+/g, '').toUpperCase()) : undefined);
+    const tierPenalty = isMessier ? 0 : calId ? 0.04 : dso.type !== 'DARK' ? 0.09 : 0.14;
+    const normDist = dist / Math.max(0.02, tol);
+    const magPenalty = Math.max(0, Math.min(18, dso.mag || 12)) * 0.015;
+    const score = normDist + tierPenalty + magPenalty;
+    if (!bestDsoState.best || score < bestDsoState.best.score) {
+      bestDsoState.best = {
+        label: formatDsoFooterName(dso, calId),
+        conAbbr: dso.con,
+        score,
+      };
+    }
+  };
+
+  for (const dso of DSO_CATALOG) evalDso(dso);
+  for (const c of CALDWELL_CATALOG) evalDso(c, c.caldwellId);
+  for (const dso of catalogs.dsosBright) evalDso(dso);
+  for (const dso of catalogs.dsosDeep) evalDso(dso);
+  for (const dso of catalogs.darkNebulae) evalDso(dso);
+  if (bestDsoState.best) {
+    return { label: bestDsoState.best.label, conAbbr: bestDsoState.best.conAbbr };
+  }
+
+  // 4. WDS Double & Multiple Stars
+  const tightStarTol = Math.min(0.25, Math.max(0.035, sensorMinDeg * 0.1));
+  let bestDouble: { label: string; conAbbr?: string; score: number } | null = null;
+  for (const ds of catalogs.doubleStars) {
+    const dist = angularDistanceDeg(centerRaDeg, centerDecDeg, ds.ra, ds.dec);
+    if (dist > tightStarTol) continue;
+    const score = dist * 4 + (ds.mag || 8) * 0.05;
+    if (!bestDouble || score < bestDouble.score) {
+      const common = ds.koName || ds.name || ds.bayer;
+      bestDouble = {
+        label: common ? `${common} (${ds.disc})` : ds.disc,
+        conAbbr: ds.con,
+        score,
+      };
+    }
+  }
+  if (bestDouble) {
+    return { label: bestDouble.label, conAbbr: bestDouble.conAbbr };
+  }
+
+  // 5. Named / Bayer Bright Stars
+  let bestStar: { label: string; conAbbr?: string; score: number } | null = null;
+  for (const st of catalogs.brightStars) {
+    if (!st.koName && !st.name && !st.bayer) continue;
+    const dist = angularDistanceDeg(centerRaDeg, centerDecDeg, st.ra, st.dec);
+    if (dist > tightStarTol) continue;
+    const score = dist * 4 + (st.mag || 6) * 0.05;
+    if (!bestStar || score < bestStar.score) {
+      const primary = st.koName || st.name || st.bayer || st.id;
+      bestStar = {
+        label:
+          st.koName && st.bayer && st.koName !== st.bayer
+            ? `${st.koName} (${st.bayer})`
+            : primary,
+        conAbbr: st.con,
+        score,
+      };
+    }
+  }
+  if (bestStar) {
+    return { label: bestStar.label, conAbbr: bestStar.conAbbr };
+  }
+
+  return null;
+}
+
+function findConstellationLabel(
+  centerRaDeg: number,
+  centerDecDeg: number,
+  preferredAbbr: string | undefined,
+  catalogs: CatalogSnapshot
+): string {
+  const byAbbr = new Map(
+    catalogs.constellations.map((c) => [c.abbr.toUpperCase(), c] as const)
+  );
+
+  if (preferredAbbr) {
+    const matched = byAbbr.get(preferredAbbr.toUpperCase());
+    if (matched) return `${matched.koName} (${matched.abbr})`;
+  }
+
+  // Determine exact IAU constellation from nearest cataloged bright star or DSO carrying `.con`
+  let nearestCon: string | null = null;
+  let nearestDist = 15;
+  for (const st of catalogs.brightStars) {
+    if (!st.con) continue;
+    const d = angularDistanceDeg(centerRaDeg, centerDecDeg, st.ra, st.dec);
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearestCon = st.con;
+    }
+  }
+  for (const dso of catalogs.dsosBright) {
+    if (!dso.con) continue;
+    const d = angularDistanceDeg(centerRaDeg, centerDecDeg, dso.ra, dso.dec);
+    if (d < nearestDist) {
+      nearestDist = d;
+      nearestCon = dso.con;
+    }
+  }
+  if (nearestCon) {
+    const matched = byAbbr.get(nearestCon.toUpperCase());
+    if (matched) return `${matched.koName} (${matched.abbr})`;
+  }
+
+  // Fallback to nearest constellation center
+  let fallback = catalogs.constellations[0];
+  let fallbackDist = Infinity;
+  for (const c of catalogs.constellations) {
+    const d = angularDistanceDeg(centerRaDeg, centerDecDeg, c.ra, c.dec);
+    if (d < fallbackDist) {
+      fallbackDist = d;
+      fallback = c;
+    }
+  }
+  return fallback ? `${fallback.koName} (${fallback.abbr})` : '';
+}
 
 export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvasProps>(
   function StarChartCanvas(
@@ -125,6 +382,14 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       startView: ChartViewState;
       startRotationDeg: number;
     } | null>(null);
+    const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+    const pinchRef = useRef<{
+      active: boolean;
+      initialDist: number;
+      initialMidX: number;
+      initialMidY: number;
+      initialView: ChartViewState;
+    } | null>(null);
 
     const cancelCenterAnim = useCallback(() => {
       if (centerAnimRef.current !== null) {
@@ -156,7 +421,114 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
     const ui = getUiTheme(theme);
 
+    const smoothCenterOn = useCallback(
+      (
+        targetRaDeg: number,
+        targetDecDeg: number,
+        options?: {
+          targetFsz?: number;
+          durationMs?: number;
+          onComplete?: () => void;
+        }
+      ) => {
+        cancelCenterAnim();
+        const startRaRad = view.ra * 15 * DEG2RAD;
+        const startDecRad = view.dec * DEG2RAD;
+        const endRaRad = targetRaDeg * DEG2RAD;
+        const endDecRad = targetDecDeg * DEG2RAD;
+        const startFsz = view.fsz;
+        const endFsz =
+          options?.targetFsz !== undefined
+            ? Math.max(MIN_FSZ_DEG, Math.min(180, options.targetFsz))
+            : startFsz;
+        const hasFszChange = Math.abs(endFsz - startFsz) > 1e-4;
+
+        const v0: [number, number, number] = [
+          Math.cos(startDecRad) * Math.cos(startRaRad),
+          Math.cos(startDecRad) * Math.sin(startRaRad),
+          Math.sin(startDecRad),
+        ];
+        const v1: [number, number, number] = [
+          Math.cos(endDecRad) * Math.cos(endRaRad),
+          Math.cos(endDecRad) * Math.sin(endRaRad),
+          Math.sin(endDecRad),
+        ];
+
+        const dot = Math.max(-1, Math.min(1, v0[0] * v1[0] + v0[1] * v1[1] + v0[2] * v1[2]));
+        const omega = Math.acos(dot);
+        if (omega < 1e-7 && !hasFszChange) {
+          onChangeView((prev) => ({
+            ...prev,
+            ra: ((targetRaDeg / 15) % 24 + 24) % 24,
+            dec: Math.max(-89.999, Math.min(89.999, targetDecDeg)),
+            fsz: endFsz,
+          }));
+          options?.onComplete?.();
+          return;
+        }
+
+        const angularDeg = omega * RAD2DEG;
+        const autoDuration = Math.round(
+          Math.min(780, Math.max(420, 380 + angularDeg * 4.5 + (hasFszChange ? 160 : 0)))
+        );
+        const durationMs = options?.durationMs ?? autoDuration;
+        const t0 = performance.now();
+        const sinOmega = Math.sin(omega);
+        const logStartFsz = Math.log(Math.max(MIN_FSZ_DEG, startFsz));
+        const logEndFsz = Math.log(Math.max(MIN_FSZ_DEG, endFsz));
+
+        const step = (now: number) => {
+          const raw = Math.min(1, (now - t0) / durationMs);
+          // Smooth cubic ease-in-out when zooming + slewing, cubic ease-out for short pans
+          const eased = hasFszChange
+            ? raw < 0.5
+              ? 4 * raw * raw * raw
+              : 1 - Math.pow(-2 * raw + 2, 3) / 2
+            : 1 - Math.pow(1 - raw, 3);
+
+          let x: number;
+          let y: number;
+          let z: number;
+          if (sinOmega > 1e-4) {
+            const w0 = Math.sin((1 - eased) * omega) / sinOmega;
+            const w1 = Math.sin(eased * omega) / sinOmega;
+            x = w0 * v0[0] + w1 * v1[0];
+            y = w0 * v0[1] + w1 * v1[1];
+            z = w0 * v0[2] + w1 * v1[2];
+          } else {
+            x = v0[0] * (1 - eased) + v1[0] * eased;
+            y = v0[1] * (1 - eased) + v1[1] * eased;
+            z = v0[2] * (1 - eased) + v1[2] * eased;
+          }
+          const len = Math.hypot(x, y, z) || 1;
+          const raDeg = ((Math.atan2(y / len, x / len) * RAD2DEG) + 360) % 360;
+          const decDeg = Math.asin(Math.max(-1, Math.min(1, z / len))) * RAD2DEG;
+          const nextFsz = hasFszChange
+            ? Math.exp(logStartFsz * (1 - eased) + logEndFsz * eased)
+            : startFsz;
+
+          onChangeView((prev) => ({
+            ...prev,
+            ra: ((raDeg / 15) % 24 + 24) % 24,
+            dec: Math.max(-89.999, Math.min(89.999, decDeg)),
+            ...(hasFszChange ? { fsz: nextFsz } : {}),
+          }));
+
+          if (raw < 1) {
+            centerAnimRef.current = requestAnimationFrame(step);
+          } else {
+            centerAnimRef.current = null;
+            options?.onComplete?.();
+          }
+        };
+
+        centerAnimRef.current = requestAnimationFrame(step);
+      },
+      [view.ra, view.dec, view.fsz, onChangeView, cancelCenterAnim]
+    );
+
     useImperativeHandle(ref, () => ({
+      smoothCenterOn,
       exportPng: () => {
         const canvas = canvasRef.current;
         if (!canvas) return;
@@ -179,22 +551,23 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         const tanH = Math.tan((sensorH * DEG2RAD) / 4);
         const LONG_SIDE = 1800;
         let outW: number;
-        let outH: number;
+        let photoH: number;
         if (tanW >= tanH) {
           outW = LONG_SIDE;
-          outH = Math.max(64, Math.round(LONG_SIDE * (tanH / tanW)));
+          photoH = Math.max(64, Math.round(LONG_SIDE * (tanH / tanW)));
         } else {
-          outH = LONG_SIDE;
+          photoH = LONG_SIDE;
           outW = Math.max(64, Math.round(LONG_SIDE * (tanW / tanH)));
         }
+
+        const barH = Math.round(Math.max(82, Math.min(116, outW * 0.066)));
+        const totalH = photoH + barH;
 
         const rawSensorRot = optics.sensorRotationLocked
           ? 0
           : optics.sensorRotationDeg ?? 0;
         const normSensorRot = ((rawSensorRot % 360) + 360) % 360;
         const sensorRotActive = normSensorRot > 0.05 && normSensorRot < 359.95;
-        // Rotating the sensor frame clockwise by +theta aligns sky rotated by -theta upright
-        const exportRotDeg = sensorRotActive ? (360 - normSensorRot) % 360 : 0;
 
         const sensorView: ChartViewState = {
           ...view,
@@ -202,6 +575,24 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           flipH: optics.showEyepiece ? false : view.flipH,
           flipV: optics.showEyepiece ? false : view.flipV,
         };
+
+        // Sensor FOV frame is referenced to observer horizon/ground and rotates with time
+        const exportLstDeg = getLSTDeg(observer.timestampMs, observer.lon);
+        const baseExportProj = createProjectionParams(
+          sensorView,
+          outW,
+          photoH,
+          exportLstDeg,
+          observer.lat,
+          0
+        );
+        const { screenDeg: screenBoxDeg } = getHorizonSensorScreenAngleDeg(
+          baseExportProj,
+          normSensorRot
+        );
+        // Rotating the sensor frame clockwise by +screenBoxDeg aligns sky rotated by -screenBoxDeg upright
+        const exportRotDeg =
+          screenBoxDeg > 0.05 && screenBoxDeg < 359.95 ? (360 - screenBoxDeg) % 360 : 0;
 
         const cleanOptics: OpticsSettings = {
           ...optics,
@@ -211,74 +602,186 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           showEyepiece: false,
           showSensorBox: false,
           showSelectionMark: false,
+          showStarHop: false,
+        };
+
+        // Label-only photographic sky layer configuration: suppress grids, constellation lines, DSO symbols, contours, orbits, terrain, and highlights
+        const photoLayers: LayerSettings = {
+          ...layers,
+          showGridEq: false,
+          showGridAltAz: false,
+          showHorizon: false,
+          showTerrain: false,
+          showEcliptic: false,
+          showMilkyWay: false,
+          showNebulaContours: false,
+          showConstellationLines: false,
+          showConstellationBoundaries: false,
+          showConstellationNames: false,
+          showSolarSystemOrbits: false,
+          highlightSessionPlan: false,
+          showDso: true,
+          showDsoLabels: true,
+          showMessierCatalog: true,
+          showCaldwellCatalog: true,
+          showSolarSystemLabels: true,
         };
 
         const outCanvas = document.createElement('canvas');
         outCanvas.width = outW;
-        outCanvas.height = outH;
+        outCanvas.height = totalH;
         const outCtx = outCanvas.getContext('2d');
         if (!outCtx) return;
 
+        const emptySessionIds = new Set<string>();
         const hipsVisible = hips.enabled && hips.opacity > 0.02;
+
+        // Render sky photograph into exact (0, 0, outW, photoH) region
+        outCtx.save();
+        outCtx.beginPath();
+        outCtx.rect(0, 0, outW, photoH);
+        outCtx.clip();
+
         if (hipsVisible) {
           outCtx.fillStyle =
             theme === 'white' ? '#FFFFFF' : theme === 'red' ? '#060000' : '#070A12';
-          outCtx.fillRect(0, 0, outW, outH);
+          outCtx.fillRect(0, 0, outW, photoH);
           hipsRef.current?.renderSnapshotToCanvas(
             outCtx,
             outW,
-            outH,
+            photoH,
             sensorView,
             exportRotDeg
           );
+        }
 
-          const vecCanvas = document.createElement('canvas');
-          vecCanvas.width = outW;
-          vecCanvas.height = outH;
-          const vecCtx = vecCanvas.getContext('2d');
-          if (vecCtx) {
-            renderStarChart(
-              vecCtx,
-              outW,
-              outH,
-              sensorView,
-              theme,
-              layers,
-              cleanOptics,
-              observer,
-              hips,
-              catalogs,
-              selected,
-              null,
-              sessionIds,
-              solarTrails,
-              sessionPlan,
-              challenges,
-              exportRotDeg
-            );
-            outCtx.drawImage(vecCanvas, 0, 0);
-          }
-        } else {
+        const vecCanvas = document.createElement('canvas');
+        vecCanvas.width = outW;
+        vecCanvas.height = photoH;
+        const vecCtx = vecCanvas.getContext('2d');
+        if (vecCtx) {
           renderStarChart(
-            outCtx,
+            vecCtx,
             outW,
-            outH,
+            photoH,
             sensorView,
             theme,
-            layers,
+            photoLayers,
             cleanOptics,
             observer,
             hips,
             catalogs,
-            selected,
             null,
-            sessionIds,
-            solarTrails,
-            sessionPlan,
-            challenges,
-            exportRotDeg
+            null,
+            emptySessionIds,
+            undefined,
+            undefined,
+            undefined,
+            exportRotDeg,
+            true
           );
+          outCtx.drawImage(vecCanvas, 0, 0);
         }
+        outCtx.restore();
+
+        // Draw crisp white metadata footer bar below the photographic frame
+        const centerRaDeg = ((view.ra * 15) % 360 + 360) % 360;
+        const centerDecDeg = view.dec;
+        const coordCompact = `RA ${formatRA(centerRaDeg)}, Dec ${formatDec(centerDecDeg)}`;
+        const centerObj = findCenterNamedObject(
+          centerRaDeg,
+          centerDecDeg,
+          Math.min(sensorW, sensorH),
+          observer,
+          catalogs,
+          selected
+        );
+        const primaryTargetText = centerObj
+          ? `${centerObj.label} (${coordCompact})`
+          : `RA ${formatRA(centerRaDeg)} · Dec ${formatDec(centerDecDeg)}`;
+
+        const dateTimeText = formatExportDateTime(observer.timestampMs);
+        const constellationLabel = findConstellationLabel(
+          centerRaDeg,
+          centerDecDeg,
+          centerObj?.conAbbr,
+          catalogs
+        );
+        const rawEquipName = (equipmentName ?? '').trim();
+        const equipDisplayName =
+          rawEquipName && !rawEquipName.startsWith('FOV_') ? rawEquipName : '촬영 센서';
+        const fovSizeText = `${sensorW.toFixed(2)}° × ${sensorH.toFixed(2)}°`;
+        const secondaryMetaText = constellationLabel
+          ? `${constellationLabel}  /  ${equipDisplayName} (${fovSizeText})`
+          : `${equipDisplayName} (${fovSizeText})`;
+
+        outCtx.save();
+        outCtx.fillStyle = '#FFFFFF';
+        outCtx.fillRect(0, photoH, outW, barH);
+
+        // Subtle top separator hairline
+        outCtx.strokeStyle = '#CBD5E1';
+        outCtx.lineWidth = 1.5;
+        outCtx.beginPath();
+        outCtx.moveTo(0, photoH + 0.75);
+        outCtx.lineTo(outW, photoH + 0.75);
+        outCtx.stroke();
+
+        const padX = Math.round(Math.max(22, outW * 0.022));
+        const row1Y = photoH + Math.round(barH * 0.36);
+        const row2Y = photoH + Math.round(barH * 0.72);
+        const baseFontPx = Math.round(Math.max(14, Math.min(22, barH * 0.21)));
+        const subFontPx = Math.round(Math.max(12, Math.min(18, barH * 0.17)));
+        const dateFontPx = Math.round(Math.max(13, Math.min(19, barH * 0.185)));
+        const fontFamily =
+          '"Pretendard", "Noto Sans KR", "IBM Plex Sans", -apple-system, BlinkMacSystemFont, sans-serif';
+        const monoFontFamily = '"IBM Plex Mono", "Pretendard", monospace';
+
+        // Row 1 Right: Date & Time
+        outCtx.textBaseline = 'middle';
+        outCtx.textAlign = 'right';
+        outCtx.font = `600 ${dateFontPx}px ${monoFontFamily}`;
+        outCtx.fillStyle = '#334155';
+        const dateWidth = outCtx.measureText(dateTimeText).width;
+        outCtx.fillText(dateTimeText, outW - padX, row1Y);
+
+        // Row 1 Left: Center Named Object (if present) + Equatorial Position (auto-fit if long)
+        const maxPrimaryW = Math.max(200, outW - padX * 2 - dateWidth - 28);
+        let primaryPx = baseFontPx;
+        outCtx.textAlign = 'left';
+        outCtx.font = `700 ${primaryPx}px ${fontFamily}`;
+        while (primaryPx > 11 && outCtx.measureText(primaryTargetText).width > maxPrimaryW) {
+          primaryPx -= 1;
+          outCtx.font = `700 ${primaryPx}px ${fontFamily}`;
+        }
+        outCtx.fillStyle = '#0F172A';
+        outCtx.fillText(primaryTargetText, padX, row1Y, maxPrimaryW);
+
+        // Row 2 Left: Constellation Name / Equipment Type (Full FOV Size)
+        const maxSubW = Math.max(200, outW - padX * 2);
+        let subPx = subFontPx;
+        outCtx.font = `500 ${subPx}px ${fontFamily}`;
+        while (subPx > 10 && outCtx.measureText(secondaryMetaText).width > maxSubW) {
+          subPx -= 1;
+          outCtx.font = `500 ${subPx}px ${fontFamily}`;
+        }
+        outCtx.fillStyle = '#475569';
+        outCtx.fillText(secondaryMetaText, padX, row2Y, maxSubW);
+
+        // Row 2 Right: Subtle equatorial / rotation note if ample horizontal space
+        const subTextW = outCtx.measureText(secondaryMetaText).width;
+        const rightNote = sensorRotActive
+          ? `J2000 · 지평 회전 ${Math.round(normSensorRot)}°`
+          : 'J2000 적도좌표';
+        outCtx.font = `500 ${Math.max(11, subFontPx - 2)}px ${monoFontFamily}`;
+        const rightNoteW = outCtx.measureText(rightNote).width;
+        if (subTextW + rightNoteW + 32 < maxSubW) {
+          outCtx.textAlign = 'right';
+          outCtx.fillStyle = '#64748B';
+          outCtx.fillText(rightNote, outW - padX, row2Y);
+        }
+
+        outCtx.restore();
 
         const safeEquip = (equipmentName ?? '')
           .trim()
@@ -394,81 +897,6 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       []
     );
 
-    const smoothCenterOn = useCallback(
-      (targetRaDeg: number, targetDecDeg: number) => {
-        cancelCenterAnim();
-        const startRaRad = view.ra * 15 * DEG2RAD;
-        const startDecRad = view.dec * DEG2RAD;
-        const endRaRad = targetRaDeg * DEG2RAD;
-        const endDecRad = targetDecDeg * DEG2RAD;
-
-        const v0: [number, number, number] = [
-          Math.cos(startDecRad) * Math.cos(startRaRad),
-          Math.cos(startDecRad) * Math.sin(startRaRad),
-          Math.sin(startDecRad),
-        ];
-        const v1: [number, number, number] = [
-          Math.cos(endDecRad) * Math.cos(endRaRad),
-          Math.cos(endDecRad) * Math.sin(endRaRad),
-          Math.sin(endDecRad),
-        ];
-
-        const dot = Math.max(-1, Math.min(1, v0[0] * v1[0] + v0[1] * v1[1] + v0[2] * v1[2]));
-        const omega = Math.acos(dot);
-        if (omega < 1e-7) {
-          onChangeView((prev) => ({
-            ...prev,
-            ra: ((targetRaDeg / 15) % 24 + 24) % 24,
-            dec: Math.max(-89.9, Math.min(89.9, targetDecDeg)),
-          }));
-          return;
-        }
-
-        const durationMs = 320;
-        const t0 = performance.now();
-        const sinOmega = Math.sin(omega);
-
-        const step = (now: number) => {
-          const raw = Math.min(1, (now - t0) / durationMs);
-          // Smooth cubic ease-out
-          const eased = 1 - Math.pow(1 - raw, 3);
-
-          let x: number;
-          let y: number;
-          let z: number;
-          if (sinOmega > 1e-4) {
-            const w0 = Math.sin((1 - eased) * omega) / sinOmega;
-            const w1 = Math.sin(eased * omega) / sinOmega;
-            x = w0 * v0[0] + w1 * v1[0];
-            y = w0 * v0[1] + w1 * v1[1];
-            z = w0 * v0[2] + w1 * v1[2];
-          } else {
-            x = v0[0] * (1 - eased) + v1[0] * eased;
-            y = v0[1] * (1 - eased) + v1[1] * eased;
-            z = v0[2] * (1 - eased) + v1[2] * eased;
-          }
-          const len = Math.hypot(x, y, z) || 1;
-          const raDeg = ((Math.atan2(y / len, x / len) * RAD2DEG) + 360) % 360;
-          const decDeg = Math.asin(Math.max(-1, Math.min(1, z / len))) * RAD2DEG;
-
-          onChangeView((prev) => ({
-            ...prev,
-            ra: ((raDeg / 15) % 24 + 24) % 24,
-            dec: Math.max(-89.9, Math.min(89.9, decDeg)),
-          }));
-
-          if (raw < 1) {
-            centerAnimRef.current = requestAnimationFrame(step);
-          } else {
-            centerAnimRef.current = null;
-          }
-        };
-
-        centerAnimRef.current = requestAnimationFrame(step);
-      },
-      [view.ra, view.dec, onChangeView, cancelCenterAnim]
-    );
-
     const obsTimeMs = observer.timestampMs;
     const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
 
@@ -498,9 +926,44 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       return { view: { ...baseView, flipH: false, flipV: false }, rotationDeg: 0 };
     };
 
+    const getActivePinchGeometry = () => {
+      const pts = Array.from(activePointersRef.current.values());
+      if (pts.length < 2) return null;
+      const [a, b] = pts;
+      return {
+        dist: Math.max(10, Math.hypot(b.x - a.x, b.y - a.y)),
+        midX: (a.x + b.x) / 2,
+        midY: (a.y + b.y) / 2,
+      };
+    };
+
     const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
       cancelCenterAnim();
-      e.currentTarget.setPointerCapture(e.pointerId);
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        // Ignore if capture is unsupported
+      }
+      activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+      // Multi-touch pinch-to-zoom (mobile / tablet)
+      if (activePointersRef.current.size >= 2) {
+        dragRef.current = null;
+        const geom = getActivePinchGeometry();
+        if (geom) {
+          pinchRef.current = {
+            active: true,
+            initialDist: geom.dist,
+            initialMidX: geom.midX,
+            initialMidY: geom.midY,
+            initialView: { ...view },
+          };
+          onUnlockCenter?.();
+          setHoveredTarget(null);
+        }
+        return;
+      }
+
       const rect = e.currentTarget.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
@@ -516,6 +979,55 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     };
 
     const handlePointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (activePointersRef.current.has(e.pointerId)) {
+        activePointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      }
+
+      // Active 2-finger pinch zoom + gentle midpoint pan
+      const pinch = pinchRef.current;
+      if (pinch && pinch.active && activePointersRef.current.size >= 2) {
+        const geom = getActivePinchGeometry();
+        if (geom) {
+          const ratio = pinch.initialDist / geom.dist;
+          const initTan = Math.tan((pinch.initialView.fsz * DEG2RAD) / 4);
+          const nextFsz = Math.max(
+            MIN_FSZ_DEG,
+            Math.min(180, 4 * Math.atan(initTan * ratio) * RAD2DEG)
+          );
+          const dxMid = geom.midX - pinch.initialMidX;
+          const dyMid = geom.midY - pinch.initialMidY;
+          let nextRa = pinch.initialView.ra;
+          let nextDec = pinch.initialView.dec;
+          if (Math.hypot(dxMid, dyMid) > 1.5) {
+            const panProj = createProjectionParams(
+              { ...pinch.initialView, fsz: nextFsz, flipH: false, flipV: false },
+              size.width,
+              size.height,
+              lstDeg,
+              observer.lat,
+              0
+            );
+            const nextCenter = unprojectStereographic(
+              size.width / 2 - dxMid,
+              size.height / 2 - dyMid,
+              panProj
+            );
+            if (nextCenter) {
+              nextRa = ((nextCenter.raDeg / 15) % 24 + 24) % 24;
+              nextDec = Math.max(-89.5, Math.min(89.5, nextCenter.decDeg));
+            }
+          }
+          onChangeView((prev) => ({
+            ...prev,
+            fsz: nextFsz,
+            ra: nextRa,
+            dec: nextDec,
+          }));
+          setHoveredTarget(null);
+        }
+        return;
+      }
+
       const rect = e.currentTarget.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
@@ -572,14 +1084,47 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       setHoveredTarget(hit);
     };
 
-    const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-      const drag = dragRef.current;
-      dragRef.current = null;
+    const finishPointer = (
+      e: React.PointerEvent<HTMLCanvasElement>,
+      isCancel: boolean
+    ) => {
+      activePointersRef.current.delete(e.pointerId);
       try {
         e.currentTarget.releasePointerCapture(e.pointerId);
       } catch {
         // Ignore if not captured
       }
+
+      if (pinchRef.current?.active) {
+        if (activePointersRef.current.size < 2) {
+          pinchRef.current = null;
+          // If one finger remains on screen after pinch, continue panning smoothly without stray click
+          if (activePointersRef.current.size === 1) {
+            const remaining = Array.from(activePointersRef.current.values())[0];
+            const rect = e.currentTarget.getBoundingClientRect();
+            const eff = getEffectiveTransformAtPoint(
+              remaining.x - rect.left,
+              remaining.y - rect.top,
+              view
+            );
+            dragRef.current = {
+              active: true,
+              startX: remaining.x,
+              startY: remaining.y,
+              moved: true,
+              startView: { ...eff.view },
+              startRotationDeg: eff.rotationDeg,
+            };
+          } else {
+            dragRef.current = null;
+          }
+        }
+        return;
+      }
+
+      const drag = dragRef.current;
+      dragRef.current = null;
+      if (isCancel) return;
 
       if (drag && !drag.moved) {
         const rect = e.currentTarget.getBoundingClientRect();
@@ -628,6 +1173,14 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       }
     };
 
+    const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
+      finishPointer(e, false);
+    };
+
+    const handlePointerCancel = (e: React.PointerEvent<HTMLCanvasElement>) => {
+      finishPointer(e, true);
+    };
+
     const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
       if (challengePickMode) return;
       const rect = e.currentTarget.getBoundingClientRect();
@@ -646,7 +1199,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
       if (!targetItem) return;
       lastClickedTargetRef.current = null;
-      onSelect(targetItem);
+      onSelect(targetItem, { hideSelectionMark: true });
       smoothCenterOn(targetItem.data.ra, targetItem.data.dec);
     };
 
@@ -677,6 +1230,15 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         ? `${(view.fsz * 60).toFixed(1)}′`
         : `${(view.fsz * 60).toFixed(2)}′`;
 
+    const hudLeftPx = leftDrawerOpen && size.width >= 640 ? 282 : size.width >= 1024 ? 16 : 12;
+    const hudRightPx = rightDrawerOpen && size.width >= 640 ? 282 : 12;
+    const topControlsWidthPx = 276;
+    const topRowAvailablePx = size.width - hudLeftPx - hudRightPx - topControlsWidthPx;
+    const stackHudBelowControls = size.width < 768 || topRowAvailablePx < 420;
+    const hudMaxWidthPx = stackHudBelowControls
+      ? Math.max(200, size.width - hudLeftPx - hudRightPx)
+      : Math.max(240, topRowAvailablePx - 12);
+
     return (
       <div
         id="chart-stage"
@@ -701,6 +1263,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
+          onPointerCancel={handlePointerCancel}
           onDoubleClick={handleDoubleClick}
           onPointerLeave={() => {
             setHoveredTarget(null);
@@ -709,37 +1272,51 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           }}
           onWheel={handleWheel}
           className="relative z-10 block w-full h-full cursor-crosshair touch-none"
+          style={{ touchAction: 'none' }}
         />
 
-        {/* Top-Left Live Coordinate & Object Count Telemetry HUD (single line) */}
+        {/* Top-Left Live Coordinate & Object Count Telemetry HUD (strictly single line, matched h-9 height with right FOV controls) */}
         <div
-          className={`no-print pointer-events-none absolute z-20 top-3 max-w-[calc(100%-296px)] border px-3 py-1.5 text-xs font-mono tabular-nums backdrop-blur-sm transition-[left] duration-200 ease-out ${ui.hudOverlay}`}
-          style={{ borderRadius: '6px', left: leftDrawerOpen ? '282px' : '16px' }}
+          className={`no-print pointer-events-none absolute z-20 h-9 flex items-center border px-2.5 sm:px-3 text-[10.5px] sm:text-[11px] lg:text-xs font-mono tabular-nums backdrop-blur-sm transition-[left,top] duration-200 ease-out overflow-hidden ${ui.hudOverlay}`}
+          style={{
+            borderRadius: '6px',
+            left: `${hudLeftPx}px`,
+            top: stackHudBelowControls ? '54px' : '12px',
+            maxWidth: `${hudMaxWidthPx}px`,
+          }}
         >
-          <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-            <span className={ui.accentText}>
-              {view.coordSystem === 'horizontal' ? '지평 (Alt/Az)' : '적도 (RA/Dec)'}
+          <div className="flex flex-nowrap items-center gap-x-1.5 sm:gap-x-2 whitespace-nowrap overflow-hidden">
+            <span className={`shrink-0 ${ui.accentText}`}>
+              {view.coordSystem === 'horizontal' ? (
+                <>
+                  지평<span className="hidden sm:inline"> (Alt/Az)</span>
+                </>
+              ) : (
+                <>
+                  적도<span className="hidden sm:inline"> (RA/Dec)</span>
+                </>
+              )}
             </span>
-            <span aria-hidden="true" className={ui.textMuted}>·</span>
-            <span className={ui.textPrimary}>
+            <span aria-hidden="true" className={`shrink-0 ${ui.textMuted}`}>·</span>
+            <span className={`shrink-0 ${ui.textPrimary}`}>
               {view.coordSystem === 'horizontal'
                 ? `고도 ${centerAltAz.altDeg.toFixed(1)}° · 방위각 ${centerAltAz.azDeg.toFixed(1)}° (${getCompassDirection(centerAltAz.azDeg)})`
                 : `RA ${formatRA(view.ra * 15)} · Dec ${formatDec(view.dec)}`}
             </span>
-            <span aria-hidden="true" className={ui.textMuted}>·</span>
-            <span className={ui.textMuted}>천체 {renderStats.stars + renderStats.dsos}개</span>
+            <span aria-hidden="true" className={`shrink-0 ${ui.textMuted}`}>·</span>
+            <span className={`shrink-0 ${ui.textMuted}`}>천체 {renderStats.stars + renderStats.dsos}개</span>
             {observer.minAltitudeDeg > -90 && (
               <>
-                <span aria-hidden="true" className={ui.textMuted}>·</span>
-                <span className={ui.accentText}>
+                <span aria-hidden="true" className={`shrink-0 ${ui.textMuted}`}>·</span>
+                <span className={`shrink-0 ${ui.accentText}`}>
                   고도 ≥{observer.minAltitudeDeg}° ({observer.highlightAboveMinAlt ? '흐림' : '숨김'})
                 </span>
               </>
             )}
             {centerLocked && selected && (
               <>
-                <span aria-hidden="true" className={ui.textMuted}>·</span>
-                <span className={ui.accentText}>
+                <span aria-hidden="true" className={`shrink-0 ${ui.textMuted}`}>·</span>
+                <span className={`truncate ${ui.accentText}`}>
                   중심 추적:{' '}
                   {selected.kind === 'dso'
                     ? selected.data.koName || selected.data.id
@@ -753,8 +1330,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             )}
             {gaiaActive && (
               <>
-                <span aria-hidden="true" className={ui.textMuted}>·</span>
-                <span className={ui.accentText}>
+                <span aria-hidden="true" className={`shrink-0 ${ui.textMuted}`}>·</span>
+                <span className={`shrink-0 ${ui.accentText}`}>
                   {catalogs.gaiaLoading
                     ? 'Gaia 로딩'
                     : catalogs.gaiaStars.length > 0
@@ -769,16 +1346,20 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         {/* Bottom-Left Crosshair Pointer Telemetry */}
         {pointerEq && pointerAltAz && (
           <div
-            className={`no-print pointer-events-none absolute z-20 bottom-3 border px-3 py-1.5 text-[11px] font-mono tabular-nums backdrop-blur-sm transition-[left] duration-200 ease-out ${ui.hudOverlay}`}
-            style={{ borderRadius: '6px', left: leftDrawerOpen ? '282px' : '16px' }}
+            className={`no-print pointer-events-none absolute z-20 bottom-3 border px-2 sm:px-3 py-1 sm:py-1.5 text-[10px] sm:text-[11px] font-mono tabular-nums backdrop-blur-sm transition-[left] duration-200 ease-out overflow-hidden ${ui.hudOverlay}`}
+            style={{
+              borderRadius: '6px',
+              left: `${hudLeftPx}px`,
+              maxWidth: `${Math.max(200, size.width - hudLeftPx - 12)}px`,
+            }}
           >
-            <div className="flex items-center gap-2">
+            <div className="flex flex-nowrap items-center gap-1.5 sm:gap-2 whitespace-nowrap overflow-hidden">
               <Crosshair className="w-3.5 h-3.5 shrink-0" />
-              <span>
+              <span className="shrink-0">
                 RA {formatRA(pointerEq.raDeg)} · Dec {formatDec(pointerEq.decDeg)}
               </span>
-              <span aria-hidden="true">|</span>
-              <span>
+              <span aria-hidden="true" className="shrink-0">|</span>
+              <span className="shrink-0">
                 고도 {pointerAltAz.altDeg.toFixed(1)}° · 방위각 {pointerAltAz.azDeg.toFixed(1)}° (
                 {getCompassDirection(pointerAltAz.azDeg)})
               </span>
@@ -816,9 +1397,9 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           </div>
         )}
 
-        {/* Top-Right Quick Viewport Controls (Zoom, 180° All-Sky, Flip H/V) */}
+        {/* Top-Right Quick Viewport Controls (Zoom, 180° All-Sky, Flip H/V — exact h-9 height matching left HUD) */}
         <div
-          className={`no-print absolute z-20 top-3 flex items-center gap-1 border p-1 backdrop-blur-sm transition-[right] duration-200 ease-out ${ui.hudOverlay}`}
+          className={`no-print absolute z-20 top-3 h-9 flex items-center gap-1 border px-1 backdrop-blur-sm transition-[right] duration-200 ease-out ${ui.hudOverlay}`}
           style={{ borderRadius: '6px', right: rightDrawerOpen ? '282px' : '12px' }}
         >
           <button
@@ -828,14 +1409,14 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             }
             title="확대 (Zoom In)"
             aria-label="확대"
-            className={`p-2 border transition-colors whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
+            className={`w-7 h-7 flex items-center justify-center border transition-colors whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
             style={{ borderRadius: '4px' }}
           >
-            <Plus className="w-4 h-4" />
+            <Plus className="w-3.5 h-3.5" />
           </button>
           <div
             title={`현재 시야각 (FOV): ${formattedFov}`}
-            className={`px-2 py-1.5 min-w-[54px] text-center font-mono text-xs font-semibold tabular-nums whitespace-nowrap shrink-0 select-none ${ui.accentText}`}
+            className={`h-7 px-1.5 min-w-[50px] flex items-center justify-center font-mono text-xs font-semibold tabular-nums whitespace-nowrap shrink-0 select-none ${ui.accentText}`}
           >
             {formattedFov}
           </div>
@@ -846,16 +1427,16 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             }
             title="축소 (Zoom Out)"
             aria-label="축소"
-            className={`p-2 border transition-colors whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
+            className={`w-7 h-7 flex items-center justify-center border transition-colors whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
             style={{ borderRadius: '4px' }}
           >
-            <Minus className="w-4 h-4" />
+            <Minus className="w-3.5 h-3.5" />
           </button>
           <button
             type="button"
             onClick={() => onChangeView((p) => ({ ...p, fsz: 180 }))}
             title="180° 전천 평사 도법 뷰"
-            className={`px-2 py-2 border text-xs font-mono font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+            className={`h-7 px-2 border text-xs font-mono font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-1 ${
               Math.abs(view.fsz - 180) < 1 ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
@@ -871,7 +1452,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                 ? '좌우 반전 — 망원경 아이피스 원 내부만 적용 중'
                 : '좌우 반전 (천정미러/굴절망원경 · 전체 성도)'
             }
-            className={`px-2 py-2 border text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+            className={`h-7 px-2 border text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               view.flipH ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
@@ -887,7 +1468,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                 ? '상하 반전 — 망원경 아이피스 원 내부만 적용 중'
                 : '상하 반전 (반사망원경 도립상 · 전체 성도)'
             }
-            className={`px-2 py-2 border text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+            className={`h-7 px-2 border text-xs font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
               view.flipV ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}

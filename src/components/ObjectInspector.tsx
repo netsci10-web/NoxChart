@@ -1,15 +1,24 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookmarkCheck,
   BookmarkPlus,
+  Check,
   CheckCircle2,
+  CheckSquare,
+  ChevronDown,
+  ChevronRight,
   Circle,
   Compass,
   Crosshair,
   Download,
+  FolderPlus,
+  ListChecks,
   Navigation,
+  Pencil,
   Route,
   Sparkles,
+  Square,
+  Star,
   Target,
   Trash2,
   Upload,
@@ -22,6 +31,7 @@ import {
   ChallengeTrack,
   ChartViewState,
   ObserverConfig,
+  ObservingListGroup,
   ObservingSessionEntry,
   OpticsSettings,
   SelectedItem,
@@ -54,6 +64,9 @@ interface ObjectInspectorProps {
   optics: OpticsSettings;
   catalogs: CatalogSnapshot;
   sessionPlan: ObservingSessionEntry[];
+  tonightManualEntries: ObservingSessionEntry[];
+  observingLists: ObservingListGroup[];
+  tonightListId: string | null;
   challenges: ChallengeTrack[];
   onTabChange: (tab: 'detail' | 'session' | 'challenge') => void;
   onClose: () => void;
@@ -63,19 +76,30 @@ interface ObjectInspectorProps {
   onClearSolarTrails: () => void;
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
   onChangeOptics: (updater: (prev: OpticsSettings) => OpticsSettings) => void;
-  onToggleSessionItem: (item: SelectedItem) => void;
-  onToggleObserved: (id: string) => void;
-  onUpdateNotes: (id: string, notes: string) => void;
+  onSetTonightList: (listId: string | null) => void;
+  onCreateObservingList: (name: string) => string;
+  onRenameObservingList: (listId: string, newName: string) => void;
+  onDeleteObservingList: (listId: string) => void;
+  onToggleSessionItem: (item: SelectedItem, targetListId?: string) => void;
+  onToggleObserved: (id: string, targetListId?: string) => void;
+  onUpdateNotes: (id: string, notes: string, targetListId?: string) => void;
   onAddRecommendedTonight: (items: SelectedItem[]) => void;
-  onImportSkylist: (text: string) => Promise<{
+  onImportSkylist: (
+    text: string,
+    options?: { fileName?: string; targetListId?: string; makeTonight?: boolean }
+  ) => Promise<{
     matchedCount: number;
     addedCount: number;
     totalCount: number;
     unmatchedNames: string[];
+    listName: string;
+    createdNewList: boolean;
   }>;
-  onExportSkylist: () => void;
+  onExportSkylist: (listId?: string) => void;
   challengeOpacity: number;
   onChangeChallengeOpacity: (opacity: number) => void;
+  challengeLineWidth: number;
+  onChangeChallengeLineWidth: (lineWidth: number) => void;
   challengeDraft: ChallengeTrack | null;
   challengeDraftIsNew: boolean;
   challengePickAllowEmpty: boolean;
@@ -109,6 +133,9 @@ export function ObjectInspector({
   optics,
   catalogs,
   sessionPlan,
+  tonightManualEntries,
+  observingLists,
+  tonightListId,
   challenges,
   onTabChange,
   onClose,
@@ -118,6 +145,10 @@ export function ObjectInspector({
   onClearSolarTrails,
   onChangeView,
   onChangeOptics,
+  onSetTonightList,
+  onCreateObservingList,
+  onRenameObservingList,
+  onDeleteObservingList,
   onToggleSessionItem,
   onToggleObserved,
   onUpdateNotes,
@@ -126,6 +157,8 @@ export function ObjectInspector({
   onExportSkylist,
   challengeOpacity,
   onChangeChallengeOpacity,
+  challengeLineWidth,
+  onChangeChallengeLineWidth,
   challengeDraft,
   challengeDraftIsNew,
   challengePickAllowEmpty,
@@ -150,8 +183,43 @@ export function ObjectInspector({
 }: ObjectInspectorProps) {
   const ui = getUiTheme(theme);
   const skylistInputRef = useRef<HTMLInputElement>(null);
+  const pendingImportTargetRef = useRef<{ targetListId?: string; makeTonight?: boolean }>({});
   const [skylistBusy, setSkylistBusy] = useState(false);
   const [skylistNotice, setSkylistNotice] = useState<string | null>(null);
+  const [sessionSubTab, setSessionSubTab] = useState<'tonight' | 'manage'>('tonight');
+  const [newListName, setNewListName] = useState('');
+  const [renamingListId, setRenamingListId] = useState<string | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [expandedListIds, setExpandedListIds] = useState<Record<string, boolean>>({});
+  const [detailTargetListId, setDetailTargetListId] = useState<string>('__tonight__');
+  const [recommend25Active, setRecommend25Active] = useState(false);
+
+  useEffect(() => {
+    if (
+      detailTargetListId !== '__tonight__' &&
+      !observingLists.some((l) => l.id === detailTargetListId)
+    ) {
+      setDetailTargetListId('__tonight__');
+    }
+  }, [detailTargetListId, observingLists]);
+
+  const effectiveDetailListId =
+    detailTargetListId === '__tonight__' ||
+    observingLists.some((l) => l.id === detailTargetListId)
+      ? detailTargetListId
+      : '__tonight__';
+  const activeTonightList = tonightListId
+    ? observingLists.find((l) => l.id === tonightListId) ?? null
+    : null;
+  const detailTargetList =
+    effectiveDetailListId === '__tonight__'
+      ? null
+      : observingLists.find((l) => l.id === effectiveDetailListId) ?? null;
+  const manualEntryIdSet = useMemo(
+    () => new Set(tonightManualEntries.map((e) => e.id)),
+    [tonightManualEntries]
+  );
+
   const obsTimeMs = observer.useLiveTime ? Date.now() : observer.timestampMs;
   const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
 
@@ -226,10 +294,12 @@ export function ObjectInspector({
   };
 
   const sessionEntry = selected
-    ? sessionPlan.find((e) => e.id === selected.data.id)
+    ? effectiveDetailListId === '__tonight__'
+      ? sessionPlan.find((e) => e.id === selected.data.id)
+      : detailTargetList?.entries.find((e) => e.id === selected.data.id)
     : undefined;
 
-  const resolvedSessionItems = useMemo(() => {
+  const resolveEntriesList = useMemo(() => {
     const allDsos = [
       ...catalogs.dsosBright,
       ...catalogs.darkNebulae,
@@ -238,34 +308,125 @@ export function ObjectInspector({
     ];
     const allStars = [...catalogs.brightStars, ...catalogs.deepStars, ...catalogs.gaiaStars];
     const solarBodies = getSolarSystemBodies(obsTimeMs);
-    return sessionPlan
-      .map((entry) => {
-        let item: SelectedItem | undefined;
-        if (entry.kind === 'dso') {
-          const found = allDsos.find((d) => d.id === entry.id);
-          if (found) item = { kind: 'dso', data: found };
-        } else if (entry.kind === 'planet') {
-          const found = solarBodies.find((b) => b.id === entry.id);
-          if (found) item = { kind: 'planet', data: found };
-        } else if (entry.kind === 'double') {
-          const found = catalogs.doubleStars.find((d) => d.id === entry.id);
-          if (found) item = { kind: 'double', data: found };
-        } else {
-          const found = allStars.find((s) => s.id === entry.id);
-          if (found) item = { kind: 'star', data: found };
-        }
-        if (!item) return null;
-        const hz = equatorialToHorizontal(item.data.ra, item.data.dec, lstDeg, observer.lat);
-        return { entry, item, hz };
-      })
-      .filter(Boolean) as {
-      entry: ObservingSessionEntry;
-      item: SelectedItem;
-      hz: { altDeg: number; azDeg: number };
-    }[];
-  }, [sessionPlan, catalogs, lstDeg, observer.lat, obsTimeMs]);
+    const dsoById = new Map(allDsos.map((d) => [d.id, d] as const));
+    const starById = new Map(allStars.map((s) => [s.id, s] as const));
+    const doubleById = new Map(catalogs.doubleStars.map((d) => [d.id, d] as const));
+    const solarById = new Map(solarBodies.map((b) => [b.id, b] as const));
 
-  const handleRecommendTonight = () => {
+    return (entries: ObservingSessionEntry[]) =>
+      entries
+        .map((entry) => {
+          let item: SelectedItem | undefined;
+          if (entry.kind === 'dso') {
+            const found = dsoById.get(entry.id);
+            if (found) item = { kind: 'dso', data: found };
+          } else if (entry.kind === 'planet') {
+            const found = solarById.get(entry.id);
+            if (found) item = { kind: 'planet', data: found };
+          } else if (entry.kind === 'double') {
+            const found = doubleById.get(entry.id);
+            if (found) item = { kind: 'double', data: found };
+          } else {
+            const found = starById.get(entry.id);
+            if (found) item = { kind: 'star', data: found };
+          }
+          if (!item) return null;
+          const hz = equatorialToHorizontal(item.data.ra, item.data.dec, lstDeg, observer.lat);
+          return { entry, item, hz };
+        })
+        .filter(Boolean) as {
+        entry: ObservingSessionEntry;
+        item: SelectedItem;
+        hz: { altDeg: number; azDeg: number };
+      }[];
+  }, [catalogs, lstDeg, observer.lat, obsTimeMs]);
+
+  const resolvedSessionItems = useMemo(
+    () => resolveEntriesList(sessionPlan),
+    [resolveEntriesList, sessionPlan]
+  );
+
+  const groupedTonightItems = useMemo(() => {
+    const above25 = resolvedSessionItems
+      .filter((x) => x.hz.altDeg >= 25)
+      .sort((a, b) => b.hz.altDeg - a.hz.altDeg);
+    const lowAlt = resolvedSessionItems
+      .filter((x) => x.hz.altDeg >= 0 && x.hz.altDeg < 25)
+      .sort((a, b) => b.hz.altDeg - a.hz.altDeg);
+    const belowHorizon = resolvedSessionItems
+      .filter((x) => x.hz.altDeg < 0)
+      .sort((a, b) => b.hz.altDeg - a.hz.altDeg);
+    return {
+      above25,
+      lowAlt,
+      belowHorizon,
+      risenCount: above25.length + lowAlt.length,
+    };
+  }, [resolvedSessionItems]);
+
+  const triggerSkylistFilePicker = (options: {
+    targetListId?: string;
+    makeTonight?: boolean;
+  }) => {
+    pendingImportTargetRef.current = options;
+    skylistInputRef.current?.click();
+  };
+
+  const handleSkylistFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    const opts = pendingImportTargetRef.current;
+    setSkylistBusy(true);
+    setSkylistNotice('카탈로그 로딩 및 .skylist 분석 중...');
+    try {
+      const text = await file.text();
+      const res = await onImportSkylist(text, {
+        fileName: file.name,
+        targetListId: opts.targetListId,
+        makeTonight: opts.makeTonight,
+      });
+      if (res.totalCount === 0) {
+        setSkylistNotice('SkySafari 관측 대상(SkyObject)이 없는 파일입니다.');
+      } else {
+        const extra =
+          res.unmatchedNames.length > 0
+            ? ` · 미일치 ${res.unmatchedNames.length}개 (${res.unmatchedNames
+                .slice(0, 2)
+                .join(', ')}${res.unmatchedNames.length > 2 ? '…' : ''})`
+            : '';
+        setSkylistNotice(
+          res.createdNewList
+            ? `‘${res.listName}’ 목록 생성 (${res.matchedCount}/${res.totalCount}개 일치${extra})`
+            : `‘${res.listName}’에 가져오기 완료 (${res.matchedCount}/${res.totalCount}개 · 신규 ${res.addedCount}개${extra})`
+        );
+      }
+    } catch {
+      setSkylistNotice('.skylist 파일을 읽는 중 오류가 발생했습니다.');
+    } finally {
+      setSkylistBusy(false);
+    }
+  };
+
+  const jumpToSessionObject = (item: SelectedItem) => {
+    onSelect(item);
+    onTabChange('detail');
+    onChangeView((p) => ({
+      ...p,
+      ra: ((item.data.ra / 15) % 24 + 24) % 24,
+      dec: item.data.dec,
+      fsz:
+        item.kind === 'dso'
+          ? 12
+          : item.kind === 'planet'
+          ? 0.08
+          : item.kind === 'double'
+          ? Math.max(0.08, Math.min(2.5, (item.data.sep / 3600) * 80))
+          : 16,
+    }));
+  };
+
+  const addBrightRecommendedTonight = () => {
     const candidates = catalogs.dsosBright
       .filter((d) => (d.id.startsWith('M') || d.mag <= 7.5) && d.mag <= 8.5)
       .map((d) => ({
@@ -277,6 +438,14 @@ export function ObjectInspector({
       .slice(0, 6)
       .map((x): SelectedItem => ({ kind: 'dso', data: x.dso }));
     onAddRecommendedTonight(candidates);
+  };
+
+  const handleToggleRecommend25 = () => {
+    const nextActive = !recommend25Active;
+    setRecommend25Active(nextActive);
+    if (nextActive && sessionPlan.length === 0) {
+      addBrightRecommendedTonight();
+    }
   };
 
   // Compact SVG polyline for 24h altitude curve (tuned for 270px panel width)
@@ -435,7 +604,20 @@ export function ObjectInspector({
                 </button>
                 <button
                   type="button"
-                  onClick={() => onToggleSessionItem(selected)}
+                  onClick={() => onToggleSessionItem(selected, effectiveDetailListId)}
+                  title={
+                    sessionEntry
+                      ? `‘${
+                          effectiveDetailListId === '__tonight__'
+                            ? '오늘 밤 관측목록'
+                            : detailTargetList?.name ?? '관측 목록'
+                        }’에서 제거`
+                      : `‘${
+                          effectiveDetailListId === '__tonight__'
+                            ? '오늘 밤 관측목록'
+                            : detailTargetList?.name ?? '관측 목록'
+                        }’에 추가`
+                  }
                   className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${
                     sessionEntry ? ui.buttonActive : ui.buttonIdle
                   }`}
@@ -454,6 +636,40 @@ export function ObjectInspector({
                   )}
                 </button>
               </div>
+
+              {/* Target Observing List Category Selector (Tonight vs Managed Lists) */}
+              {observingLists.length > 0 && (
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`text-[10px] tracking-[-0.05em] whitespace-nowrap shrink-0 ${ui.textMuted}`}
+                  >
+                    대상 목록
+                  </span>
+                  <select
+                    value={effectiveDetailListId}
+                    onChange={(e) => setDetailTargetListId(e.target.value)}
+                    aria-label="대상을 담을 관측 목록 선택"
+                    className={`flex-1 min-w-0 px-1.5 py-1 border text-[10px] truncate ${ui.input}`}
+                    style={{ borderRadius: '4px' }}
+                  >
+                    <option value="__tonight__">
+                      ★ 오늘 밤 관측목록 ({sessionPlan.length})
+                      {sessionPlan.some((e) => e.id === selected.data.id) ? ' ✓' : ''}
+                    </option>
+                    {observingLists.map((list) => {
+                      const hasItem = list.entries.some((e) => e.id === selected.data.id);
+                      const isTonight = list.id === tonightListId;
+                      return (
+                        <option key={list.id} value={list.id}>
+                          {isTonight ? '[오늘관측] ' : ''}
+                          {list.name} ({list.entries.length})
+                          {hasItem ? ' ✓' : ''}
+                        </option>
+                      );
+                    })}
+                  </select>
+                </div>
+              )}
 
               {/* Solar System 10-Day Forward Trajectory Button */}
               {selected.kind === 'planet' && (() => {
@@ -808,9 +1024,9 @@ export function ObjectInspector({
                   value={sessionEntry?.notes ?? ''}
                   onChange={(e) => {
                     if (!sessionEntry) {
-                      onToggleSessionItem(selected);
+                      onToggleSessionItem(selected, effectiveDetailListId);
                     }
-                    onUpdateNotes(selected.data.id, e.target.value);
+                    onUpdateNotes(selected.data.id, e.target.value, effectiveDetailListId);
                   }}
                   placeholder="시상, 아이피스, 필터, 관측 소감 기록..."
                   className={`w-full p-2 border text-[10.5px] tracking-[-0.03em] leading-snug resize-none ${ui.input}`}
@@ -837,6 +1053,8 @@ export function ObjectInspector({
             catalogs={catalogs}
             challengeOpacity={challengeOpacity}
             onChangeChallengeOpacity={onChangeChallengeOpacity}
+            challengeLineWidth={challengeLineWidth}
+            onChangeChallengeLineWidth={onChangeChallengeLineWidth}
             draft={challengeDraft}
             isCreatingDraft={challengeDraftIsNew}
             pickAllowEmpty={challengePickAllowEmpty}
@@ -860,91 +1078,40 @@ export function ObjectInspector({
             onImportTracks={onImportChallenges}
           />
         ) : (
-          /* Observing Session Plan Tab */
+          /* Observing Session Plan Tab: 오늘 밤 관측목록 / 목록관리 */
           <div className="space-y-2.5">
-            <div className="flex items-center justify-between gap-1">
-              <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                오늘 밤 목록
-              </span>
-              <button
-                type="button"
-                onClick={handleRecommendTonight}
-                className={`px-1.5 py-1 border text-[10px] tracking-[-0.05em] font-medium flex items-center gap-1 whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
-                style={{ borderRadius: '4px' }}
-              >
-                <Sparkles className="w-3 h-3 shrink-0" />
-                <span>25°+ 추천</span>
-              </button>
-            </div>
+            {/* Shared hidden .skylist file input */}
+            <input
+              ref={skylistInputRef}
+              type="file"
+              accept=".skylist,.txt"
+              className="hidden"
+              onChange={handleSkylistFileChange}
+            />
 
-            {/* Unified SkySafari .skylist Import / Export Controls */}
+            {/* Sub-Tabs: 오늘 밤 관측목록 | 목록관리 */}
             <div className="grid grid-cols-2 gap-1">
-              <input
-                ref={skylistInputRef}
-                type="file"
-                accept=".skylist,.txt"
-                className="hidden"
-                onChange={async (e) => {
-                  const file = e.target.files?.[0];
-                  e.target.value = '';
-                  if (!file) return;
-                  setSkylistBusy(true);
-                  setSkylistNotice('카탈로그 로딩 및 .skylist 분석 중...');
-                  try {
-                    const text = await file.text();
-                    const res = await onImportSkylist(text);
-                    if (res.totalCount === 0) {
-                      setSkylistNotice('SkySafari 관측 대상(SkyObject)이 없는 파일입니다.');
-                    } else {
-                      const extra =
-                        res.unmatchedNames.length > 0
-                          ? ` · 미일치 ${res.unmatchedNames.length}개 (${res.unmatchedNames
-                              .slice(0, 2)
-                              .join(', ')}${res.unmatchedNames.length > 2 ? '…' : ''})`
-                          : '';
-                      setSkylistNotice(
-                        `${res.matchedCount}/${res.totalCount}개 일치 (신규 ${res.addedCount}개 추가${extra})`
-                      );
-                    }
-                  } catch {
-                    setSkylistNotice('.skylist 파일을 읽는 중 오류가 발생했습니다.');
-                  } finally {
-                    setSkylistBusy(false);
-                  }
-                }}
-              />
               <button
                 type="button"
-                disabled={skylistBusy}
-                onClick={() => skylistInputRef.current?.click()}
-                title="SkySafari .skylist 관측 목록 불러오기"
-                className={`py-1 px-1.5 border text-[10px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap ${ui.buttonIdle} ${
-                  skylistBusy ? 'opacity-50 cursor-wait' : ''
+                onClick={() => setSessionSubTab('tonight')}
+                className={`py-1.5 px-1.5 border text-[10.5px] tracking-[-0.05em] font-semibold flex items-center justify-center gap-1 whitespace-nowrap transition-colors ${
+                  sessionSubTab === 'tonight' ? ui.buttonActive : ui.buttonIdle
                 }`}
                 style={{ borderRadius: '4px' }}
               >
-                <Upload className="w-3 h-3 shrink-0" />
-                <span>.skylist 불러오기</span>
+                <Star className="w-3 h-3 shrink-0" />
+                <span>오늘 밤 관측목록</span>
               </button>
               <button
                 type="button"
-                disabled={sessionPlan.length === 0}
-                onClick={() => {
-                  onExportSkylist();
-                  setSkylistNotice(
-                    `SkySafari 호환 .skylist 저장 완료 (${sessionPlan.length}개 대상)`
-                  );
-                }}
-                title="현재 관측 목록을 SkySafari 호환 .skylist 파일로 내보내기"
-                className={`py-1 px-1.5 border text-[10px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap ${
-                  sessionPlan.length === 0
-                    ? `${ui.buttonIdle} opacity-45 cursor-not-allowed`
-                    : ui.buttonIdle
+                onClick={() => setSessionSubTab('manage')}
+                className={`py-1.5 px-1.5 border text-[10.5px] tracking-[-0.05em] font-semibold flex items-center justify-center gap-1 whitespace-nowrap transition-colors ${
+                  sessionSubTab === 'manage' ? ui.buttonActive : ui.buttonIdle
                 }`}
                 style={{ borderRadius: '4px' }}
               >
-                <Download className="w-3 h-3 shrink-0" />
-                <span>.skylist 내보내기</span>
+                <ListChecks className="w-3 h-3 shrink-0" />
+                <span>목록관리 ({observingLists.length})</span>
               </button>
             </div>
 
@@ -964,88 +1131,759 @@ export function ObjectInspector({
               </div>
             )}
 
-            {resolvedSessionItems.length === 0 ? (
-              <div
-                className={`border p-4 text-center space-y-1.5 ${ui.border} ${ui.textMuted}`}
-                style={{ borderRadius: '6px' }}
-              >
-                <div className="tracking-[-0.04em]">저장된 대상이 없습니다.</div>
-                <p className="text-[10px] tracking-[-0.04em] leading-snug break-keep">
-                  천체를 클릭해 추가하거나 추천 버튼으로 고도 높은 대상을 담아보세요.
-                </p>
-              </div>
-            ) : (
-              <div
-                className={`border divide-y ${ui.border} ${ui.divider}`}
-                style={{ borderRadius: '6px' }}
-              >
-                {resolvedSessionItems.map(({ entry, item, hz }) => {
-                  const title =
-                    item.kind === 'dso'
-                      ? `${item.data.id}${item.data.koName ? ` · ${item.data.koName}` : ''}`
-                      : item.kind === 'double'
-                      ? `${item.data.koName || item.data.name || item.data.bayer || item.data.disc} (${item.data.sep.toFixed(1)}″)`
-                      : `${item.data.koName || item.data.name || item.data.id}`;
-                  return (
-                    <div key={entry.id} className="p-2 flex items-start gap-1.5">
+            {sessionSubTab === 'tonight' ? (
+              /* Sub-tab 1: 오늘 밤 관측목록 (Always displays the single checked tonight list) */
+              <div className="space-y-2">
+                {/* Active Tonight List Banner */}
+                <div
+                  className={`border px-2 py-1.5 space-y-1 ${ui.border}`}
+                  style={{ borderRadius: '6px' }}
+                >
+                  <div className="flex items-center justify-between gap-1.5">
+                    <div className="flex items-center gap-1 min-w-0">
+                      <CheckSquare
+                        className={`w-3.5 h-3.5 shrink-0 ${
+                          activeTonightList ? ui.accentText : ui.textMuted
+                        }`}
+                      />
+                      <span
+                        className={`text-[11px] font-semibold truncate tracking-[-0.04em] ${ui.textPrimary}`}
+                        title={
+                          activeTonightList
+                            ? `연동 목록: ${activeTonightList.name}`
+                            : '직접 추가한 대상만 표시 중'
+                        }
+                      >
+                        {activeTonightList ? activeTonightList.name : '직접 추가 목록'}
+                      </span>
+                    </div>
+                    {activeTonightList ? (
+                      <div className="flex items-center gap-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => onSetTonightList(null)}
+                          title="연동된 오늘 관측 목록을 해제하고 직접 추가한 대상만 남깁니다"
+                          className={`px-1.5 py-0.5 border text-[9.5px] tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          연동 해제
+                        </button>
+                      </div>
+                    ) : (
                       <button
                         type="button"
-                        onClick={() => onToggleObserved(entry.id)}
-                        title={entry.observed ? '관측 완료 취소' : '관측 완료 표시'}
-                        className="mt-0.5 shrink-0"
+                        onClick={() => setSessionSubTab('manage')}
+                        className={`px-1.5 py-0.5 border text-[9.5px] tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
+                        style={{ borderRadius: '4px' }}
                       >
-                        {entry.observed ? (
-                          <CheckCircle2 className={`w-3.5 h-3.5 ${ui.accentText}`} />
-                        ) : (
-                          <Circle className={`w-3.5 h-3.5 ${ui.textMuted}`} />
-                        )}
+                        목록 연동
                       </button>
-                      <button
-                        type="button"
-                        onClick={() => {
-                          onSelect(item);
-                          onTabChange('detail');
-                          onChangeView((p) => ({
-                            ...p,
-                            ra: ((item.data.ra / 15) % 24 + 24) % 24,
-                            dec: item.data.dec,
-                            fsz:
-                              item.kind === 'dso'
-                                ? 12
-                                : item.kind === 'planet'
-                                ? 0.08
-                                : item.kind === 'double'
-                                ? Math.max(0.08, Math.min(2.5, (item.data.sep / 3600) * 80))
-                                : 16,
-                          }));
-                        }}
-                        className="flex-1 text-left min-w-0"
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between gap-1 text-[9.5px] font-mono tabular-nums">
+                    <span className={ui.textMuted}>
+                      전체 {sessionPlan.length}
+                      {activeTonightList && (
+                        <>
+                          {' '}
+                          (직접 {tonightManualEntries.length} · 목록{' '}
+                          {Math.max(0, sessionPlan.length - tonightManualEntries.length)})
+                        </>
+                      )}{' '}
+                      · 출현 {groupedTonightItems.risenCount}
+                    </span>
+                    <span className={ui.accentText}>
+                      완료 {sessionPlan.filter((e) => e.observed).length}/{sessionPlan.length}
+                    </span>
+                  </div>
+                </div>
+
+                {/* Quick Actions: 25°+ 추천 | 파일 불러오기 | 내보내기 */}
+                <div className="grid grid-cols-3 gap-1">
+                  <button
+                    type="button"
+                    aria-pressed={recommend25Active}
+                    onClick={handleToggleRecommend25}
+                    title={
+                      recommend25Active
+                        ? '고도 25° 이상 추천 구분 보기 해제'
+                        : '고도 25° 이상 추천 대상 / 저고도 / 지평 아래로 목록 구분 표시 (빈 목록이면 밝은 천체 자동 추가)'
+                    }
+                    className={`py-1 px-1 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-0.5 whitespace-nowrap transition-colors ${
+                      recommend25Active ? ui.buttonActive : ui.buttonIdle
+                    }`}
+                    style={{ borderRadius: '4px' }}
+                  >
+                    <Sparkles className="w-3 h-3 shrink-0" />
+                    <span>25°+ 추천</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={skylistBusy}
+                    onClick={() => triggerSkylistFilePicker({ makeTonight: true })}
+                    title="SkySafari .skylist 파일을 파일명 그대로 목록관리에 등록하고 오늘 관측으로 연동"
+                    className={`py-1 px-1 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-0.5 whitespace-nowrap ${ui.buttonIdle} ${
+                      skylistBusy ? 'opacity-50 cursor-wait' : ''
+                    }`}
+                    style={{ borderRadius: '4px' }}
+                  >
+                    <Upload className="w-3 h-3 shrink-0" />
+                    <span>불러오기</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={sessionPlan.length === 0}
+                    onClick={() => {
+                      onExportSkylist('__tonight__');
+                      setSkylistNotice(
+                        `‘오늘 밤 관측목록’ .skylist 저장 완료 (${sessionPlan.length}개)`
+                      );
+                    }}
+                    title="오늘 밤 관측목록을 SkySafari 호환 .skylist 파일로 내보내기"
+                    className={`py-1 px-1 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-0.5 whitespace-nowrap ${
+                      sessionPlan.length === 0
+                        ? `${ui.buttonIdle} opacity-45 cursor-not-allowed`
+                        : ui.buttonIdle
+                    }`}
+                    style={{ borderRadius: '4px' }}
+                  >
+                    <Download className="w-3 h-3 shrink-0" />
+                    <span>내보내기</span>
+                  </button>
+                </div>
+
+                {resolvedSessionItems.length === 0 ? (
+                  <div
+                    className={`border p-4 text-center space-y-1.5 ${ui.border} ${ui.textMuted}`}
+                    style={{ borderRadius: '6px' }}
+                  >
+                    <div className="tracking-[-0.04em]">오늘 밤 목록에 저장된 대상이 없습니다.</div>
+                    <p className="text-[10px] tracking-[-0.04em] leading-snug break-keep">
+                      성도에서 천체를 클릭해 직접 추가하거나, 목록관리에서 원하는 목록의 ‘오늘 관측’을 체크해 연동하세요.
+                    </p>
+                  </div>
+                ) : (() => {
+                  const renderTonightRow = (
+                    {
+                      entry,
+                      item,
+                      hz,
+                    }: {
+                      entry: ObservingSessionEntry;
+                      item: SelectedItem;
+                      hz: { altDeg: number; azDeg: number };
+                    },
+                    highlightRecommended = false
+                  ) => {
+                    const isBelowHorizon = hz.altDeg < 0;
+                    const isManual = manualEntryIdSet.has(entry.id);
+                    const title =
+                      item.kind === 'dso'
+                        ? `${item.data.id}${item.data.koName ? ` · ${item.data.koName}` : ''}`
+                        : item.kind === 'double'
+                        ? `${item.data.koName || item.data.name || item.data.bayer || item.data.disc} (${item.data.sep.toFixed(1)}″)`
+                        : `${item.data.koName || item.data.name || item.data.id}`;
+
+                    const rowBgClass = isBelowHorizon
+                      ? theme === 'white'
+                        ? 'bg-slate-100/85'
+                        : theme === 'red'
+                        ? 'bg-[#090101]'
+                        : 'bg-slate-900/55'
+                      : '';
+                    const titleColorClass = isBelowHorizon
+                      ? theme === 'white'
+                        ? 'text-slate-400'
+                        : theme === 'red'
+                        ? 'text-[#7F1D1D]'
+                        : 'text-slate-500'
+                      : ui.textPrimary;
+                    const metaColorClass = isBelowHorizon
+                      ? theme === 'white'
+                        ? 'text-slate-400'
+                        : theme === 'red'
+                        ? 'text-[#5C1111]'
+                        : 'text-slate-600'
+                      : ui.textMuted;
+
+                    return (
+                      <div
+                        key={entry.id}
+                        className={`p-2 flex items-start gap-1.5 transition-colors ${rowBgClass}`}
                       >
-                        <div
-                          className={`text-[11px] tracking-[-0.04em] font-medium truncate ${
-                            entry.observed ? 'line-through opacity-60' : ui.textPrimary
+                        <button
+                          type="button"
+                          onClick={() => onToggleObserved(entry.id, '__tonight__')}
+                          title={entry.observed ? '관측 완료 취소' : '관측 완료 표시'}
+                          className={`mt-0.5 shrink-0 ${isBelowHorizon ? 'opacity-45' : ''}`}
+                        >
+                          {entry.observed ? (
+                            <CheckCircle2
+                              className={`w-3.5 h-3.5 ${
+                                isBelowHorizon ? metaColorClass : ui.accentText
+                              }`}
+                            />
+                          ) : (
+                            <Circle className={`w-3.5 h-3.5 ${metaColorClass}`} />
+                          )}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => jumpToSessionObject(item)}
+                          className="flex-1 text-left min-w-0"
+                        >
+                          <div className="flex items-center gap-1 min-w-0">
+                            <span
+                              className={`text-[11px] tracking-[-0.04em] font-medium truncate ${
+                                entry.observed ? 'line-through opacity-60 ' : ''
+                              }${titleColorClass}`}
+                            >
+                              {title}
+                            </span>
+                            {activeTonightList && isManual && (
+                              <span
+                                className={`text-[8.5px] font-mono px-1 py-0 border shrink-0 leading-tight ${
+                                  isBelowHorizon
+                                    ? `${ui.border} ${metaColorClass}`
+                                    : `${ui.border} ${ui.accentText}`
+                                }`}
+                                style={{ borderRadius: '3px' }}
+                                title="오늘 밤 관측목록에 직접 추가한 대상 (목록관리 미반영)"
+                              >
+                                직접
+                              </span>
+                            )}
+                          </div>
+                          <div
+                            className={`text-[9.5px] font-mono tracking-[-0.04em] tabular-nums truncate ${metaColorClass}`}
+                          >
+                            {item.data.mag.toFixed(1)}m ·{' '}
+                            <span
+                              className={
+                                highlightRecommended && !isBelowHorizon
+                                  ? `${ui.accentText} font-semibold`
+                                  : ''
+                              }
+                            >
+                              고도 {hz.altDeg.toFixed(1)}°({getCompassDirection(hz.azDeg)})
+                            </span>
+                            {isBelowHorizon && ' · 지평 아래'}
+                          </div>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onToggleSessionItem(item, '__tonight__')}
+                          title={
+                            isManual
+                              ? '오늘 밤 관측목록에서 제거'
+                              : '오늘 밤 관측목록에서만 숨기기 (목록관리 원본 유지)'
+                          }
+                          className={`p-0.5 ${metaColorClass} hover:opacity-80 shrink-0 ${
+                            isBelowHorizon ? 'opacity-50' : ''
                           }`}
                         >
-                          {title}
-                        </div>
-                        <div
-                          className={`text-[9.5px] font-mono tracking-[-0.04em] tabular-nums truncate ${ui.textMuted}`}
-                        >
-                          {item.data.mag.toFixed(1)}m · 고도 {hz.altDeg.toFixed(1)}°(
-                          {getCompassDirection(hz.azDeg)})
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => onToggleSessionItem(item)}
-                        title="목록에서 제거"
-                        className={`p-0.5 ${ui.textMuted} hover:opacity-80 shrink-0`}
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    );
+                  };
+
+                  if (!recommend25Active) {
+                    return (
+                      <div
+                        className={`border divide-y overflow-hidden ${ui.border} ${ui.divider}`}
+                        style={{ borderRadius: '6px' }}
                       >
-                        <Trash2 className="w-3 h-3" />
-                      </button>
+                        {resolvedSessionItems.map((row) => renderTonightRow(row, false))}
+                      </div>
+                    );
+                  }
+
+                  const recCardBorder =
+                    theme === 'white'
+                      ? 'border-blue-500/55'
+                      : theme === 'red'
+                      ? 'border-[#B91C1C]'
+                      : 'border-cyan-500/55';
+                  const recHeaderCls =
+                    theme === 'white'
+                      ? 'bg-blue-50/90 text-blue-700 border-b border-blue-200'
+                      : theme === 'red'
+                      ? 'bg-[#240505] text-[#FF5C5C] border-b border-[#5C1111]'
+                      : 'bg-cyan-950/45 text-cyan-300 border-b border-cyan-500/35';
+                  const lowHeaderCls =
+                    theme === 'white'
+                      ? 'bg-slate-50 text-slate-600 border-b border-slate-200'
+                      : theme === 'red'
+                      ? 'bg-[#150202] text-[#DC2626] border-b border-[#3F0A0A]'
+                      : 'bg-slate-800/40 text-slate-300 border-b border-slate-800/80';
+                  const belowCardBorder =
+                    theme === 'white'
+                      ? 'border-slate-200'
+                      : theme === 'red'
+                      ? 'border-[#3F0A0A]'
+                      : 'border-slate-800/70';
+                  const belowHeaderCls =
+                    theme === 'white'
+                      ? 'bg-slate-100 text-slate-500 border-b border-slate-200'
+                      : theme === 'red'
+                      ? 'bg-[#0E0101] text-[#7F1D1D] border-b border-[#3F0A0A]'
+                      : 'bg-slate-900/85 text-slate-500 border-b border-slate-800/70';
+
+                  return (
+                    <div className="space-y-2">
+                      {/* Section 1: 25°+ Recommended Targets */}
+                      <div
+                        className={`border overflow-hidden ${recCardBorder}`}
+                        style={{ borderRadius: '6px' }}
+                      >
+                        <div
+                          className={`px-2 py-1.5 flex items-center justify-between gap-1 text-[10px] font-semibold tracking-[-0.04em] ${recHeaderCls}`}
+                        >
+                          <span className="flex items-center gap-1 min-w-0 truncate">
+                            <Sparkles className="w-3 h-3 shrink-0" />
+                            <span>고도 25° 이상 추천</span>
+                          </span>
+                          <span className="font-mono tabular-nums shrink-0">
+                            {groupedTonightItems.above25.length}개
+                          </span>
+                        </div>
+                        {groupedTonightItems.above25.length === 0 ? (
+                          <div className={`p-2.5 text-center space-y-1.5 ${ui.textMuted}`}>
+                            <div className="text-[10px] tracking-[-0.04em]">
+                              현재 고도 25° 이상인 대상이 없습니다.
+                            </div>
+                            <button
+                              type="button"
+                              onClick={addBrightRecommendedTonight}
+                              className={`px-2 py-1 border text-[9.5px] font-medium tracking-[-0.04em] inline-flex items-center gap-1 ${ui.buttonIdle}`}
+                              style={{ borderRadius: '4px' }}
+                            >
+                              <Sparkles className="w-3 h-3" />
+                              <span>밝은 25°+ 추천 천체 추가</span>
+                            </button>
+                          </div>
+                        ) : (
+                          <div className={`divide-y ${ui.divider}`}>
+                            {groupedTonightItems.above25.map((row) => renderTonightRow(row, true))}
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Section 2: Low-altitude risen targets (0° ~ 25°) */}
+                      {groupedTonightItems.lowAlt.length > 0 && (
+                        <div
+                          className={`border overflow-hidden ${ui.border}`}
+                          style={{ borderRadius: '6px' }}
+                        >
+                          <div
+                            className={`px-2 py-1.5 flex items-center justify-between gap-1 text-[10px] font-semibold tracking-[-0.04em] ${lowHeaderCls}`}
+                          >
+                            <span>지평 위 · 25° 미만</span>
+                            <span className="font-mono tabular-nums shrink-0">
+                              {groupedTonightItems.lowAlt.length}개
+                            </span>
+                          </div>
+                          <div className={`divide-y ${ui.divider}`}>
+                            {groupedTonightItems.lowAlt.map((row) => renderTonightRow(row, false))}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Section 3: Below-horizon targets (< 0°) */}
+                      {groupedTonightItems.belowHorizon.length > 0 && (
+                        <div
+                          className={`border overflow-hidden ${belowCardBorder}`}
+                          style={{ borderRadius: '6px' }}
+                        >
+                          <div
+                            className={`px-2 py-1.5 flex items-center justify-between gap-1 text-[10px] font-semibold tracking-[-0.04em] ${belowHeaderCls}`}
+                          >
+                            <span>현재 뜨지 않은 대상 (지평 아래)</span>
+                            <span className="font-mono tabular-nums shrink-0">
+                              {groupedTonightItems.belowHorizon.length}개
+                            </span>
+                          </div>
+                          <div className={`divide-y ${ui.divider}`}>
+                            {groupedTonightItems.belowHorizon.map((row) =>
+                              renderTonightRow(row, false)
+                            )}
+                          </div>
+                        </div>
+                      )}
                     </div>
                   );
-                })}
+                })()}
+              </div>
+            ) : (
+              /* Sub-tab 2: 목록관리 (Create, Rename, Delete, Import per list or as new file list, Single-check 오늘 관측 대상) */
+              <div className="space-y-2.5">
+                {/* Create New List Form */}
+                <div
+                  className={`border p-2 space-y-1.5 ${ui.border}`}
+                  style={{ borderRadius: '6px' }}
+                >
+                  <div className={`text-[10px] font-semibold tracking-[-0.04em] ${ui.textPrimary}`}>
+                    새 대상 목록 만들기
+                  </div>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="text"
+                      value={newListName}
+                      onChange={(e) => setNewListName(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && newListName.trim()) {
+                          const createdName = newListName.trim();
+                          onCreateObservingList(createdName);
+                          setNewListName('');
+                          setSkylistNotice(`‘${createdName}’ 목록이 생성되었습니다. 아래에서 대상 파일을 가져오거나 천체를 추가하세요.`);
+                        }
+                      }}
+                      placeholder="예: 메시에 대상, 봄철 은하..."
+                      className={`flex-1 min-w-0 px-2 py-1 border text-[10.5px] ${ui.input}`}
+                      style={{ borderRadius: '4px' }}
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const createdName =
+                          newListName.trim() || `관측 목록 ${observingLists.length + 1}`;
+                        onCreateObservingList(createdName);
+                        setNewListName('');
+                        setSkylistNotice(`‘${createdName}’ 목록이 생성되었습니다.`);
+                      }}
+                      title="새 목록 생성"
+                      className={`px-2 py-1 border text-[10px] font-medium flex items-center gap-1 whitespace-nowrap shrink-0 ${ui.buttonActive}`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      <FolderPlus className="w-3 h-3 shrink-0" />
+                      <span>생성</span>
+                    </button>
+                  </div>
+                  <button
+                    type="button"
+                    disabled={skylistBusy}
+                    onClick={() => triggerSkylistFilePicker({ makeTonight: false })}
+                    title="SkySafari .skylist 파일을 불러와 파일명으로 새 목록 자동 생성"
+                    className={`w-full py-1 px-2 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1.5 whitespace-nowrap ${ui.buttonIdle} ${
+                      skylistBusy ? 'opacity-50 cursor-wait' : ''
+                    }`}
+                    style={{ borderRadius: '4px' }}
+                  >
+                    <Upload className="w-3 h-3 shrink-0" />
+                    <span>.skylist 파일명으로 새 목록 불러오기</span>
+                  </button>
+                </div>
+
+                {/* Help note about single tonight check */}
+                <div className={`text-[9.5px] leading-snug tracking-[-0.04em] px-0.5 ${ui.textMuted}`}>
+                  ‘오늘 관측’은 <span className={ui.accentText}>한 개의 목록만</span> 활성화할 수 있으며, 체크 시 해당 목록이 <strong className={ui.textSecondary}>오늘 밤 관측목록</strong>에 반영됩니다. 해제하면 반영된 항목만 사라지고 직접 추가한 대상은 유지됩니다.
+                </div>
+
+                {/* Categorized Observing Lists */}
+                {observingLists.length === 0 ? (
+                  <div
+                    className={`border p-4 text-center space-y-1 ${ui.border} ${ui.textMuted}`}
+                    style={{ borderRadius: '6px' }}
+                  >
+                    <div className="text-[10.5px] tracking-[-0.04em]">등록된 관리 목록이 없습니다.</div>
+                    <p className="text-[9.5px] tracking-[-0.04em] leading-snug break-keep">
+                      위에서 새 목록을 생성하거나 .skylist 파일을 불러오세요.
+                    </p>
+                  </div>
+                ) : (
+                <div className="space-y-2">
+                  {observingLists.map((list) => {
+                    const isTonight = list.id === tonightListId;
+                    const isRenaming = renamingListId === list.id;
+                    const isExpanded = Boolean(expandedListIds[list.id]);
+                    const previewItems = isExpanded ? resolveEntriesList(list.entries) : [];
+
+                    return (
+                      <div
+                        key={list.id}
+                        className={`border transition-colors ${
+                          isTonight
+                            ? theme === 'white'
+                              ? 'border-blue-500/70 bg-blue-50/40'
+                              : theme === 'red'
+                              ? 'border-red-500/70 bg-red-950/30'
+                              : 'border-cyan-500/60 bg-cyan-950/20'
+                            : ui.border
+                        }`}
+                        style={{ borderRadius: '6px' }}
+                      >
+                        <div className="p-2 space-y-1.5">
+                          {/* Row 1: Single Tonight Toggle Check + List Name / Inline Rename */}
+                          <div className="flex items-center gap-1.5 min-w-0">
+                            <button
+                              type="button"
+                              onClick={() => onSetTonightList(list.id)}
+                              title={
+                                isTonight
+                                  ? '클릭하여 오늘 관측 연동 해제 (직접 추가 대상만 유지)'
+                                  : '이 목록을 오늘 밤 관측목록에 반영 (단 1개만 활성화)'
+                              }
+                              aria-label={`${list.name} 오늘 관측 연동 ${isTonight ? '해제' : '활성화'}`}
+                              aria-checked={isTonight}
+                              role="checkbox"
+                              className={`flex items-center gap-1 px-1.5 py-0.5 border text-[9.5px] font-semibold tracking-[-0.05em] whitespace-nowrap shrink-0 transition-colors ${
+                                isTonight ? ui.buttonActive : ui.buttonIdle
+                              }`}
+                              style={{ borderRadius: '4px' }}
+                            >
+                              {isTonight ? (
+                                <CheckSquare className="w-3 h-3 shrink-0" />
+                              ) : (
+                                <Square className="w-3 h-3 shrink-0" />
+                              )}
+                              <span>오늘 관측</span>
+                            </button>
+
+                            {isRenaming ? (
+                              <div className="flex-1 flex items-center gap-1 min-w-0">
+                                <input
+                                  type="text"
+                                  value={renameDraft}
+                                  autoFocus
+                                  onChange={(e) => setRenameDraft(e.target.value)}
+                                  onKeyDown={(e) => {
+                                    if (e.key === 'Enter' && renameDraft.trim()) {
+                                      onRenameObservingList(list.id, renameDraft.trim());
+                                      setRenamingListId(null);
+                                    } else if (e.key === 'Escape') {
+                                      setRenamingListId(null);
+                                    }
+                                  }}
+                                  className={`flex-1 min-w-0 px-1.5 py-0.5 border text-[10.5px] ${ui.input}`}
+                                  style={{ borderRadius: '4px' }}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (renameDraft.trim()) {
+                                      onRenameObservingList(list.id, renameDraft.trim());
+                                    }
+                                    setRenamingListId(null);
+                                  }}
+                                  title="이름 저장"
+                                  className={`p-1 border shrink-0 ${ui.buttonActive}`}
+                                  style={{ borderRadius: '4px' }}
+                                >
+                                  <Check className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setRenamingListId(null)}
+                                  title="취소"
+                                  className={`p-1 border shrink-0 ${ui.buttonIdle}`}
+                                  style={{ borderRadius: '4px' }}
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setExpandedListIds((p) => ({
+                                    ...p,
+                                    [list.id]: !p[list.id],
+                                  }))
+                                }
+                                className="flex-1 flex items-center justify-between gap-1 min-w-0 text-left"
+                                title="클릭하여 포함된 천체 목록 펼치기/접기"
+                              >
+                                <span
+                                  className={`text-[11px] font-semibold truncate tracking-[-0.04em] ${ui.textPrimary}`}
+                                >
+                                  {list.name}
+                                </span>
+                                <span className="flex items-center gap-0.5 shrink-0">
+                                  <span
+                                    className={`text-[9.5px] font-mono tabular-nums ${ui.textMuted}`}
+                                  >
+                                    {list.entries.length}개
+                                  </span>
+                                  {isExpanded ? (
+                                    <ChevronDown className={`w-3 h-3 ${ui.textMuted}`} />
+                                  ) : (
+                                    <ChevronRight className={`w-3 h-3 ${ui.textMuted}`} />
+                                  )}
+                                </span>
+                              </button>
+                            )}
+                          </div>
+
+                          {/* Row 2: Action buttons (파일 가져오기 | 이름 수정 | 내보내기 | 삭제) */}
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              disabled={skylistBusy}
+                              onClick={() =>
+                                triggerSkylistFilePicker({
+                                  targetListId: list.id,
+                                  makeTonight: false,
+                                })
+                              }
+                              title={`‘${list.name}’ 목록으로 .skylist 대상 파일 가져오기`}
+                              className={`flex-1 py-1 px-1.5 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap ${ui.buttonIdle} ${
+                                skylistBusy ? 'opacity-50 cursor-wait' : ''
+                              }`}
+                              style={{ borderRadius: '4px' }}
+                            >
+                              <Upload className="w-3 h-3 shrink-0" />
+                              <span>파일 가져오기</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setRenamingListId(list.id);
+                                setRenameDraft(list.name);
+                              }}
+                              title="목록명 수정"
+                              aria-label={`${list.name} 이름 수정`}
+                              className={`p-1 border shrink-0 ${ui.buttonIdle}`}
+                              style={{ borderRadius: '4px' }}
+                            >
+                              <Pencil className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={list.entries.length === 0}
+                              onClick={() => {
+                                onExportSkylist(list.id);
+                                setSkylistNotice(
+                                  `‘${list.name}’ .skylist 저장 완료 (${list.entries.length}개)`
+                                );
+                              }}
+                              title="이 목록을 .skylist 파일로 내보내기"
+                              aria-label={`${list.name} 내보내기`}
+                              className={`p-1 border shrink-0 ${
+                                list.entries.length === 0
+                                  ? `${ui.buttonIdle} opacity-40 cursor-not-allowed`
+                                  : ui.buttonIdle
+                              }`}
+                              style={{ borderRadius: '4px' }}
+                            >
+                              <Download className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onDeleteObservingList(list.id);
+                                if (renamingListId === list.id) setRenamingListId(null);
+                              }}
+                              title="이 목록 삭제"
+                              aria-label={`${list.name} 삭제`}
+                              className={`p-1 border shrink-0 ${ui.buttonIdle} hover:text-red-400`}
+                              style={{ borderRadius: '4px' }}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Collapsible Target List Preview inside Category */}
+                        {isExpanded && (
+                          <div className={`border-t ${ui.divider}`}>
+                            {previewItems.length === 0 ? (
+                              <div className={`px-2.5 py-2 text-[10px] text-center ${ui.textMuted}`}>
+                                비어 있는 목록입니다. 상단 ‘파일 가져오기’ 또는 성도에서 천체를 추가하세요.
+                              </div>
+                            ) : (
+                              <div className={`divide-y max-h-[200px] overflow-y-auto astro-scroll ${ui.divider}`}>
+                                {previewItems.map(({ entry, item, hz }) => {
+                                  const isBelowHorizon = hz.altDeg < 0;
+                                  const title =
+                                    item.kind === 'dso'
+                                      ? `${item.data.id}${item.data.koName ? ` · ${item.data.koName}` : ''}`
+                                      : item.kind === 'double'
+                                      ? `${item.data.koName || item.data.name || item.data.bayer || item.data.disc}`
+                                      : `${item.data.koName || item.data.name || item.data.id}`;
+                                  const rowBgClass = isBelowHorizon
+                                    ? theme === 'white'
+                                      ? 'bg-slate-100/85'
+                                      : theme === 'red'
+                                      ? 'bg-[#090101]'
+                                      : 'bg-slate-900/55'
+                                    : '';
+                                  const titleColorClass = isBelowHorizon
+                                    ? theme === 'white'
+                                      ? 'text-slate-400'
+                                      : theme === 'red'
+                                      ? 'text-[#7F1D1D]'
+                                      : 'text-slate-500'
+                                    : ui.textPrimary;
+                                  const metaColorClass = isBelowHorizon
+                                    ? theme === 'white'
+                                      ? 'text-slate-400'
+                                      : theme === 'red'
+                                      ? 'text-[#5C1111]'
+                                      : 'text-slate-600'
+                                    : ui.textMuted;
+                                  return (
+                                    <div
+                                      key={entry.id}
+                                      className={`px-2 py-1.5 flex items-center gap-1.5 ${rowBgClass}`}
+                                    >
+                                      <button
+                                        type="button"
+                                        onClick={() => onToggleObserved(entry.id, list.id)}
+                                        title={entry.observed ? '관측 완료 취소' : '관측 완료 표시'}
+                                        className={`shrink-0 ${isBelowHorizon ? 'opacity-45' : ''}`}
+                                      >
+                                        {entry.observed ? (
+                                          <CheckCircle2
+                                            className={`w-3 h-3 ${
+                                              isBelowHorizon ? metaColorClass : ui.accentText
+                                            }`}
+                                          />
+                                        ) : (
+                                          <Circle className={`w-3 h-3 ${metaColorClass}`} />
+                                        )}
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => jumpToSessionObject(item)}
+                                        className="flex-1 text-left min-w-0"
+                                      >
+                                        <div
+                                          className={`text-[10.5px] truncate tracking-[-0.04em] ${
+                                            entry.observed ? 'line-through opacity-60 ' : ''
+                                          }${titleColorClass}`}
+                                        >
+                                          {title}
+                                        </div>
+                                        <div
+                                          className={`text-[9px] font-mono tabular-nums truncate ${metaColorClass}`}
+                                        >
+                                          {item.data.mag.toFixed(1)}m · 고도 {hz.altDeg.toFixed(0)}°
+                                          {isBelowHorizon ? ' · 지평 아래' : ''}
+                                        </div>
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => onToggleSessionItem(item, list.id)}
+                                        title="목록에서 제거"
+                                        className={`p-0.5 ${metaColorClass} hover:opacity-80 shrink-0 ${
+                                          isBelowHorizon ? 'opacity-50' : ''
+                                        }`}
+                                      >
+                                        <Trash2 className="w-3 h-3" />
+                                      </button>
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
+                )}
               </div>
             )}
           </div>

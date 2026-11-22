@@ -1,6 +1,7 @@
 import React, { useMemo, useRef, useState } from 'react';
 import {
   BookmarkPlus,
+  ChevronDown,
   Compass,
   Crosshair,
   Download,
@@ -232,9 +233,16 @@ export function ControlSidebar({
   const [quickSiteNote, setQuickSiteNote] = useState('');
   const [siteStatusMsg, setSiteStatusMsg] = useState<string | null>(null);
   const [layerStatusMsg, setLayerStatusMsg] = useState<string | null>(null);
+  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
   const siteFileInputRef = useRef<HTMLInputElement>(null);
   const layerFileInputRef = useRef<HTMLInputElement>(null);
   const ui = getUiTheme(theme);
+
+  const isSectionOpen = (id: string) => !collapsedSections[id];
+  const toggleSection = (id: string) =>
+    setCollapsedSections((prev) => ({ ...prev, [id]: !prev[id] }));
+  const openSection = (id: string) =>
+    setCollapsedSections((prev) => (prev[id] ? { ...prev, [id]: false } : prev));
 
   const showSiteNotice = (msg: string) => {
     setSiteStatusMsg(msg);
@@ -1669,8 +1677,18 @@ export function ControlSidebar({
               }`}
               style={{ borderRadius: '6px' }}
             >
-              <label className="flex items-center justify-between gap-1.5 cursor-pointer">
-                <span className="flex items-center gap-1.5 min-w-0">
+              <div className="flex items-center justify-between gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => toggleSection('layers_highlight')}
+                  aria-expanded={isSectionOpen('layers_highlight')}
+                  className="flex items-center gap-1 min-w-0 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('layers_highlight') ? '' : '-rotate-90'
+                    }`}
+                  />
                   <Target
                     className={`w-3.5 h-3.5 shrink-0 ${
                       layers.highlightSessionPlan
@@ -1683,8 +1701,8 @@ export function ControlSidebar({
                   <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
                     관측 목록 강조 모드
                   </span>
-                </span>
-                <div className="flex items-center gap-1.5 shrink-0">
+                </button>
+                <label className="flex items-center gap-1.5 shrink-0 cursor-pointer">
                   <span
                     className={`font-mono text-[9.5px] tabular-nums whitespace-nowrap ${
                       layers.highlightSessionPlan
@@ -1711,25 +1729,40 @@ export function ControlSidebar({
                       theme === 'red' ? 'accent-red-600' : 'accent-amber-500'
                     }`}
                   />
-                </div>
-              </label>
-              <p className={`text-[9.5px] tracking-[-0.04em] leading-snug break-keep ${ui.textMuted}`}>
-                {sessionPlanCount > 0
-                  ? '관측 목록에 담긴 천체(별·행성·이중성·DSO)를 성도 위에 번호·이중 링·배지 라벨로 눈에 띄게 강조합니다.'
-                  : '활성화 후 관측 목록에 대상을 추가하거나 .skylist를 불러오면 성도 위에 번호·링으로 강조 표시됩니다.'}
-              </p>
+                </label>
+              </div>
+              {isSectionOpen('layers_highlight') && (
+                <p className={`text-[9.5px] tracking-[-0.04em] leading-snug break-keep ${ui.textMuted}`}>
+                  {sessionPlanCount > 0
+                    ? '관측 목록에 담긴 천체(별·행성·이중성·DSO)를 성도 위에 번호·이중 링·배지 라벨로 눈에 띄게 강조합니다.'
+                    : '활성화 후 관측 목록에 대상을 추가하거나 .skylist를 불러오면 성도 위에 번호·링으로 강조 표시됩니다.'}
+                </p>
+              )}
             </div>
 
             {/* 1. 별자리 (Constellations) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-1.5`}>
-              <div className="flex items-center justify-between gap-1">
-                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                  별자리 (Constellations)
+            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('layers_constellations')}
+                aria-expanded={isSectionOpen('layers_constellations')}
+                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('layers_constellations') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>별자리 (Constellations)</span>
                 </span>
                 <span className={`font-mono text-[9.5px] tracking-[-0.05em] tabular-nums whitespace-nowrap shrink-0 ${ui.textMuted}`}>
                   88개 · {layers.constellationLineStyle === 'modern' ? 'IAU 843선' : '전통 695선'}
                 </span>
-              </div>
+              </button>
+
+              {isSectionOpen('layers_constellations') && (
+              <div className="space-y-1.5">
 
               <div className="grid grid-cols-2 gap-1 pt-0.5">
                 <button
@@ -1855,18 +1888,33 @@ export function ControlSidebar({
                   </div>
                 );
               })()}
+              </div>
+              )}
             </div>
 
             {/* 1.5. 태양계 (Solar System) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-1.5`}>
-              <div className="flex items-center justify-between gap-1">
-                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                  태양계 (Solar System)
+            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('layers_solar')}
+                aria-expanded={isSectionOpen('layers_solar')}
+                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('layers_solar') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>태양계 (Solar System)</span>
                 </span>
                 <span className={`font-mono text-[9.5px] tracking-[-0.04em] tabular-nums whitespace-nowrap shrink-0 ${ui.textMuted}`}>
                   {solarBodies.length} 천체
                 </span>
-              </div>
+              </button>
+
+              {isSectionOpen('layers_solar') && (
+              <div className="space-y-1.5">
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -1938,18 +1986,33 @@ export function ControlSidebar({
                   className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
                 />
               </label>
+              </div>
+              )}
             </div>
 
             {/* 2. 항성 (Stars) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-1.5`}>
-              <div className="flex items-center justify-between gap-1">
-                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                  항성 (Stars)
+            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('layers_stars')}
+                aria-expanded={isSectionOpen('layers_stars')}
+                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('layers_stars') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>항성 (Stars)</span>
                 </span>
                 <span className={`font-mono text-[9.5px] tracking-[-0.04em] tabular-nums whitespace-nowrap shrink-0 ${ui.textMuted}`}>
                   LoD {layers.magOffset >= 0 ? `+${layers.magOffset.toFixed(1)}` : layers.magOffset.toFixed(1)}m
                 </span>
-              </div>
+              </button>
+
+              {isSectionOpen('layers_stars') && (
+              <div className="space-y-1.5">
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -2051,20 +2114,35 @@ export function ControlSidebar({
               <p className={`pt-0.5 text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
                 시야각 5.5° 이하 확대 시 Gaia DR3 심층 별(최대 15.8m)이 화면 전체에 균일하게 로딩됩니다.
               </p>
+              </div>
+              )}
             </div>
 
             {/* 2.5. 이중성 · 다중성 (WDS Double & Multiple Stars) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-1.5`}>
-              <div className="flex items-center justify-between gap-1">
-                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                  이중성 · 다중성 (WDS)
+            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('layers_doubles')}
+                aria-expanded={isSectionOpen('layers_doubles')}
+                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('layers_doubles') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>이중성 · 다중성 (WDS)</span>
                 </span>
                 <span className={`font-mono text-[9.5px] tracking-[-0.05em] tabular-nums whitespace-nowrap shrink-0 ${ui.textMuted}`}>
                   {catalogs.doubleStarsLoaded
                     ? `${catalogs.doubleStars.length.toLocaleString()}계`
                     : '로딩 중...'}
                 </span>
-              </div>
+              </button>
+
+              {isSectionOpen('layers_doubles') && (
+              <div className="space-y-1.5">
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -2251,13 +2329,25 @@ export function ControlSidebar({
               <p className={`pt-0.5 text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
                 고배율 확대 시 WDS 실측 이격각(ρ)·방위각(PA) 위치에 동반성이 분리 표기됩니다.
               </p>
+              </div>
+              )}
             </div>
 
             {/* 3. 심우주 천체 & 은하수 (Deep Sky & Milky Way) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
-              <div className="flex items-center justify-between gap-1">
-                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                  심우주 천체 & 은하수
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('layers_dso')}
+                aria-expanded={isSectionOpen('layers_dso')}
+                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('layers_dso') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>심우주 천체 & 은하수</span>
                 </span>
                 <span className={`font-mono text-[9.5px] tracking-[-0.05em] tabular-nums whitespace-nowrap shrink-0 ${ui.textMuted}`}>
                   {(
@@ -2267,8 +2357,9 @@ export function ControlSidebar({
                   ).toLocaleString()}{' '}
                   DSO
                 </span>
-              </div>
+              </button>
 
+              {isSectionOpen('layers_dso') && (
               <div className="space-y-1">
                 <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                   <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -2369,6 +2460,47 @@ export function ControlSidebar({
                   </div>
                 )}
 
+                {(() => {
+                  const anyDsoActive =
+                    layers.showDso ||
+                    layers.showMessierCatalog ||
+                    layers.showCaldwellCatalog;
+                  return (
+                    <div
+                      className={`pl-2 pt-0.5 pb-1 space-y-0.5 transition-opacity ${
+                        anyDsoActive ? '' : 'opacity-45 cursor-not-allowed'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                          심볼 · 라벨 진하기
+                        </span>
+                        <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                          {Math.round(layers.dsoOpacity * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.05}
+                        max={1}
+                        step={0.05}
+                        disabled={!anyDsoActive}
+                        value={layers.dsoOpacity}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            dsoOpacity: Number(e.target.value),
+                          }))
+                        }
+                        aria-label="심우주 천체 심볼 및 라벨 진하기"
+                        className={`w-full h-1.5 accent-cyan-500 ${
+                          anyDsoActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                        }`}
+                      />
+                    </div>
+                  );
+                })()}
+
                 {/* 알려진 심우주 천체 (심우주 천체 비활성화 시에도 독립 표시) */}
                 <div
                   className={`my-1.5 px-2 py-1.5 border space-y-1 ${ui.border}`}
@@ -2450,14 +2582,25 @@ export function ControlSidebar({
                   />
                 </label>
               </div>
+              )}
             </div>
 
             {/* 3.5. 한계등급 기준 (Star & DSO Limiting Magnitude Baseline) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
               <div className="flex items-center justify-between gap-1">
-                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                  한계등급 기준 (60°: 6.0 / 10.0)
-                </span>
+                <button
+                  type="button"
+                  onClick={() => toggleSection('layers_mag')}
+                  aria-expanded={isSectionOpen('layers_mag')}
+                  className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('layers_mag') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>한계등급 기준 (60°: 6.0 / 10.0)</span>
+                </button>
                 {(layers.magOffset !== 0 || layers.dsoMagOffset !== 0) && (
                   <button
                     type="button"
@@ -2470,6 +2613,9 @@ export function ControlSidebar({
                   </button>
                 )}
               </div>
+
+              {isSectionOpen('layers_mag') && (
+              <div className="space-y-2">
 
               {/* 항성 한계등급 기준 슬라이드바 */}
               <div className="space-y-0.5">
@@ -2539,17 +2685,89 @@ export function ControlSidebar({
                   } ${layers.showDso ? 'cursor-pointer' : 'cursor-not-allowed'}`}
                 />
               </div>
+              </div>
+              )}
             </div>
 
             {/* 4. 좌표 그리드 & 기준선 (Grids & Reference Lines) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-1.5`}>
-              <div className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                좌표 그리드 & 기준선
-              </div>
+            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('layers_grids')}
+                aria-expanded={isSectionOpen('layers_grids')}
+                className={`w-full flex items-center gap-1 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+              >
+                <ChevronDown
+                  className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                    isSectionOpen('layers_grids') ? '' : '-rotate-90'
+                  }`}
+                />
+                <span>좌표 그리드 & 기준선</span>
+              </button>
+              {isSectionOpen('layers_grids') && (
+              <div className="space-y-1.5">
               {(
                 [
                   ['showGridEq', '적도 좌표 그리드 (RA/Dec)'],
                   ['showGridAltAz', '지평 좌표 그리드 (Alt/Az)'],
+                ] as [keyof LayerSettings, string][]
+              ).map(([key, label]) => (
+                <label
+                  key={key}
+                  className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer"
+                >
+                  <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                    {label}
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={Boolean(layers[key])}
+                    onChange={(e) =>
+                      onChangeLayers((p) => ({ ...p, [key]: e.target.checked }))
+                    }
+                    className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                  />
+                </label>
+              ))}
+              {(() => {
+                const anyGridActive = layers.showGridEq || layers.showGridAltAz;
+                return (
+                  <div
+                    className={`pl-2 pt-0.5 pb-1 space-y-0.5 transition-opacity ${
+                      anyGridActive ? '' : 'opacity-45 cursor-not-allowed'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        그리드 선 굵기
+                      </span>
+                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                        {layers.gridLineWidth.toFixed(1)}px
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.2}
+                      max={2.5}
+                      step={0.1}
+                      disabled={!anyGridActive}
+                      value={layers.gridLineWidth}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          gridLineWidth: Number(e.target.value),
+                        }))
+                      }
+                      aria-label="좌표 그리드 선 굵기"
+                      className={`w-full h-1.5 accent-cyan-500 ${
+                        anyGridActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                      }`}
+                    />
+                  </div>
+                );
+              })()}
+              {(
+                [
                   ['showHorizon', '관측지 지평선 및 방위'],
                   ['showEcliptic', '황도선 (Ecliptic)'],
                 ] as [keyof LayerSettings, string][]
@@ -2571,24 +2789,42 @@ export function ControlSidebar({
                   />
                 </label>
               ))}
+              </div>
+              )}
             </div>
 
             {/* 5. 실사 배경 서베이 (Aladin Lite v3 HiPS) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
-              <label className="flex items-center justify-between gap-1.5 cursor-pointer">
-                <span className={`font-semibold flex items-center gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+              <div className="flex items-center justify-between gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => toggleSection('layers_hips')}
+                  aria-expanded={isSectionOpen('layers_hips')}
+                  className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('layers_hips') ? '' : '-rotate-90'
+                    }`}
+                  />
                   <Image className="w-3.5 h-3.5 shrink-0" />
                   <span>하이브리드 실사 배경 (HiPS)</span>
-                </span>
+                </button>
                 <input
                   type="checkbox"
                   checked={hips.enabled}
-                  onChange={(e) =>
-                    onChangeHips((p) => ({ ...p, enabled: e.target.checked }))
-                  }
-                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    onChangeHips((p) => ({ ...p, enabled: checked }));
+                    if (checked) openSection('layers_hips');
+                  }}
+                  aria-label="하이브리드 실사 배경 활성화"
+                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
                 />
-              </label>
+              </div>
+
+              {isSectionOpen('layers_hips') && (
+              <div className="space-y-2">
 
               {hips.enabled && (
                 <div className="space-y-2 pt-0.5">
@@ -2633,15 +2869,27 @@ export function ControlSidebar({
               <p className={`text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
                 ESA 천구 실사 서베이(DSS2/2MASS/AllWISE)를 벡터 성도 아래 실시간 투영·정합합니다.
               </p>
+              </div>
+              )}
             </div>
 
             {/* 6. 레이어 세팅 관리 (파일 저장 / 불러오기 / 자동 로컬 저장) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
               <div className="flex items-center justify-between gap-1.5">
-                <span className={`font-semibold flex items-center gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                <button
+                  type="button"
+                  onClick={() => toggleSection('layers_manage')}
+                  aria-expanded={isSectionOpen('layers_manage')}
+                  className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('layers_manage') ? '' : '-rotate-90'
+                    }`}
+                  />
                   <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
                   <span>레이어 세팅 관리</span>
-                </span>
+                </button>
                 <button
                   type="button"
                   onClick={() => {
@@ -2656,6 +2904,9 @@ export function ControlSidebar({
                   <span>기본값</span>
                 </button>
               </div>
+
+              {isSectionOpen('layers_manage') && (
+              <div className="space-y-2">
 
               <div className="grid grid-cols-2 gap-1">
                 <button
@@ -2713,6 +2964,8 @@ export function ControlSidebar({
               <p className={`text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
                 변경한 모든 레이어·HiPS 세팅은 로컬에 자동 저장되어 다음 접속 시 복원됩니다.
               </p>
+              </div>
+              )}
             </div>
           </>
         )}
@@ -2730,10 +2983,20 @@ export function ControlSidebar({
             />
 
             {/* Mirror / Reflector Flip */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
-              <div className="flex items-center justify-between gap-1">
-                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                  광학계 상 반전 (Flip)
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('optics_flip')}
+                aria-expanded={isSectionOpen('optics_flip')}
+                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('optics_flip') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>광학계 상 반전 (Flip)</span>
                 </span>
                 <span
                   className={`font-mono text-[9.5px] tracking-[-0.05em] whitespace-nowrap shrink-0 ${
@@ -2758,7 +3021,9 @@ export function ControlSidebar({
                     return optics.showEyepiece ? '아이피스 내부만' : '전체 성도';
                   })()}
                 </span>
-              </div>
+              </button>
+              {isSectionOpen('optics_flip') && (
+              <div className="space-y-2">
               <div className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
@@ -2871,14 +3136,26 @@ export function ControlSidebar({
                   ? '망원경 아이피스가 켜져 있어 원 내부의 성도·HiPS 사진만 반전·회전됩니다. 반사 경통 선택 시 상하+좌우 반전(도립상)이 자동 적용됩니다.'
                   : '아이피스를 켜면 원 내부만 반전·회전되고, 반사 경통이 선택된 경우 상하+좌우 반전(도립상)이 자동으로 반영됩니다.'}
               </p>
+              </div>
+              )}
             </div>
 
             {/* Multi-select FOV Rings (시야 링 - 중복 표시 가능) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
               <div className="flex items-center justify-between gap-1">
-                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                  시야 링 (중복 표시 가능)
-                </span>
+                <button
+                  type="button"
+                  onClick={() => toggleSection('optics_rings')}
+                  aria-expanded={isSectionOpen('optics_rings')}
+                  className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('optics_rings') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>시야 링 (중복 표시 가능)</span>
+                </button>
                 <button
                   type="button"
                   onClick={() =>
@@ -2895,6 +3172,9 @@ export function ControlSidebar({
                   모두 해제
                 </button>
               </div>
+
+              {isSectionOpen('optics_rings') && (
+              <div className="space-y-2">
 
               <div className="space-y-1">
                 {/* 1. 중앙 십자선 */}
@@ -3043,28 +3323,48 @@ export function ControlSidebar({
                   className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
                 />
               </label>
+              </div>
+              )}
             </div>
 
             {/* Eyepiece TFOV Settings (내 장비 조합 / 시야각 직접 입력 / 수치 계산) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-2.5`}>
-              <div className="flex items-center gap-1.5">
-                <SlidersHorizontal
-                  className={`w-3.5 h-3.5 shrink-0 ${
-                    theme === 'red' ? 'text-[#FF5555]' : 'text-amber-400'
-                  }`}
-                />
-                <span
-                  className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${
-                    theme === 'white'
-                      ? 'text-amber-700'
-                      : theme === 'red'
-                      ? 'text-[#FF6666]'
-                      : 'text-amber-400'
-                  }`}
-                >
-                  아이피스 시야각 설정
+            <div className={`pt-3 border-t ${ui.divider} space-y-2.5`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('optics_eyepiece')}
+                aria-expanded={isSectionOpen('optics_eyepiece')}
+                className="w-full flex items-center justify-between gap-1.5 text-left hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                <span className="flex items-center gap-1 min-w-0">
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('optics_eyepiece') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <SlidersHorizontal
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      theme === 'red' ? 'text-[#FF5555]' : 'text-amber-400'
+                    }`}
+                  />
+                  <span
+                    className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${
+                      theme === 'white'
+                        ? 'text-amber-700'
+                        : theme === 'red'
+                        ? 'text-[#FF6666]'
+                        : 'text-amber-400'
+                    }`}
+                  >
+                    아이피스 시야각 설정
+                  </span>
                 </span>
-              </div>
+                <span className={`font-mono text-[9.5px] tabular-nums shrink-0 ${ui.textMuted}`}>
+                  {optics.eyepieceFovDeg.toFixed(2)}°
+                </span>
+              </button>
+
+              {isSectionOpen('optics_eyepiece') && (
+              <div className="space-y-2.5">
 
               {/* 3-Mode Segmented Switcher */}
               <div
@@ -3517,23 +3817,41 @@ export function ControlSidebar({
                   })()}
                 </div>
               )}
+              </div>
+              )}
             </div>
 
             {/* Astrophotography Sensor Frame (내 장비 조합 + 스마트망원경 바로 적용) */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
-              <label className="flex items-center justify-between gap-1.5 cursor-pointer">
-                <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                  촬영 센서 화각 프레임
-                </span>
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+              <div className="flex items-center justify-between gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => toggleSection('optics_sensor')}
+                  aria-expanded={isSectionOpen('optics_sensor')}
+                  className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('optics_sensor') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>촬영 센서 화각 프레임</span>
+                </button>
                 <input
                   type="checkbox"
                   checked={optics.showSensorBox}
-                  onChange={(e) =>
-                    onChangeOptics((p) => ({ ...p, showSensorBox: e.target.checked }))
-                  }
-                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    onChangeOptics((p) => ({ ...p, showSensorBox: checked }));
+                    if (checked) openSection('optics_sensor');
+                  }}
+                  aria-label="촬영 센서 화각 프레임 표시"
+                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
                 />
-              </label>
+              </div>
+
+              {isSectionOpen('optics_sensor') && (
+              <div className="space-y-2">
 
               {/* 2-Mode Switcher: 장비 조합 vs 스마트망원경 바로 적용 */}
               <div
@@ -3877,7 +4195,7 @@ export function ControlSidebar({
                       <span
                         className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
                       >
-                        촬영 센서 화각 프레임 회전
+                        촬영 센서 화각 회전 (지평)
                       </span>
                       <div className="flex items-center gap-1.5 shrink-0">
                         {!sensorCanRotate ? (
@@ -3959,17 +4277,25 @@ export function ControlSidebar({
                       ))}
                     </div>
 
-                    {!sensorCanRotate && (
+                    {!sensorCanRotate ? (
                       <p
                         className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
                       >
-                        현재 스마트 망원경은 센서 회전(로테이터)을 지원하지 않아 0°로 고정됩니다.
-                        (DWARFLAB Draco 등 회전 지원 모델은 회전 가능)
+                        지상 지평선 기준으로 시간에 따라 시야가 회전하며, 현재 스마트 망원경은
+                        로테이터를 지원하지 않아 지평 0°로 고정됩니다. (DWARFLAB Draco 등 회전 지원 모델은 회전 가능)
+                      </p>
+                    ) : (
+                      <p
+                        className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
+                      >
+                        지상(지평좌표계) 기준으로 시간에 따라 프레임 각도가 회전합니다.
                       </p>
                     )}
                   </div>
                 );
               })()}
+              </div>
+              )}
             </div>
           </>
         )}
@@ -3978,15 +4304,28 @@ export function ControlSidebar({
           <>
             {/* Current Site Summary + Interactive Map Picker */}
             <div className="space-y-2">
-              <div className={`font-semibold flex items-center justify-between gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('observer_current')}
+                aria-expanded={isSectionOpen('observer_current')}
+                className={`w-full font-semibold flex items-center justify-between gap-1 whitespace-nowrap tracking-[-0.05em] text-left hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+              >
                 <span className="flex items-center gap-1">
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('observer_current') ? '' : '-rotate-90'
+                    }`}
+                  />
                   <Compass className="w-3.5 h-3.5 shrink-0" />
                   <span>현재 관측지</span>
                 </span>
                 <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
                   {formatCoordsShort(observer.lat, observer.lon)}
                 </span>
-              </div>
+              </button>
+
+              {isSectionOpen('observer_current') && (
+              <div className="space-y-2">
 
               <div className={`p-2 border rounded-md space-y-2 ${cardIdleCls}`}>
                 <div className="flex items-center justify-between gap-1.5">
@@ -4062,18 +4401,31 @@ export function ControlSidebar({
                   />
                 </div>
               </div>
+              </div>
+              )}
             </div>
 
             {/* Saved Observing Sites + Local File Export/Import */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
               <div className="flex items-center justify-between gap-1">
-                <div className={`font-semibold flex items-center gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
+                <button
+                  type="button"
+                  onClick={() => toggleSection('observer_saved')}
+                  aria-expanded={isSectionOpen('observer_saved')}
+                  className={`font-semibold flex items-center gap-1 min-w-0 text-left whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('observer_saved') ? '' : '-rotate-90'
+                    }`}
+                  />
                   <MapPin className="w-3.5 h-3.5 shrink-0" />
                   <span>내 저장 관측지 ({savedSites.length})</span>
-                </div>
+                </button>
                 <button
                   type="button"
                   onClick={() => {
+                    openSection('observer_saved');
                     setQuickSiteName(observer.name === '사용자 지정' ? '' : observer.name);
                     setQuickSiteNote('');
                     setQuickSaveOpen((v) => !v);
@@ -4087,6 +4439,9 @@ export function ControlSidebar({
                   <span>현재 저장</span>
                 </button>
               </div>
+
+              {isSectionOpen('observer_saved') && (
+              <div className="space-y-2">
 
               {quickSaveOpen && (
                 <form
@@ -4270,13 +4625,31 @@ export function ControlSidebar({
                   })}
                 </div>
               )}
+              </div>
+              )}
             </div>
 
             {/* Built-in Observatory Presets */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-1.5`}>
-              <div className={`font-semibold text-[10.5px] tracking-[-0.05em] ${ui.textMuted}`}>
-                기본 추천 관측지
-              </div>
+            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('observer_presets')}
+                aria-expanded={isSectionOpen('observer_presets')}
+                className={`w-full flex items-center justify-between gap-1 text-left font-semibold text-[10.5px] tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+              >
+                <span className="flex items-center gap-1">
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('observer_presets') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>기본 추천 관측지</span>
+                </span>
+                <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
+                  {SITE_PRESETS.length}곳
+                </span>
+              </button>
+              {isSectionOpen('observer_presets') && (
               <div className="grid grid-cols-1 gap-1">
                 {SITE_PRESETS.map((site) => (
                   <button
@@ -4302,14 +4675,32 @@ export function ControlSidebar({
                   </button>
                 ))}
               </div>
+              )}
             </div>
 
             {/* Minimum Altitude Filter */}
-            <div className={`pt-3.5 border-t ${ui.divider} space-y-2`}>
-              <div className={`font-semibold flex items-center gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                <Eye className="w-3.5 h-3.5 shrink-0" />
-                <span>고도 기반 관측 필터</span>
-              </div>
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('observer_alt')}
+                aria-expanded={isSectionOpen('observer_alt')}
+                className={`w-full font-semibold flex items-center justify-between gap-1 whitespace-nowrap tracking-[-0.05em] text-left hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+              >
+                <span className="flex items-center gap-1">
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('observer_alt') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <Eye className="w-3.5 h-3.5 shrink-0" />
+                  <span>고도 기반 관측 필터</span>
+                </span>
+                <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
+                  {observer.minAltitudeDeg > -90 ? `≥${observer.minAltitudeDeg}°` : '전체'}
+                </span>
+              </button>
+              {isSectionOpen('observer_alt') && (
+              <div className="space-y-2">
               <div className="grid grid-cols-5 gap-0.5">
                 {[
                   { val: -90, lbl: '전체' },
@@ -4389,6 +4780,8 @@ export function ControlSidebar({
                     항성·DSO·성운 등고선에 고도 {observer.minAltitudeDeg}° 필터가 적용되며 성도에 최소고도 기준선이 표시됩니다.
                   </p>
                 </div>
+              )}
+              </div>
               )}
             </div>
           </>
