@@ -20,6 +20,12 @@ import {
   Waypoints,
   X,
 } from 'lucide-react';
+import {
+  ConfirmDialogContext,
+  ConfirmDialogModal,
+  ConfirmDialogOptions,
+  PendingConfirmRequest,
+} from './components/ConfirmDialog';
 import { ControlSidebar } from './components/ControlSidebar';
 import { ObjectInspector } from './components/ObjectInspector';
 import { ObservingSiteMapModal } from './components/ObservingSiteMapModal';
@@ -96,6 +102,7 @@ import {
 } from './utils/asterismStorage';
 import { CHALLENGES_STORAGE_KEY, mergeChallengeTracks } from './utils/challengeStorage';
 import {
+  formatObservationDateTime,
   loadObservationLogStore,
   mergeObservationLogStores,
   saveObservationLogStore,
@@ -605,6 +612,27 @@ export default function App() {
   );
   const observationLogStoreRef = useRef<ObservationLogStoreState>(observationLogStore);
   observationLogStoreRef.current = observationLogStore;
+
+  const [confirmRequest, setConfirmRequest] = useState<PendingConfirmRequest | null>(null);
+  const confirmRequestRef = useRef<PendingConfirmRequest | null>(null);
+  confirmRequestRef.current = confirmRequest;
+  const requestConfirm = useCallback((options: ConfirmDialogOptions): Promise<boolean> => {
+    if (confirmRequestRef.current) {
+      confirmRequestRef.current.resolve(false);
+    }
+    return new Promise<boolean>((resolve) => {
+      const nextReq: PendingConfirmRequest = { options, resolve };
+      confirmRequestRef.current = nextReq;
+      setConfirmRequest(nextReq);
+    });
+  }, []);
+  const handleResolveConfirm = useCallback((confirmed: boolean) => {
+    const cur = confirmRequestRef.current;
+    confirmRequestRef.current = null;
+    setConfirmRequest(null);
+    cur?.resolve(confirmed);
+  }, []);
+
   const [challengeDraft, setChallengeDraft] = useState<ChallengeTrack | null>(null);
   const challengeDraftRef = useRef<ChallengeTrack | null>(challengeDraft);
   challengeDraftRef.current = challengeDraft;
@@ -1438,18 +1466,37 @@ export default function App() {
     }));
   }, []);
 
-  const handleDeleteObservingList = useCallback((listId: string) => {
-    setObservingListsState((prev) => {
-      const remaining = prev.lists.filter((l) => l.id !== listId);
-      const wasTonight = prev.tonightListId === listId;
-      return {
-        ...prev,
-        lists: remaining,
-        tonightListId: wasTonight ? null : prev.tonightListId,
-        tonightLinkedOverrides: wasTonight ? {} : prev.tonightLinkedOverrides,
-      };
-    });
-  }, []);
+  const observingListsStateRef = useRef<ObservingListsState>(observingListsState);
+  observingListsStateRef.current = observingListsState;
+
+  const handleDeleteObservingList = useCallback(
+    async (listId: string): Promise<boolean> => {
+      const target = observingListsStateRef.current.lists.find((l) => l.id === listId);
+      if (!target) return false;
+      const ok = await requestConfirm({
+        title: '관측목록 삭제 확인',
+        message: `‘${target.name}’ 관측목록(${target.entries.length}개 대상)을 삭제하시겠습니까?`,
+        detail:
+          observingListsStateRef.current.tonightListId === listId
+            ? '현재 오늘 밤 관측목록으로 연동된 목록입니다. 삭제 시 연동도 함께 해제됩니다.'
+            : '삭제한 관측목록은 되돌릴 수 없습니다.',
+        confirmLabel: '삭제',
+      });
+      if (!ok) return false;
+      setObservingListsState((prev) => {
+        const remaining = prev.lists.filter((l) => l.id !== listId);
+        const wasTonight = prev.tonightListId === listId;
+        return {
+          ...prev,
+          lists: remaining,
+          tonightListId: wasTonight ? null : prev.tonightListId,
+          tonightLinkedOverrides: wasTonight ? {} : prev.tonightLinkedOverrides,
+        };
+      });
+      return true;
+    },
+    [requestConfirm]
+  );
 
   const handleToggleSessionItem = useCallback(
     (item: SelectedItem, targetListId?: string) => {
@@ -1698,12 +1745,25 @@ export default function App() {
     [syncObservedToSessionLists]
   );
 
-  const handleDeleteObservationLog = useCallback((logId: string) => {
-    setObservationLogStore((prev) => ({
-      ...prev,
-      logs: prev.logs.filter((l) => l.id !== logId),
-    }));
-  }, []);
+  const handleDeleteObservationLog = useCallback(
+    async (logId: string): Promise<boolean> => {
+      const target = observationLogStoreRef.current.logs.find((l) => l.id === logId);
+      if (!target) return false;
+      const ok = await requestConfirm({
+        title: '관측기록 삭제 확인',
+        message: `‘${target.objectName}’ (${formatObservationDateTime(target.observedAt)}) 관측기록을 삭제하시겠습니까?`,
+        detail: '삭제한 관측기록은 복구할 수 없습니다.',
+        confirmLabel: '삭제',
+      });
+      if (!ok) return false;
+      setObservationLogStore((prev) => ({
+        ...prev,
+        logs: prev.logs.filter((l) => l.id !== logId),
+      }));
+      return true;
+    },
+    [requestConfirm]
+  );
 
   const handleImportObservationLogs = useCallback((incoming: ObservationLogStoreState) => {
     const res = mergeObservationLogStores(observationLogStoreRef.current, incoming);
@@ -2041,23 +2101,39 @@ export default function App() {
     [applyEquipmentToOptics]
   );
 
+  const equipmentLockerRef = useRef<EquipmentLockerState>(equipmentLocker);
+  equipmentLockerRef.current = equipmentLocker;
+
   const handleDeleteEquipment = useCallback(
-    (id: string) => {
+    async (id: string): Promise<boolean> => {
+      const target = equipmentLockerRef.current.items.find((it) => it.id === id);
+      if (!target) return false;
+      const ok = await requestConfirm({
+        title: '장비 삭제 확인',
+        message: `‘${target.name}’ 장비를 보유 장비 목록에서 삭제하시겠습니까?`,
+        detail:
+          equipmentLockerRef.current.activeIds[target.category] === id
+            ? '현재 활성화된 장비입니다. 삭제 시 광학계 선택이 해제됩니다.'
+            : undefined,
+        confirmLabel: '삭제',
+      });
+      if (!ok) return false;
       setEquipmentLocker((prev) => {
-        const target = prev.items.find((it) => it.id === id);
+        const curTarget = prev.items.find((it) => it.id === id);
         const items = prev.items.filter((it) => it.id !== id);
         const activeIds = { ...prev.activeIds };
-        if (target && activeIds[target.category] === id) {
-          delete activeIds[target.category];
+        if (curTarget && activeIds[curTarget.category] === id) {
+          delete activeIds[curTarget.category];
         }
         const next: EquipmentLockerState = { items, activeIds };
-        if (target && prev.activeIds[target.category] === id) {
-          applyEquipmentToOptics(next, target.category);
+        if (curTarget && prev.activeIds[curTarget.category] === id) {
+          applyEquipmentToOptics(next, curTarget.category);
         }
         return next;
       });
+      return true;
     },
-    [applyEquipmentToOptics]
+    [applyEquipmentToOptics, requestConfirm]
   );
 
   const handleToggleActiveEquipment = useCallback(
@@ -2282,13 +2358,26 @@ export default function App() {
     });
   }, []);
 
-  const handleDeleteSite = useCallback((id: string) => {
-    setSavedSites((prev) => {
-      const next = prev.filter((s) => s.id !== id);
-      savedSitesRef.current = next;
-      return next;
-    });
-  }, []);
+  const handleDeleteSite = useCallback(
+    async (id: string): Promise<boolean> => {
+      const target = savedSitesRef.current.find((s) => s.id === id);
+      if (!target) return false;
+      const ok = await requestConfirm({
+        title: '관측지 삭제 확인',
+        message: `‘${target.name}’ 관측지를 삭제하시겠습니까?`,
+        detail: '저장된 관측지 목록에서 영구적으로 제거됩니다.',
+        confirmLabel: '삭제',
+      });
+      if (!ok) return false;
+      setSavedSites((prev) => {
+        const next = prev.filter((s) => s.id !== id);
+        savedSitesRef.current = next;
+        return next;
+      });
+      return true;
+    },
+    [requestConfirm]
+  );
 
   const handleImportSites = useCallback((incoming: SavedObservingSite[]) => {
     const result = mergeObservingSites(savedSitesRef.current, incoming);
@@ -3432,12 +3521,22 @@ export default function App() {
   );
 
   const handleDeleteAsterismVertex = useCallback(
-    (objectId: string, vertexIndex: number) => {
+    async (objectId: string, vertexIndex: number): Promise<boolean> => {
+      const target = asterismStoreRef.current.objects.find((o) => o.id === objectId);
+      if (!target || target.type === 'label') return false;
+      const minV = target.type === 'polygon' ? 3 : 2;
+      if (target.vertices.length <= minV) return false;
+      const ok = await requestConfirm({
+        title: '꼭짓점 삭제 확인',
+        message: `‘${target.label || '작도 항목'}’의 ${vertexIndex + 1}번 꼭짓점을 삭제하시겠습니까?`,
+        confirmLabel: '삭제',
+      });
+      if (!ok) return false;
       commitAsterismMutation((prev) => {
-        const target = prev.objects.find((o) => o.id === objectId);
-        if (!target || target.type === 'label') return prev;
-        const minV = target.type === 'polygon' ? 3 : 2;
-        if (target.vertices.length <= minV) return prev;
+        const curTarget = prev.objects.find((o) => o.id === objectId);
+        if (!curTarget || curTarget.type === 'label') return prev;
+        const curMinV = curTarget.type === 'polygon' ? 3 : 2;
+        if (curTarget.vertices.length <= curMinV) return prev;
         return {
           ...prev,
           objects: prev.objects.map((o) =>
@@ -3447,8 +3546,9 @@ export default function App() {
           ),
         };
       });
+      return true;
     },
-    [commitAsterismMutation]
+    [commitAsterismMutation, requestConfirm]
   );
 
   const handleUpdateAsterismObject = useCallback(
@@ -3462,14 +3562,23 @@ export default function App() {
   );
 
   const handleDeleteAsterismObject = useCallback(
-    (id: string) => {
+    async (id: string): Promise<boolean> => {
+      const target = asterismStoreRef.current.objects.find((o) => o.id === id);
+      if (!target) return false;
+      const ok = await requestConfirm({
+        title: '작도 항목 삭제 확인',
+        message: `‘${target.label || '이름 없는 성군'}’ 작도 항목을 삭제하시겠습니까?`,
+        confirmLabel: '삭제',
+      });
+      if (!ok) return false;
       commitAsterismMutation((prev) => ({
         ...prev,
         objects: prev.objects.filter((o) => o.id !== id),
       }));
       setAsterismSelectedId((cur) => (cur === id ? null : cur));
+      return true;
     },
-    [commitAsterismMutation]
+    [commitAsterismMutation, requestConfirm]
   );
 
   const handleUpdateAsterismSettings = useCallback(
@@ -3551,7 +3660,22 @@ export default function App() {
   );
 
   const handleDeleteAsterismLayer = useCallback(
-    (layerId: string) => {
+    async (layerId: string): Promise<boolean> => {
+      const cur = asterismStoreRef.current;
+      if (cur.layers.length <= 1) return false;
+      const target = cur.layers.find((l) => l.id === layerId);
+      if (!target) return false;
+      const objCount = cur.objects.filter((o) => o.layerId === layerId).length;
+      const ok = await requestConfirm({
+        title: '작도 레이어 삭제 확인',
+        message: `‘${target.name}’ 레이어를 삭제하시겠습니까?`,
+        detail:
+          objCount > 0
+            ? `이 레이어의 작도 항목 ${objCount}개는 기본 레이어로 이동됩니다.`
+            : undefined,
+        confirmLabel: '삭제',
+      });
+      if (!ok) return false;
       commitAsterismMutation((prev) => {
         if (prev.layers.length <= 1) return prev;
         const remaining = prev.layers.filter((l) => l.id !== layerId);
@@ -3565,8 +3689,9 @@ export default function App() {
           ),
         };
       });
+      return true;
     },
-    [commitAsterismMutation]
+    [commitAsterismMutation, requestConfirm]
   );
 
   const handleLoadAsterismPresets = useCallback((): number => {
@@ -3814,6 +3939,7 @@ export default function App() {
   const dsoMagLimit = getDsoLimitingMagnitude(view.fsz, layers.dsoMagOffset);
 
   return (
+    <ConfirmDialogContext.Provider value={requestConfirm}>
     <div
       data-theme={theme}
       className={`w-screen h-screen flex flex-col overflow-hidden ${ui.shell}`}
@@ -4705,6 +4831,12 @@ export default function App() {
           </div>
         </div>
       )}
+      <ConfirmDialogModal
+        request={confirmRequest}
+        theme={theme}
+        onResolve={handleResolveConfirm}
+      />
     </div>
+    </ConfirmDialogContext.Provider>
   );
 }

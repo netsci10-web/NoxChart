@@ -38,7 +38,7 @@ interface AsterismPanelProps {
   onSelectObject: (id: string | null) => void;
   onFocusObject: (obj: AsterismObject) => void;
   onUpdateObject: (id: string, patch: Partial<AsterismObject>) => void;
-  onDeleteObject: (id: string) => void;
+  onDeleteObject: (id: string) => void | Promise<boolean>;
   onSetActiveLayer: (layerId: string) => void;
   onToggleLayerVisible: (layerId: string) => void;
   onSetAllLayersVisible: (visible: boolean) => void;
@@ -564,9 +564,11 @@ export function AsterismPanel({
                               </button>
                               <button
                                 type="button"
-                                onClick={() => {
-                                  if (editingObjId === obj.id) setEditingObjId(null);
-                                  onDeleteObject(obj.id);
+                                onClick={async () => {
+                                  const ok = await onDeleteObject(obj.id);
+                                  if (ok !== false && editingObjId === obj.id) {
+                                    setEditingObjId(null);
+                                  }
                                 }}
                                 title="성군 삭제"
                                 className={`p-0.5 shrink-0 ${ui.textMuted} hover:text-red-400`}

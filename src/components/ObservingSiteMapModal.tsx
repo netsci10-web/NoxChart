@@ -56,7 +56,7 @@ interface ObservingSiteMapModalProps {
   onClose: () => void;
   onApplySite: (site: { name: string; lat: number; lon: number }) => void;
   onSaveSite: (site: SavedObservingSite) => void;
-  onDeleteSite: (id: string) => void;
+  onDeleteSite: (id: string) => void | Promise<boolean>;
   onImportSites: (
     sites: SavedObservingSite[]
   ) => { addedCount: number; updatedCount: number };
@@ -1180,8 +1180,9 @@ export function ObservingSiteMapModal({
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                onDeleteSite(site.id);
+                              onClick={async () => {
+                                const ok = await onDeleteSite(site.id);
+                                if (ok === false) return;
                                 if (editingSiteId === site.id) {
                                   setEditingSiteId(null);
                                 }

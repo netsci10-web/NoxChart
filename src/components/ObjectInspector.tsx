@@ -82,6 +82,7 @@ import { GuidedTourState, TourStop } from '../utils/tonightTour';
 import { getUiTheme } from '../utils/themeClasses';
 import { AsterismPanel } from './AsterismPanel';
 import { ChallengePanel } from './ChallengePanel';
+import { useConfirmDialog } from './ConfirmDialog';
 import { ObservationLogPanel } from './ObservationLogPanel';
 
 interface ObjectInspectorProps {
@@ -111,7 +112,7 @@ interface ObjectInspectorProps {
   onSetTonightList: (listId: string | null) => void;
   onCreateObservingList: (name: string) => string;
   onRenameObservingList: (listId: string, newName: string) => void;
-  onDeleteObservingList: (listId: string) => void;
+  onDeleteObservingList: (listId: string) => void | Promise<boolean>;
   onToggleSessionItem: (item: SelectedItem, targetListId?: string) => void;
   onToggleObserved: (id: string, targetListId?: string) => void;
   onUpdateNotes: (id: string, notes: string, targetListId?: string) => void;
@@ -304,6 +305,7 @@ export function ObjectInspector({
   onImportObservationLogs,
 }: ObjectInspectorProps) {
   const ui = getUiTheme(theme);
+  const confirmDialog = useConfirmDialog();
   const skylistInputRef = useRef<HTMLInputElement>(null);
   const pendingImportTargetRef = useRef<{ targetListId?: string; makeTonight?: boolean }>({});
   const [skylistBusy, setSkylistBusy] = useState(false);
@@ -2012,7 +2014,19 @@ export function ObjectInspector({
                         </button>
                         <button
                           type="button"
-                          onClick={() => onToggleSessionItem(item, '__tonight__')}
+                          onClick={async () => {
+                            const ok = await confirmDialog({
+                              title: isManual ? '관측목록 항목 제거' : '오늘 밤 목록에서 숨기기',
+                              message: isManual
+                                ? `‘${title}’을(를) 오늘 밤 관측목록에서 제거하시겠습니까?`
+                                : `‘${title}’을(를) 오늘 밤 관측목록에서 제거하시겠습니까?`,
+                              detail: isManual
+                                ? undefined
+                                : '목록관리의 원본 목록에는 그대로 유지됩니다.',
+                              confirmLabel: '제거',
+                            });
+                            if (ok) onToggleSessionItem(item, '__tonight__');
+                          }}
                           title={
                             isManual
                               ? '오늘 밤 관측목록에서 제거'
@@ -2410,9 +2424,11 @@ export function ObjectInspector({
                             </button>
                             <button
                               type="button"
-                              onClick={() => {
-                                onDeleteObservingList(list.id);
-                                if (renamingListId === list.id) setRenamingListId(null);
+                              onClick={async () => {
+                                const ok = await onDeleteObservingList(list.id);
+                                if (ok !== false && renamingListId === list.id) {
+                                  setRenamingListId(null);
+                                }
                               }}
                               title="이 목록 삭제"
                               aria-label={`${list.name} 삭제`}
@@ -2520,7 +2536,14 @@ export function ObjectInspector({
                                       </button>
                                       <button
                                         type="button"
-                                        onClick={() => onToggleSessionItem(item, list.id)}
+                                        onClick={async () => {
+                                          const ok = await confirmDialog({
+                                            title: '관측목록 항목 제거',
+                                            message: `‘${title}’을(를) ‘${list.name}’ 목록에서 제거하시겠습니까?`,
+                                            confirmLabel: '제거',
+                                          });
+                                          if (ok) onToggleSessionItem(item, list.id);
+                                        }}
                                         title="목록에서 제거"
                                         className={`p-0.5 ${metaColorClass} hover:opacity-80 shrink-0 ${
                                           isBelowHorizon ? 'opacity-50' : ''

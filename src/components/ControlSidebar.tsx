@@ -153,13 +153,13 @@ interface ControlSidebarProps {
   onSelect: (item: SelectedItem) => void;
   onSearchActiveChange: (active: boolean) => void;
   onAddOrUpdateEquipment: (item: EquipmentItem) => void;
-  onDeleteEquipment: (id: string) => void;
+  onDeleteEquipment: (id: string) => void | Promise<boolean>;
   onToggleActiveEquipment: (category: EquipmentCategory, id: string) => void;
   onSelectActiveEquipment: (category: EquipmentCategory, id: string | null) => void;
   onImportEquipmentLocker: (imported: EquipmentLockerState) => void;
   onOpenSiteMap: (focus?: SavedObservingSite | null) => void;
   onSaveSite: (site: SavedObservingSite) => void;
-  onDeleteSite: (id: string) => void;
+  onDeleteSite: (id: string) => void | Promise<boolean>;
   onImportSites: (
     sites: SavedObservingSite[]
   ) => { addedCount: number; updatedCount: number };

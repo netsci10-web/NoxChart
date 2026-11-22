@@ -61,6 +61,7 @@ import {
   TourStop,
 } from '../utils/tonightTour';
 import { getUiTheme } from '../utils/themeClasses';
+import { useConfirmDialog } from './ConfirmDialog';
 
 interface ChallengePanelProps {
   tracks: ChallengeTrack[];
@@ -171,6 +172,7 @@ export function ChallengePanel({
   onChangeTourDwellSec,
 }: ChallengePanelProps) {
   const ui = getUiTheme(theme);
+  const confirmDialog = useConfirmDialog();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [mode, setMode] = useState<'list' | 'detail'>('list');
@@ -994,7 +996,14 @@ export function ChallengePanel({
                   </button>
                   <button
                     type="button"
-                    onClick={() => removeDraftCheckpoint(cp.id)}
+                    onClick={async () => {
+                      const ok = await confirmDialog({
+                        title: '체크포인트 삭제 확인',
+                        message: `‘${cp.name || cp.code || '체크포인트'}’을(를) 챌린지 코스에서 삭제하시겠습니까?`,
+                        confirmLabel: '삭제',
+                      });
+                      if (ok) removeDraftCheckpoint(cp.id);
+                    }}
                     title="체크포인트 삭제"
                     className={`p-0.5 ${ui.textMuted} hover:text-red-400`}
                   >

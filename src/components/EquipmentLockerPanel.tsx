@@ -36,7 +36,7 @@ interface EquipmentLockerPanelProps {
   theme: ThemeMode;
   locker: EquipmentLockerState;
   onAddOrUpdateItem: (item: EquipmentItem) => void;
-  onDeleteItem: (id: string) => void;
+  onDeleteItem: (id: string) => void | Promise<boolean>;
   onToggleActiveItem: (category: EquipmentCategory, id: string) => void;
   onImportLocker: (imported: EquipmentLockerState) => void;
 }
@@ -631,9 +631,9 @@ export function EquipmentLockerPanel({
                   </button>
                   <button
                     type="button"
-                    onClick={() => {
-                      onDeleteItem(item.id);
-                      if (draft.id === item.id) {
+                    onClick={async () => {
+                      const ok = await onDeleteItem(item.id);
+                      if (ok !== false && draft.id === item.id) {
                         setFormOpen(false);
                         setDraft(createEmptyDraft(activeTab));
                       }

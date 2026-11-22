@@ -41,6 +41,7 @@ import {
   toDateTimeLocalValue,
 } from '../utils/observationLogStorage';
 import { getUiTheme } from '../utils/themeClasses';
+import { useConfirmDialog } from './ConfirmDialog';
 
 interface ObservationLogPanelProps {
   theme: ThemeMode;
@@ -107,6 +108,7 @@ export function ObservationLogPanel({
   onImportStore,
 }: ObservationLogPanelProps) {
   const ui = getUiTheme(theme);
+  const confirmDialog = useConfirmDialog();
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   const [subTab, setSubTab] = useState<'logs' | 'observed'>('logs');
@@ -940,7 +942,14 @@ export function ObservationLogPanel({
                   </button>
                   <button
                     type="button"
-                    onClick={() => onToggleObservedStatus(obj, false)}
+                    onClick={async () => {
+                      const ok = await confirmDialog({
+                        title: '관측 완료 해제 확인',
+                        message: `‘${obj.objectName}’의 관측 완료 표시를 해제하시겠습니까?`,
+                        confirmLabel: '해제',
+                      });
+                      if (ok) onToggleObservedStatus(obj, false);
+                    }}
                     title="관측 완료 해제"
                     className={`p-1 border text-[9.5px] ${ui.buttonIdle} hover:text-rose-400`}
                     style={{ borderRadius: '4px' }}
