@@ -27,6 +27,9 @@ import {
 import { CALDWELL_CATALOG } from '../data/caldwell';
 import { CatalogSnapshot } from '../data/catalogLoader';
 import {
+  AsterismLayer,
+  AsterismObject,
+  AsterismStoreState,
   ChallengeCheckpoint,
   ChallengeTrack,
   ChartViewState,
@@ -52,13 +55,14 @@ import {
 import { computePlanetOrientation } from '../utils/planetRenderer';
 import { getSolarSystemBodies } from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
+import { AsterismPanel } from './AsterismPanel';
 import { ChallengePanel } from './ChallengePanel';
 
 interface ObjectInspectorProps {
   selected: SelectedItem | null;
   centerLocked: boolean;
   solarTrails: Record<string, number>;
-  activeTab: 'detail' | 'session' | 'challenge';
+  activeTab: 'detail' | 'session' | 'challenge' | 'asterism';
   theme: ThemeMode;
   observer: ObserverConfig;
   optics: OpticsSettings;
@@ -68,7 +72,7 @@ interface ObjectInspectorProps {
   observingLists: ObservingListGroup[];
   tonightListId: string | null;
   challenges: ChallengeTrack[];
-  onTabChange: (tab: 'detail' | 'session' | 'challenge') => void;
+  onTabChange: (tab: 'detail' | 'session' | 'challenge' | 'asterism') => void;
   onClose: () => void;
   onSelect: (item: SelectedItem | null) => void;
   onToggleCenterLock: () => void;
@@ -121,6 +125,28 @@ interface ObjectInspectorProps {
   onDeleteChallengeTrack: (trackId: string) => void;
   onResetBuiltInChallenge: (trackId: string) => void;
   onImportChallenges: (tracks: ChallengeTrack[]) => { addedCount: number; updatedCount: number };
+  // Custom Asterism Layers & Presets
+  asterismStore: AsterismStoreState;
+  asterismMode: boolean;
+  asterismSelectedId: string | null;
+  onToggleAsterismMode: () => void;
+  onSelectAsterism: (id: string | null) => void;
+  onFocusAsterismObject: (obj: AsterismObject) => void;
+  onUpdateAsterismObject: (id: string, patch: Partial<AsterismObject>) => void;
+  onDeleteAsterismObject: (id: string) => void;
+  onSetAsterismActiveLayer: (layerId: string) => void;
+  onToggleAsterismLayerVisible: (layerId: string) => void;
+  onSetAllAsterismLayersVisible: (visible: boolean) => void;
+  onCreateAsterismLayer: (name: string) => void;
+  onRenameAsterismLayer: (layerId: string, name: string) => void;
+  onDeleteAsterismLayer: (layerId: string) => void;
+  onLoadAsterismPresets: () => number;
+  onToggleAsterismPreset: (preset: AsterismObject) => boolean;
+  onFocusAsterismPreset: (preset: AsterismObject) => void;
+  onImportAsterismBundle: (
+    layers: AsterismLayer[],
+    objects: AsterismObject[]
+  ) => { addedCount: number };
 }
 
 export function ObjectInspector({
@@ -180,6 +206,24 @@ export function ObjectInspector({
   onDeleteChallengeTrack,
   onResetBuiltInChallenge,
   onImportChallenges,
+  asterismStore,
+  asterismMode,
+  asterismSelectedId,
+  onToggleAsterismMode,
+  onSelectAsterism,
+  onFocusAsterismObject,
+  onUpdateAsterismObject,
+  onDeleteAsterismObject,
+  onSetAsterismActiveLayer,
+  onToggleAsterismLayerVisible,
+  onSetAllAsterismLayersVisible,
+  onCreateAsterismLayer,
+  onRenameAsterismLayer,
+  onDeleteAsterismLayer,
+  onLoadAsterismPresets,
+  onToggleAsterismPreset,
+  onFocusAsterismPreset,
+  onImportAsterismBundle,
 }: ObjectInspectorProps) {
   const ui = getUiTheme(theme);
   const skylistInputRef = useRef<HTMLInputElement>(null);
@@ -480,31 +524,31 @@ export function ObjectInspector({
     >
       {/* Header Tabs */}
       <div className={`flex items-center justify-between gap-1 border-b px-1.5 py-1.5 ${ui.divider}`}>
-        <div className="flex items-center gap-1 min-w-0">
+        <div className="flex items-center gap-1 min-w-0 flex-1">
           <button
             type="button"
             onClick={() => onTabChange('detail')}
-            className={`px-1.5 py-1 text-[10.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-1.5 py-1 text-[10px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'detail' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
-            천체 정보
+            천체정보
           </button>
           <button
             type="button"
             onClick={() => onTabChange('session')}
-            className={`px-1.5 py-1 text-[10.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-1.5 py-1 text-[10px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'session' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
-            관측 목록({sessionPlan.length})
+            관측목록({sessionPlan.length})
           </button>
           <button
             type="button"
             onClick={() => onTabChange('challenge')}
-            className={`px-1.5 py-1 text-[10.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-1 ${
+            className={`px-1.5 py-1 text-[10px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
               activeTab === 'challenge' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
@@ -515,6 +559,22 @@ export function ObjectInspector({
                 className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0"
                 aria-hidden="true"
               />
+            )}
+          </button>
+          <button
+            type="button"
+            onClick={() => onTabChange('asterism')}
+            title="성군 작도 레이어 및 대표 성군 프리셋 설정"
+            className={`px-1.5 py-1 text-[10px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
+              activeTab === 'asterism' ? ui.buttonActive : ui.buttonIdle
+            }`}
+            style={{ borderRadius: '4px' }}
+          >
+            <span>작도</span>
+            {asterismStore.objects.length > 0 && (
+              <span className="font-mono text-[9px] tabular-nums opacity-80">
+                {asterismStore.objects.length}
+              </span>
             )}
           </button>
         </div>
@@ -1076,6 +1136,28 @@ export function ObjectInspector({
             onDeleteTrack={onDeleteChallengeTrack}
             onResetBuiltInTrack={onResetBuiltInChallenge}
             onImportTracks={onImportChallenges}
+          />
+        ) : activeTab === 'asterism' ? (
+          <AsterismPanel
+            theme={theme}
+            store={asterismStore}
+            asterismMode={asterismMode}
+            selectedObjectId={asterismSelectedId}
+            onToggleAsterismMode={onToggleAsterismMode}
+            onSelectObject={onSelectAsterism}
+            onFocusObject={onFocusAsterismObject}
+            onUpdateObject={onUpdateAsterismObject}
+            onDeleteObject={onDeleteAsterismObject}
+            onSetActiveLayer={onSetAsterismActiveLayer}
+            onToggleLayerVisible={onToggleAsterismLayerVisible}
+            onSetAllLayersVisible={onSetAllAsterismLayersVisible}
+            onCreateLayer={onCreateAsterismLayer}
+            onRenameLayer={onRenameAsterismLayer}
+            onDeleteLayer={onDeleteAsterismLayer}
+            onLoadAllPresets={onLoadAsterismPresets}
+            onTogglePreset={onToggleAsterismPreset}
+            onFocusPreset={onFocusAsterismPreset}
+            onImportBundle={onImportAsterismBundle}
           />
         ) : (
           /* Observing Session Plan Tab: 오늘 밤 관측목록 / 목록관리 */

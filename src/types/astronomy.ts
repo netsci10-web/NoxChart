@@ -342,5 +342,98 @@ export interface ChallengeTrack {
   createdAt: number;
 }
 
+export type AsterismTool = 'select' | 'polyline' | 'polygon' | 'arrow' | 'label';
+export type AsterismLineStyle = 'dashed' | 'dashdot' | 'solid';
+export type AsterismLabelAnchor = 'top' | 'bottom' | 'left' | 'right';
+
+export interface AsterismVertex {
+  /** J2000.0 Right Ascension in degrees (0..360) */
+  raDeg: number;
+  /** J2000.0 Declination in degrees (-90..+90) */
+  decDeg: number;
+  /** Optional bound catalog identifier (e.g. "HIP 11767", "M45", "Gaia ...") */
+  catalogId?: string;
+  /** Optional display name of snapped star/DSO */
+  starName?: string;
+  /** Apparent magnitude of snapped star (for reference) */
+  mag?: number;
+}
+
+export interface AsterismObject {
+  id: string;
+  layerId: string;
+  type: 'polyline' | 'polygon' | 'arrow' | 'label';
+  vertices: AsterismVertex[];
+  /** Smooth Catmull-Rom spline rendering for polylines */
+  smooth?: boolean;
+  /** Line style: dashed | dashdot | solid */
+  lineStyle: AsterismLineStyle;
+  color: string;
+  lineWidth: number; // 0.5..4.0 px
+  opacity: number; // 0.1..1.0
+  /** Polygon fill opacity (default 0.08) */
+  fillAlpha?: number;
+  /** Optional extension multiplier for direction vector (e.g. 2.5 = extend 2.5x beyond AB) */
+  extensionFactor?: number;
+  /** Scale-dependent FOV LOD visibility window [minFovDeg, maxFovDeg] */
+  visibleFovRange: [number, number];
+  /** Primary asterism title / label */
+  label: string;
+  /** Optional observation memo */
+  memo?: string;
+  /** Optional recommended eyepiece / magnification tag (e.g. "30mm 82° · 50×") */
+  eyepieceTag?: string;
+  /** Upright label anchor offset direction */
+  labelAnchor: AsterismLabelAnchor;
+  createdAt: number;
+}
+
+export interface AsterismLayer {
+  id: string;
+  name: string;
+  visible: boolean;
+  createdAt: number;
+}
+
+export interface AsterismSettings {
+  snapEnabled: boolean;
+  snapRadiusPx: number; // 8..36 px
+  snapMaxMag: number; // 4.0..14.0m (only snap stars brighter than or equal to this)
+  allowFreeSpace: boolean;
+  defaultLineStyle: AsterismLineStyle;
+  defaultSmooth: boolean;
+  defaultColor: string;
+  defaultLineWidth: number;
+  defaultOpacity: number;
+  defaultFillAlpha: number;
+  defaultExtensionFactor: number;
+  defaultVisibleFovRange: [number, number];
+  defaultLabelAnchor: AsterismLabelAnchor;
+}
+
+export interface AsterismStoreState {
+  layers: AsterismLayer[];
+  activeLayerId: string;
+  objects: AsterismObject[];
+  settings: AsterismSettings;
+}
+
+export interface AsterismSnapPreview {
+  x: number;
+  y: number;
+  raDeg: number;
+  decDeg: number;
+  snapped: boolean;
+  catalogId?: string;
+  starName?: string;
+  mag?: number;
+}
+
+export interface AsterismDraftState {
+  type: 'polyline' | 'polygon' | 'arrow';
+  vertices: AsterismVertex[];
+}
+
+
 
 

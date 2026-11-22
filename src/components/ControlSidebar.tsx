@@ -2375,9 +2375,7 @@ export function ControlSidebar({
                   />
                 </label>
 
-                {(layers.showDso ||
-                  layers.showMessierCatalog ||
-                  layers.showCaldwellCatalog) && (
+                {layers.showDso && (
                   <div className="pl-2 pb-0.5 space-y-0.5">
                     <div className="flex items-center justify-between text-[10px]">
                       <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
@@ -2407,9 +2405,7 @@ export function ControlSidebar({
 
                 <label
                   className={`flex items-center justify-between gap-1.5 py-0.5 ${
-                    layers.showDso || layers.showMessierCatalog || layers.showCaldwellCatalog
-                      ? 'cursor-pointer'
-                      : 'opacity-45 cursor-not-allowed'
+                    layers.showDso ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'
                   }`}
                 >
                   <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -2418,11 +2414,7 @@ export function ControlSidebar({
                   <input
                     type="checkbox"
                     checked={layers.showDsoLabels}
-                    disabled={
-                      !layers.showDso &&
-                      !layers.showMessierCatalog &&
-                      !layers.showCaldwellCatalog
-                    }
+                    disabled={!layers.showDso}
                     onChange={(e) =>
                       onChangeLayers((p) => ({ ...p, showDsoLabels: e.target.checked }))
                     }
@@ -2430,9 +2422,7 @@ export function ControlSidebar({
                   />
                 </label>
 
-                {((layers.showDso && layers.showDsoLabels) ||
-                  layers.showMessierCatalog ||
-                  layers.showCaldwellCatalog) && (
+                {layers.showDso && layers.showDsoLabels && (
                   <div className="pl-2 pb-0.5 space-y-0.5">
                     <div className="flex items-center justify-between text-[10px]">
                       <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
@@ -2515,7 +2505,7 @@ export function ControlSidebar({
                     <span
                       className={`text-[9px] tracking-[-0.05em] whitespace-nowrap ${ui.textMuted}`}
                     >
-                      DSO OFF 시에도 표시
+                      DSO 무관 · 전체 표시
                     </span>
                   </div>
 

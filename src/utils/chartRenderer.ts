@@ -7,6 +7,9 @@ import {
 import { DSO_CATALOG } from '../data/dso';
 import { getFieldStarsInBounds } from '../data/stars';
 import {
+  AsterismDraftState,
+  AsterismSnapPreview,
+  AsterismStoreState,
   ChallengeCheckpoint,
   ChallengeTrack,
   ChartViewState,
@@ -46,6 +49,7 @@ import {
   ProjectionParams,
   RAD2DEG,
 } from './astronomy';
+import { renderAsterismsPass } from './asterismRenderer';
 import { LabelPlacer } from './labelPlacer';
 import { getPlanetRenderer } from './planetRenderer';
 import {
@@ -53,6 +57,14 @@ import {
   getSolarSystemDailyTrail,
   getSolarSystemOrbitTracks,
 } from './solarSystem';
+
+export interface AsterismRenderContext {
+  store: AsterismStoreState;
+  drawingActive: boolean;
+  selectedObjectId: string | null;
+  draft: AsterismDraftState | null;
+  hoverSnap: AsterismSnapPreview | null;
+}
 
 export interface ThemePalette {
   bg: string;
@@ -1159,7 +1171,8 @@ function renderStarChartPass(
   solarTrails?: Record<string, number>,
   passOptions?: PassOptions,
   sessionPlan?: ObservingSessionEntry[],
-  challenges?: ChallengeTrack[]
+  challenges?: ChallengeTrack[],
+  asterismCtx?: AsterismRenderContext
 ): RenderResult {
   const palette = getThemePalette(theme);
   const obsTimeMs = observer.timestampMs;
@@ -1484,6 +1497,7 @@ function renderStarChartPass(
   const showKnownMessier = Boolean(layers.showMessierCatalog);
   const showKnownCaldwell = Boolean(layers.showCaldwellCatalog);
   const renderAnyDso = layers.showDso || showKnownMessier || showKnownCaldwell;
+  const isMessierId = (id: string) => /^M([1-9]|[1-9]\d|10\d|110)$/i.test(id);
   let visibleDsoCount = 0;
   if (renderAnyDso) {
     interface PendingDso {
@@ -1513,7 +1527,6 @@ function renderStarChartPass(
 
     const pendingDsos: PendingDso[] = [];
     const onScreenGeneral: PendingDso[] = [];
-    const onScreenKnown: PendingDso[] = [];
     const seenDsoKeys = new Set<string>();
 
     const checkSelectedDso = (dso: DeepSkyObject) =>
@@ -1569,12 +1582,8 @@ function renderStarChartPass(
         labelPrefix,
       };
       pendingDsos.push(entry);
-      if (isOnScreen && !belowMinAlt) {
-        if (isKnownForced) {
-          onScreenKnown.push(entry);
-        } else {
-          onScreenGeneral.push(entry);
-        }
+      if (isOnScreen && !belowMinAlt && !isKnownForced) {
+        onScreenGeneral.push(entry);
       }
     };
 
@@ -1591,7 +1600,7 @@ function renderStarChartPass(
       for (const list of dsoLists) {
         for (let i = 0; i < list.length; i++) {
           const dso = list[i];
-          const isMessier = /^M\d+$/i.test(dso.id);
+          const isMessier = isMessierId(dso.id);
           const caldwellMatch =
             caldwellByNormKey.get(normDsoId(dso.id)) ??
             (dso.altId ? caldwellByNormKey.get(normDsoId(dso.altId)) : undefined);
@@ -1620,20 +1629,20 @@ function renderStarChartPass(
       }
     }
 
-    // 7b. Known DSO Override: Messier Catalog (M1–M110) — visible even when showDso is OFF
+    // 7b. Known DSO Override: Messier Catalog (M1–M110) — strictly M1–M110 only
     if (showKnownMessier) {
       const messierSource =
         catalogs.dsosBright.length > 0 ? catalogs.dsosBright : DSO_CATALOG;
       for (let i = 0; i < messierSource.length; i++) {
         const dso = messierSource[i];
-        if (!/^M\d+$/i.test(dso.id)) continue;
+        if (!isMessierId(dso.id)) continue;
         if (isSeenDso(dso)) continue;
         pushPendingDso(dso, checkSelectedDso(dso), true);
       }
       // Fallback for any Messier entries present in bundled DSO_CATALOG not yet in dsosBright
       for (let i = 0; i < DSO_CATALOG.length; i++) {
         const dso = DSO_CATALOG[i];
-        if (!/^M\d+$/i.test(dso.id)) continue;
+        if (!isMessierId(dso.id)) continue;
         if (isSeenDso(dso)) continue;
         pushPendingDso(dso, checkSelectedDso(dso), true);
       }
@@ -1660,16 +1669,9 @@ function renderStarChartPass(
           allowedDsoSet.add(onScreenGeneral[i]);
         }
       }
-      if (onScreenKnown.length > 0) {
-        onScreenKnown.sort((a, b) => a.dso.mag - b.dso.mag);
-        const knownSymQuota =
-          symPct <= 0 ? 0 : Math.ceil((onScreenKnown.length * symPct) / 100);
-        for (let i = 0; i < knownSymQuota && i < onScreenKnown.length; i++) {
-          allowedDsoSet.add(onScreenKnown[i]);
-        }
-      }
+      // Known catalogs (Messier / Caldwell) and selected DSOs always display all symbols regardless of general DSO density
       for (const entry of pendingDsos) {
-        if (entry.isSelected) allowedDsoSet.add(entry);
+        if (entry.isKnownForced || entry.isSelected) allowedDsoSet.add(entry);
       }
     }
 
@@ -1775,15 +1777,11 @@ function renderStarChartPass(
         }
       }
 
+      // Known catalogs (Messier / Caldwell) always display all labels regardless of general DSO label toggle or density
       if (knownItems.length > 0) {
         knownItems.sort((a, b) => a.mag - b.mag);
-        const knownQuota = dsoPct <= 0 ? 0 : Math.ceil((knownItems.length * dsoPct) / 100);
-        const maxKnownCandidates = Math.min(knownQuota, 650);
         for (let i = 0; i < knownItems.length; i++) {
-          const item = knownItems[i];
-          if (i < maxKnownCandidates || item.isSelected) {
-            labelCandidates.push(item.candidate);
-          }
+          labelCandidates.push(knownItems[i].candidate);
         }
       }
     }
@@ -3950,6 +3948,28 @@ function renderStarChartPass(
     ctx.restore();
   }
 
+  // 10.9. Custom Asterisms, Star Chains, Hopping Vectors & Scale-Dependent Labels
+  if (asterismCtx) {
+    renderAsterismsPass({
+      ctx,
+      width,
+      height,
+      currentFovDeg: view.fsz,
+      theme,
+      projector: {
+        project: (raDeg: number, decDeg: number, margin = 220) =>
+          projectStereographic(raDeg, decDeg, proj, margin),
+      },
+      store: asterismCtx.store,
+      drawingActive: asterismCtx.drawingActive,
+      selectedObjectId: asterismCtx.selectedObjectId,
+      draft: asterismCtx.draft,
+      hoverSnap: asterismCtx.hoverSnap,
+      isInnerClip,
+      isSensorPhoto,
+    });
+  }
+
   // 11. Selection & Hover Reticles
   if (selected && optics.showSelectionMark) {
     const selPt = projectStereographic(selected.data.ra, selected.data.dec, proj, 30);
@@ -4125,7 +4145,8 @@ export function renderStarChart(
   sessionPlan?: ObservingSessionEntry[],
   challenges?: ChallengeTrack[],
   overrideRotationDeg?: number,
-  sensorPhotoMode?: boolean
+  sensorPhotoMode?: boolean,
+  asterismCtx?: AsterismRenderContext
 ): RenderResult {
   const rawFlipActive = view.flipH || view.flipV;
   const normEpRot = optics.showEyepiece
@@ -4177,7 +4198,8 @@ export function renderStarChart(
         sensorPhotoMode: Boolean(sensorPhotoMode),
       },
       sessionPlan,
-      challenges
+      challenges,
+      asterismCtx
     );
   }
 
@@ -4202,7 +4224,8 @@ export function renderStarChart(
     solarTrails,
     { skipReticles: true, isInnerClip: false, rotationDeg: 0 },
     sessionPlan,
-    challenges
+    challenges,
+    asterismCtx
   );
 
   const cx = width / 2;
@@ -4231,7 +4254,8 @@ export function renderStarChart(
     solarTrails,
     { skipReticles: true, isInnerClip: true, rotationDeg: normEpRot },
     sessionPlan,
-    challenges
+    challenges,
+    asterismCtx
   );
   ctx.restore();
 
