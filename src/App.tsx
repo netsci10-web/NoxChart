@@ -3976,73 +3976,8 @@ export default function App() {
           </button>
         </div>
 
-        {/* Center: Icon-only 3-Mode Theme Switcher + Icon-only Coordinate System Switcher */}
+        {/* Center: Coordinate System Switcher, Cardinal Quick-Jump, Limiting Magnitude */}
         <div className="flex items-center gap-2 shrink-0">
-          <div
-            className={`flex items-center gap-1 p-0.5 rounded-lg border ${
-              theme === 'white'
-                ? 'bg-slate-100 border-slate-300'
-                : theme === 'red'
-                ? 'bg-[#100101] border-[#420C0C]'
-                : 'bg-[#0B1220] border-[#25334D]'
-            }`}
-            role="group"
-            aria-label="테마 모드"
-          >
-            <button
-              type="button"
-              onClick={() => setTheme('dark')}
-              title="다크 모드"
-              aria-label="다크 모드"
-              className={`w-8 h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
-                theme === 'dark'
-                  ? 'bg-[#0094B8] text-white'
-                  : theme === 'white'
-                  ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-200'
-                  : 'text-[#B85050] hover:text-[#FF5555] hover:bg-[#220404]'
-              }`}
-            >
-              <Moon className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setTheme('white')}
-              title="인쇄용 화이트 모드"
-              aria-label="인쇄용 화이트 모드"
-              className={`w-8 h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
-                theme === 'white'
-                  ? 'bg-slate-900 text-white'
-                  : theme === 'red'
-                  ? 'text-[#B85050] hover:text-[#FF5555] hover:bg-[#220404]'
-                  : 'text-slate-400 hover:text-white hover:bg-[#182438]'
-              }`}
-            >
-              <Sun className="w-4 h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setTheme('red')}
-              title="적색 야간 모드"
-              aria-label="적색 야간 모드"
-              className={`w-8 h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
-                theme === 'red'
-                  ? 'bg-[#7F1D1D] text-[#FF4D4D]'
-                  : theme === 'white'
-                  ? 'text-slate-500 hover:bg-slate-200'
-                  : 'text-slate-400 hover:bg-[#182438]'
-              }`}
-            >
-              <span
-                className={`w-3 h-3 rounded-full inline-block ${
-                  theme === 'red'
-                    ? 'bg-[#EF4444] ring-2 ring-[#FF4D4D]/75'
-                    : 'bg-red-600'
-                }`}
-                aria-hidden="true"
-              />
-            </button>
-          </div>
-
           {/* Equatorial vs Horizontal Coordinate System Icon-Only Switcher */}
           <div
             className={`flex items-center gap-1 p-0.5 rounded-lg border ${
@@ -4460,6 +4395,72 @@ export default function App() {
           >
             <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
+
+          {/* Far Right: 3-Mode Theme Switcher (다크 / 주간 / 적색) */}
+          <div
+            className={`flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
+              theme === 'white'
+                ? 'bg-slate-100 border-slate-300'
+                : theme === 'red'
+                ? 'bg-[#100101] border-[#420C0C]'
+                : 'bg-[#0B1220] border-[#25334D]'
+            }`}
+            role="group"
+            aria-label="테마 모드"
+          >
+            <button
+              type="button"
+              onClick={() => setTheme('dark')}
+              title="다크 모드"
+              aria-label="다크 모드"
+              className={`w-7 h-6 sm:w-8 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+                theme === 'dark'
+                  ? 'bg-[#0094B8] text-white'
+                  : theme === 'white'
+                  ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-200'
+                  : 'text-[#B85050] hover:text-[#FF5555] hover:bg-[#220404]'
+              }`}
+            >
+              <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setTheme('white')}
+              title="인쇄용 화이트 모드"
+              aria-label="인쇄용 화이트 모드"
+              className={`w-7 h-6 sm:w-8 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+                theme === 'white'
+                  ? 'bg-slate-900 text-white'
+                  : theme === 'red'
+                  ? 'text-[#B85050] hover:text-[#FF5555] hover:bg-[#220404]'
+                  : 'text-slate-400 hover:text-white hover:bg-[#182438]'
+              }`}
+            >
+              <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setTheme('red')}
+              title="적색 야간 모드"
+              aria-label="적색 야간 모드"
+              className={`w-7 h-6 sm:w-8 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+                theme === 'red'
+                  ? 'bg-[#7F1D1D] text-[#FF4D4D]'
+                  : theme === 'white'
+                  ? 'text-slate-500 hover:bg-slate-200'
+                  : 'text-slate-400 hover:bg-[#182438]'
+              }`}
+            >
+              <span
+                className={`w-3 h-3 rounded-full inline-block ${
+                  theme === 'red'
+                    ? 'bg-[#EF4444] ring-2 ring-[#FF4D4D]/75'
+                    : 'bg-red-600'
+                }`}
+                aria-hidden="true"
+              />
+            </button>
+          </div>
         </div>
       </header>
 
