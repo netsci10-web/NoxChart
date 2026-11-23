@@ -10,6 +10,8 @@ import {
   Compass,
   Download,
   Globe2,
+  Grid3x3,
+  Image as ImageIcon,
   Moon,
   Mountain,
   Printer,
@@ -26,14 +28,17 @@ import {
   ConfirmDialogOptions,
   PendingConfirmRequest,
 } from './components/ConfirmDialog';
+import { CelestialInfoWindow } from './components/CelestialInfoWindow';
 import { ControlSidebar } from './components/ControlSidebar';
 import { ObjectInspector } from './components/ObjectInspector';
 import { ObservingSiteMapModal } from './components/ObservingSiteMapModal';
 import { StarChartCanvas, StarChartCanvasHandle } from './components/StarChartCanvas';
 import { TimeControlBar } from './components/TimeControlBar';
 import { TourGuideOverlay } from './components/TourGuideOverlay';
-import { CALDWELL_CATALOG } from './data/caldwell';
-import { createDefaultChallengeTracks } from './data/challenges';
+import {
+  createDefaultChallengeTracks,
+  hydrateChallengeTracksWithCatalog,
+} from './data/challenges';
 import {
   isSmartTelescopeRotatable,
   normalizeTelescopeOpticalType,
@@ -73,6 +78,7 @@ import {
   ObservingListGroup,
   ObservingListsState,
   ObservingSessionEntry,
+  OpticsLabelDirection,
   OpticsSettings,
   SavedObservingSite,
   SelectedItem,
@@ -311,6 +317,10 @@ const DEFAULT_OPTICS: OpticsSettings = {
   telescopeFocalLengthMm: 1000,
   eyepieceFocalLengthMm: 25,
   eyepieceAfovDeg: 68,
+  reticleLineWidth: 1.4,
+  reticleOpacity: 0.85,
+  showReticleLabel: true,
+  reticleLabelDirection: 'ne',
   showSensorBox: false,
   sensorWidthDeg: 2.15,
   sensorHeightDeg: 1.21,
@@ -411,6 +421,27 @@ function loadSavedOpticsSettings(): OpticsSettings {
             100
           ),
           eyepieceAfovDeg: numOr('eyepieceAfovDeg', DEFAULT_OPTICS.eyepieceAfovDeg, 20, 120),
+          reticleLineWidth: numOr(
+            'reticleLineWidth',
+            DEFAULT_OPTICS.reticleLineWidth ?? 1.4,
+            0.5,
+            6.0
+          ),
+          reticleOpacity: numOr(
+            'reticleOpacity',
+            DEFAULT_OPTICS.reticleOpacity ?? 0.85,
+            0.1,
+            1.0
+          ),
+          showReticleLabel: boolOr(
+            'showReticleLabel',
+            DEFAULT_OPTICS.showReticleLabel ?? true
+          ),
+          reticleLabelDirection: (
+            ['n', 'ne', 'e', 'se', 's', 'sw', 'w', 'nw'] as OpticsLabelDirection[]
+          ).includes(parsed.reticleLabelDirection as OpticsLabelDirection)
+            ? (parsed.reticleLabelDirection as OpticsLabelDirection)
+            : DEFAULT_OPTICS.reticleLabelDirection ?? 'ne',
           showSensorBox: boolOr('showSensorBox', DEFAULT_OPTICS.showSensorBox),
           sensorWidthDeg: numOr('sensorWidthDeg', DEFAULT_OPTICS.sensorWidthDeg, 0.02, 40),
           sensorHeightDeg: numOr('sensorHeightDeg', DEFAULT_OPTICS.sensorHeightDeg, 0.02, 40),
@@ -593,6 +624,108 @@ export default function App() {
   const [optics, setOptics] = useState<OpticsSettings>(() => loadSavedOpticsSettings());
   const [observer, setObserver] = useState<ObserverConfig>(initialObserver);
   const [hips, setHips] = useState<HipsSettings>(() => initialLayerBundle.hips);
+  const [tempHiddenLayers, setTempHiddenLayers] = useState<{
+    constellations: boolean;
+    solar: boolean;
+    stars: boolean;
+    doubles: boolean;
+    dso: boolean;
+    grids: boolean;
+    hips: boolean;
+  }>({
+    constellations: false,
+    solar: false,
+    stars: false,
+    doubles: false,
+    dso: false,
+    grids: false,
+    hips: false,
+  });
+
+  const toggleTempHiddenLayer = useCallback(
+    (key: 'constellations' | 'solar' | 'stars' | 'doubles' | 'dso' | 'grids' | 'hips') => {
+      setTempHiddenLayers((prev) => ({ ...prev, [key]: !prev[key] }));
+    },
+    []
+  );
+
+  const effectiveLayers = useMemo<LayerSettings>(() => {
+    const anyLayerHidden =
+      tempHiddenLayers.constellations ||
+      tempHiddenLayers.solar ||
+      tempHiddenLayers.stars ||
+      tempHiddenLayers.doubles ||
+      tempHiddenLayers.dso ||
+      tempHiddenLayers.grids;
+    if (!anyLayerHidden) return layers;
+    return {
+      ...layers,
+      // 별자리
+      ...(tempHiddenLayers.constellations
+        ? {
+            showConstellationLines: false,
+            showConstellationBoundaries: false,
+            showConstellationNames: false,
+          }
+        : {}),
+      // 태양계
+      ...(tempHiddenLayers.solar
+        ? {
+            showSolarSystem: false,
+            showPlanetSurface: false,
+            showSolarSystemOrbits: false,
+            showSolarSystemLabels: false,
+          }
+        : {}),
+      // 항성 표시 옵션
+      ...(tempHiddenLayers.stars
+        ? {
+            showStarColors: false,
+            showStarLabels: false,
+            showProperStarNames: false,
+            enableGaiaLive: false,
+            showFieldStars: false,
+          }
+        : {}),
+      // 이중성
+      ...(tempHiddenLayers.doubles
+        ? {
+            showDoubleStars: false,
+            showDoublePairs: false,
+            showMultipleStars: false,
+            showDoubleStarLabels: false,
+          }
+        : {}),
+      // 심우주
+      ...(tempHiddenLayers.dso
+        ? {
+            showDso: false,
+            showMessierCatalog: false,
+            showCaldwellCatalog: false,
+            showDsoLabels: false,
+            showNebulaContours: false,
+            showMilkyWay: false,
+          }
+        : {}),
+      // 좌표 그리드 & 기준선
+      ...(tempHiddenLayers.grids
+        ? {
+            showGridEq: false,
+            showGridAltAz: false,
+            showHorizon: false,
+            showTerrain: false,
+            showEcliptic: false,
+          }
+        : {}),
+    };
+  }, [tempHiddenLayers, layers]);
+
+  const effectiveHips = useMemo<HipsSettings>(
+    () => (tempHiddenLayers.hips ? { ...hips, enabled: false } : hips),
+    [tempHiddenLayers.hips, hips]
+  );
+
+  const emptySolarTrails = useMemo<Record<string, number>>(() => ({}), []);
 
   const [savedSites, setSavedSites] = useState<SavedObservingSite[]>(() => {
     try {
@@ -613,13 +746,138 @@ export default function App() {
   const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
 
   const [selected, setSelected] = useState<SelectedItem | null>(null);
+  const [detailWindowOpen, setDetailWindowOpen] = useState(false);
   const [centerLocked, setCenterLocked] = useState(false);
   const [solarTrails, setSolarTrails] = useState<Record<string, number>>({});
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<
-    'detail' | 'session' | 'challenge' | 'asterism' | 'log'
-  >('detail');
+    'session' | 'challenge' | 'asterism' | 'log'
+  >('session');
+
+  // Auto-collapse left & right drawers when mouse leaves them (with drag & native-picker guards)
+  const leftHideTimerRef = useRef<number | null>(null);
+  const rightHideTimerRef = useRef<number | null>(null);
+  const pointerInLeftRef = useRef(false);
+  const pointerInRightRef = useRef(false);
+  const pointerDownInLeftRef = useRef(false);
+  const pointerDownInRightRef = useRef(false);
+  const nativePickerInLeftRef = useRef(false);
+  const nativePickerInRightRef = useRef(false);
+  const siteMapOpenRef = useRef(siteMapOpen);
+  siteMapOpenRef.current = siteMapOpen;
+
+  const clearLeftHideTimer = useCallback(() => {
+    if (leftHideTimerRef.current !== null) {
+      window.clearTimeout(leftHideTimerRef.current);
+      leftHideTimerRef.current = null;
+    }
+  }, []);
+
+  const clearRightHideTimer = useCallback(() => {
+    if (rightHideTimerRef.current !== null) {
+      window.clearTimeout(rightHideTimerRef.current);
+      rightHideTimerRef.current = null;
+    }
+  }, []);
+
+  const scheduleLeftHide = useCallback(
+    (delayMs = 260) => {
+      clearLeftHideTimer();
+      leftHideTimerRef.current = window.setTimeout(() => {
+        leftHideTimerRef.current = null;
+        if (
+          pointerInLeftRef.current ||
+          pointerDownInLeftRef.current ||
+          nativePickerInLeftRef.current ||
+          siteMapOpenRef.current ||
+          confirmRequestRef.current
+        ) {
+          return;
+        }
+        setLeftOpen(false);
+      }, delayMs);
+    },
+    [clearLeftHideTimer]
+  );
+
+  const scheduleRightHide = useCallback(
+    (delayMs = 260) => {
+      clearRightHideTimer();
+      rightHideTimerRef.current = window.setTimeout(() => {
+        rightHideTimerRef.current = null;
+        if (
+          pointerInRightRef.current ||
+          pointerDownInRightRef.current ||
+          nativePickerInRightRef.current ||
+          confirmRequestRef.current
+        ) {
+          return;
+        }
+        setRightOpen(false);
+      }, delayMs);
+    },
+    [clearRightHideTimer]
+  );
+
+  useEffect(() => {
+    if (!leftOpen) {
+      clearLeftHideTimer();
+      pointerInLeftRef.current = false;
+      pointerDownInLeftRef.current = false;
+      nativePickerInLeftRef.current = false;
+    }
+  }, [leftOpen, clearLeftHideTimer]);
+
+  useEffect(() => {
+    if (!rightOpen) {
+      clearRightHideTimer();
+      pointerInRightRef.current = false;
+      pointerDownInRightRef.current = false;
+      nativePickerInRightRef.current = false;
+    }
+  }, [rightOpen, clearRightHideTimer]);
+
+  useEffect(() => {
+    const onWinPointerUp = () => {
+      if (pointerDownInLeftRef.current) {
+        pointerDownInLeftRef.current = false;
+        if (!pointerInLeftRef.current && !nativePickerInLeftRef.current) {
+          scheduleLeftHide(220);
+        }
+      }
+      if (pointerDownInRightRef.current) {
+        pointerDownInRightRef.current = false;
+        if (!pointerInRightRef.current && !nativePickerInRightRef.current) {
+          scheduleRightHide(220);
+        }
+      }
+    };
+    const onWinFocus = () => {
+      if (nativePickerInLeftRef.current) {
+        nativePickerInLeftRef.current = false;
+        if (!pointerInLeftRef.current) {
+          scheduleLeftHide(220);
+        }
+      }
+      if (nativePickerInRightRef.current) {
+        nativePickerInRightRef.current = false;
+        if (!pointerInRightRef.current) {
+          scheduleRightHide(220);
+        }
+      }
+    };
+    window.addEventListener('pointerup', onWinPointerUp);
+    window.addEventListener('pointercancel', onWinPointerUp);
+    window.addEventListener('focus', onWinFocus);
+    return () => {
+      window.removeEventListener('pointerup', onWinPointerUp);
+      window.removeEventListener('pointercancel', onWinPointerUp);
+      window.removeEventListener('focus', onWinFocus);
+      clearLeftHideTimer();
+      clearRightHideTimer();
+    };
+  }, [scheduleLeftHide, scheduleRightHide, clearLeftHideTimer, clearRightHideTimer]);
   const [observationLogStore, setObservationLogStore] = useState<ObservationLogStoreState>(() =>
     loadObservationLogStore()
   );
@@ -1021,6 +1279,12 @@ export default function App() {
   });
   const challengesRef = useRef<ChallengeTrack[]>(challenges);
   challengesRef.current = challenges;
+
+  // Hydrate built-in challenge checkpoints once external /public/data/dsos-bright.json loads
+  useEffect(() => {
+    if (catalogs.dsosBright.length === 0) return;
+    setChallenges((prev) => hydrateChallengeTracksWithCatalog(prev, catalogs.dsosBright));
+  }, [catalogs.dsosBright]);
 
   const [equipmentLocker, setEquipmentLocker] = useState<EquipmentLockerState>(() => {
     try {
@@ -1433,6 +1697,7 @@ export default function App() {
     }
     selectedRef.current = item;
     setSelected(item);
+    setDetailWindowOpen(Boolean(item));
     if (item) {
       const wantMark = !options?.hideSelectionMark;
       setOptics((prev) =>
@@ -1440,8 +1705,6 @@ export default function App() {
           ? prev
           : { ...prev, showSelectionMark: wantMark }
       );
-      setInspectorTab('detail');
-      setRightOpen(true);
     }
   };
 
@@ -1812,7 +2075,7 @@ export default function App() {
           snap.dsosBright.find((x) => x.id === target.objectId) ??
           snap.darkNebulae.find((x) => x.id === target.objectId) ??
           snap.dsosDeep.find((x) => x.id === target.objectId) ??
-          CALDWELL_CATALOG.find((x) => x.id === target.objectId);
+          snap.caldwell.find((x) => x.id === target.objectId);
         if (d) found = { kind: 'dso', data: d };
       } else if (target.objectKind === 'planet') {
         const bodies = getSolarSystemBodies(observer.useLiveTime ? Date.now() : observer.timestampMs);
@@ -1822,10 +2085,19 @@ export default function App() {
         const dbl = snap.doubleStars.find((x) => x.id === target.objectId);
         if (dbl) found = { kind: 'double', data: dbl };
       } else {
-        const st =
+        let st =
           snap.brightStars.find((x) => x.id === target.objectId) ??
           snap.deepStars.find((x) => x.id === target.objectId) ??
           snap.gaiaStars.find((x) => x.id === target.objectId);
+        if (!st) {
+          for (const tile of snap.ultraStarTiles.values()) {
+            const hit = tile.find((x) => x.id === target.objectId);
+            if (hit) {
+              st = hit;
+              break;
+            }
+          }
+        }
         if (st) found = { kind: 'star', data: st };
       }
 
@@ -2743,7 +3015,7 @@ export default function App() {
   }, []);
 
   const handleFrameChallengeTrack = useCallback(
-    (track: ChallengeTrack) => {
+    (track: ChallengeTrack, immediate = false) => {
       setChallenges((prev) =>
         prev.map((t) => (t.id === track.id ? { ...t, activeOnChart: true } : t))
       );
@@ -2752,6 +3024,43 @@ export default function App() {
       for (const cp of track.checkpoints) {
         if (cp.ra !== undefined && cp.dec !== undefined) {
           coords.push({ ra: cp.ra, dec: cp.dec });
+        } else if (cp.catalogId) {
+          const key = cp.catalogId.replace(/\s+/g, '').toUpperCase();
+          const dsoHit =
+            catalogs.dsosBright.find(
+              (d) =>
+                d.id.replace(/\s+/g, '').toUpperCase() === key ||
+                (d.altId && d.altId.replace(/\s+/g, '').toUpperCase() === key)
+            ) ??
+            catalogs.caldwell.find(
+              (d) =>
+                d.id.replace(/\s+/g, '').toUpperCase() === key ||
+                (d.altId && d.altId.replace(/\s+/g, '').toUpperCase() === key)
+            ) ??
+            catalogs.dsosDeep.find(
+              (d) =>
+                d.id.replace(/\s+/g, '').toUpperCase() === key ||
+                (d.altId && d.altId.replace(/\s+/g, '').toUpperCase() === key)
+            ) ??
+            catalogs.darkNebulae.find((d) => d.id.replace(/\s+/g, '').toUpperCase() === key);
+          if (dsoHit) {
+            coords.push({ ra: dsoHit.ra, dec: dsoHit.dec });
+          } else {
+            const starHit = catalogs.brightStars.find(
+              (s) =>
+                s.id.replace(/\s+/g, '').toUpperCase() === key ||
+                (s.hip && `HIP${s.hip}` === key) ||
+                (s.name && s.name.replace(/\s+/g, '').toUpperCase() === key)
+            );
+            if (starHit) {
+              coords.push({ ra: starHit.ra, dec: starHit.dec });
+            } else {
+              const dblHit = catalogs.doubleStars.find(
+                (d) => d.id.replace(/\s+/g, '').toUpperCase() === key
+              );
+              if (dblHit) coords.push({ ra: dblHit.ra, dec: dblHit.dec });
+            }
+          }
         }
       }
       if (track.guidePolygons) {
@@ -2763,57 +3072,114 @@ export default function App() {
       }
       if (coords.length === 0) return;
 
+      const unitVecs = coords.map((c) => {
+        const a = c.ra * DEG2RAD;
+        const d = c.dec * DEG2RAD;
+        const cosD = Math.cos(d);
+        return { x: cosD * Math.cos(a), y: cosD * Math.sin(a), z: Math.sin(d) };
+      });
+
       let sx = 0;
       let sy = 0;
       let sz = 0;
-      for (const c of coords) {
-        const a = c.ra * DEG2RAD;
-        const d = c.dec * DEG2RAD;
-        sx += Math.cos(d) * Math.cos(a);
-        sy += Math.cos(d) * Math.sin(a);
-        sz += Math.sin(d);
+      for (const v of unitVecs) {
+        sx += v.x;
+        sy += v.y;
+        sz += v.z;
       }
       const len = Math.hypot(sx, sy, sz);
+
+      centerLockedRef.current = false;
+      setCenterLocked(false);
+      lockedHzRef.current = null;
+
       if (len < 1e-4) {
-        // Full-sky marathon (like Messier 110): jump to first unobserved or first checkpoint at wide FOV
+        // Full-sky marathon (like Messier 110): frame at wide FOV centered on first active checkpoint
         const firstTarget =
           track.checkpoints.find((c) => !c.observed && c.ra !== undefined && c.dec !== undefined) ??
           track.checkpoints.find((c) => c.ra !== undefined && c.dec !== undefined);
         if (firstTarget && firstTarget.ra !== undefined && firstTarget.dec !== undefined) {
-          handleChangeView((p) => ({
-            ...p,
-            ra: ((firstTarget.ra! / 15) % 24 + 24) % 24,
-            dec: Math.max(-85, Math.min(85, firstTarget.dec!)),
-            fsz: 135,
-          }));
+          const targetRaDeg = ((firstTarget.ra % 360) + 360) % 360;
+          const targetDecDeg = Math.max(-85, Math.min(85, firstTarget.dec));
+          if (!immediate && canvasHandleRef.current) {
+            canvasHandleRef.current.smoothCenterOn(targetRaDeg, targetDecDeg, { targetFsz: 150 });
+          } else {
+            handleChangeView((p) => ({
+              ...p,
+              ra: ((targetRaDeg / 15) % 24 + 24) % 24,
+              dec: targetDecDeg,
+              fsz: 150,
+            }));
+          }
         }
         return;
       }
 
-      const centerRaDeg = ((Math.atan2(sy / len, sx / len) * RAD2DEG) + 360) % 360;
-      const centerDecDeg = Math.asin(Math.max(-1, Math.min(1, sz / len))) * RAD2DEG;
-      let maxDist = 8;
+      // Refine spherical center toward the minimum enclosing circle center so the entire course fits tightly
+      let cx = sx / len;
+      let cy = sy / len;
+      let cz = sz / len;
+      if (unitVecs.length >= 2) {
+        for (let iter = 0; iter < 12; iter++) {
+          let minDot = 2;
+          let farIdx = 0;
+          for (let i = 0; i < unitVecs.length; i++) {
+            const dot = cx * unitVecs[i].x + cy * unitVecs[i].y + cz * unitVecs[i].z;
+            if (dot < minDot) {
+              minDot = dot;
+              farIdx = i;
+            }
+          }
+          // Stop nudging if course spans more than a hemisphere
+          if (minDot <= 0) break;
+          const step = 0.45 / (iter + 1);
+          cx += step * unitVecs[farIdx].x;
+          cy += step * unitVecs[farIdx].y;
+          cz += step * unitVecs[farIdx].z;
+          const n = Math.hypot(cx, cy, cz) || 1;
+          cx /= n;
+          cy /= n;
+          cz /= n;
+        }
+      }
+
+      const centerRaDeg = (((Math.atan2(cy, cx) * RAD2DEG) % 360) + 360) % 360;
+      const centerDecDeg = Math.max(
+        -85,
+        Math.min(85, Math.asin(Math.max(-1, Math.min(1, cz))) * RAD2DEG)
+      );
+
+      let maxDist = 0;
       for (const c of coords) {
         const d = angularDistanceDeg(centerRaDeg, centerDecDeg, c.ra, c.dec);
         if (d > maxDist) maxDist = d;
       }
 
-      centerLockedRef.current = false;
-      setCenterLocked(false);
-      lockedHzRef.current = null;
-      handleChangeView((p) => ({
-        ...p,
-        ra: ((centerRaDeg / 15) % 24 + 24) % 24,
-        dec: Math.max(-85, Math.min(85, centerDecDeg)),
-        fsz: Math.max(18, Math.min(150, maxDist * 2.35)),
-      }));
+      // Fit entire course with comfortable ~25% padding, zooming in tightly for compact courses
+      const targetFsz =
+        coords.length === 1
+          ? 6
+          : maxDist > 68
+          ? Math.min(175, Math.max(145, maxDist * 2.15))
+          : Math.max(1.2, Math.min(170, maxDist * 2.5));
+
+      if (!immediate && canvasHandleRef.current) {
+        canvasHandleRef.current.smoothCenterOn(centerRaDeg, centerDecDeg, { targetFsz });
+      } else {
+        handleChangeView((p) => ({
+          ...p,
+          ra: ((centerRaDeg / 15) % 24 + 24) % 24,
+          dec: centerDecDeg,
+          fsz: targetFsz,
+        }));
+      }
     },
-    [handleChangeView]
+    [catalogs, handleChangeView]
   );
 
   const handlePrintChallengeCertificate = useCallback(
     (track: ChallengeTrack) => {
-      handleFrameChallengeTrack(track);
+      handleFrameChallengeTrack(track, true);
       window.setTimeout(() => {
         const dataUrl = canvasHandleRef.current?.renderPrintableChart({
           title: `${track.title} 관측 투어 성도`,
@@ -2841,7 +3207,7 @@ export default function App() {
           ...snap.dsosBright,
           ...snap.darkNebulae,
           ...snap.dsosDeep,
-          ...CALDWELL_CATALOG,
+          ...snap.caldwell,
         ];
         const found = allDsos.find(
           (d) =>
@@ -2850,12 +3216,21 @@ export default function App() {
         );
         if (found) item = { kind: 'dso', data: found };
       } else if (cp.kind === 'star' && key) {
-        const found = snap.brightStars.find(
-          (s) =>
-            s.id.replace(/\s+/g, '').toUpperCase() === key ||
-            (s.hip && `HIP${s.hip}` === key) ||
-            (s.name && s.name.replace(/\s+/g, '').toUpperCase() === key)
-        );
+        const matchStar = (s: StarType) =>
+          s.id.replace(/\s+/g, '').toUpperCase() === key ||
+          (s.hip && `HIP${s.hip}` === key) ||
+          (s.name && s.name.replace(/\s+/g, '').toUpperCase() === key);
+        let found =
+          snap.brightStars.find(matchStar) ?? snap.deepStars.find(matchStar);
+        if (!found) {
+          for (const tile of snap.ultraStarTiles.values()) {
+            const hit = tile.find(matchStar);
+            if (hit) {
+              found = hit;
+              break;
+            }
+          }
+        }
         if (found) item = { kind: 'star', data: found };
       } else if (cp.kind === 'double' && key) {
         const found = snap.doubleStars.find(
@@ -3307,9 +3682,10 @@ export default function App() {
     setSolarTrails({});
     selectedRef.current = null;
     setSelected(null);
+    setDetailWindowOpen(false);
     setRightOpen(false);
     setLeftOpen(false);
-    setInspectorTab('detail');
+    setInspectorTab('session');
     setChallengeDraft(null);
     setChallengeDraftIsNew(false);
     setChallengeDraftNotice(null);
@@ -3317,9 +3693,7 @@ export default function App() {
     setResetCount((c) => c + 1);
   };
 
-  const isChallengePicking = Boolean(
-    challengeDraft && rightOpen && inspectorTab === 'challenge'
-  );
+  const isChallengePicking = Boolean(challengeDraft);
 
   const chartChallenges = useMemo(() => {
     if (!challengeDraft) return challenges;
@@ -3635,6 +4009,31 @@ export default function App() {
     });
   }, []);
 
+  const handleApplyDefaultsToAsterismGroup = useCallback(
+    (asterismId: string) => {
+      commitAsterismMutation((prev) => {
+        const s = prev.settings;
+        const hasAny = prev.objects.some((o) => o.asterismId === asterismId);
+        if (!hasAny) return prev;
+        return {
+          ...prev,
+          objects: prev.objects.map((o) =>
+            o.asterismId === asterismId
+              ? {
+                  ...o,
+                  lineWidth: s.defaultLineWidth,
+                  opacity: s.defaultOpacity,
+                  textSize: s.defaultTextSize,
+                  textOpacity: s.defaultTextOpacity,
+                }
+              : o
+          ),
+        };
+      });
+    },
+    [commitAsterismMutation]
+  );
+
   const handleSaveAsterismGroupView = useCallback(
     (asterismId: string) => {
       const v = viewRef.current;
@@ -3649,7 +4048,17 @@ export default function App() {
   );
 
   const handleCreateAsterismCircle = useCallback(
-    (center: AsterismVertex, radiusDeg: number, explicitEdge?: AsterismVertex) => {
+    (
+      center: AsterismVertex,
+      radiusDeg: number,
+      linkedOptions?: {
+        lineWidth?: number;
+        opacity?: number;
+        linkedTitle?: string;
+        linkedTitleDirection?: OpticsLabelDirection;
+      },
+      explicitEdge?: AsterismVertex
+    ) => {
       const safeR = Math.max(0.01, Math.min(89, radiusDeg));
       const edgePt =
         explicitEdge ??
@@ -3669,13 +4078,15 @@ export default function App() {
           vertices: [center, edgePt],
           radiusDeg: safeR,
           color: s.defaultColor,
-          lineWidth: s.defaultLineWidth,
-          opacity: s.defaultOpacity,
+          lineWidth: linkedOptions?.lineWidth ?? s.defaultLineWidth,
+          opacity: linkedOptions?.opacity ?? s.defaultOpacity,
           lineStyle: s.defaultLineStyle,
           smooth: false,
           fillAlpha: s.defaultCircleFillEnabled ? s.defaultFillAlpha : 0,
           visibleFovRange: [asterism.visibleFovRange[0], asterism.visibleFovRange[1]],
           label: getNextShapeName('circle', false, base.objects, asterism.id),
+          linkedTitle: linkedOptions?.linkedTitle,
+          linkedTitleDirection: linkedOptions?.linkedTitleDirection,
           labelAnchor: s.defaultLabelAnchor,
           createdAt: Date.now(),
         };
@@ -3710,7 +4121,7 @@ export default function App() {
           rawVertices[1].raDeg,
           rawVertices[1].decDeg
         );
-        handleCreateAsterismCircle(rawVertices[0], Math.max(0.02, rDeg), rawVertices[1]);
+        handleCreateAsterismCircle(rawVertices[0], Math.max(0.02, rDeg), undefined, rawVertices[1]);
         return;
       }
 
@@ -4703,6 +5114,208 @@ export default function App() {
               </button>
             </div>
           </div>
+
+          {/* Temporary Hide Sky Layers — 7 Individual Category Icons */}
+          <div
+            className={`flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
+              theme === 'white'
+                ? 'bg-slate-100 border-slate-300'
+                : theme === 'red'
+                ? 'bg-[#100101] border-[#420C0C]'
+                : 'bg-[#0B1220] border-[#25334D]'
+            }`}
+            role="group"
+            aria-label="레이어 일시 숨김 (별자리, 태양계, 항성, 이중성, 심우주, 좌표그리드, 하이브리드 실사배경)"
+          >
+            {(
+              [
+                {
+                  key: 'constellations' as const,
+                  label: '별자리',
+                  configuredOn:
+                    layers.showConstellationLines ||
+                    layers.showConstellationBoundaries ||
+                    layers.showConstellationNames,
+                  icon: <Waypoints className="w-3.5 h-3.5 shrink-0" />,
+                },
+                {
+                  key: 'solar' as const,
+                  label: '태양계',
+                  configuredOn: layers.showSolarSystem || Object.keys(solarTrails).length > 0,
+                  icon: (
+                    <svg
+                      viewBox="0 0 16 16"
+                      className="w-3.5 h-3.5 shrink-0"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="8" cy="8" r="3.4" />
+                      <ellipse
+                        cx="8"
+                        cy="8"
+                        rx="6.6"
+                        ry="2.3"
+                        transform="rotate(-24 8 8)"
+                      />
+                    </svg>
+                  ),
+                },
+                {
+                  key: 'stars' as const,
+                  label: '항성',
+                  configuredOn:
+                    layers.showStarColors ||
+                    layers.showStarLabels ||
+                    layers.showProperStarNames ||
+                    layers.enableGaiaLive ||
+                    layers.showFieldStars,
+                  icon: (
+                    <svg
+                      viewBox="0 0 16 16"
+                      className="w-3.5 h-3.5 shrink-0"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <path d="M8 1.6L9.7 6.3L14.4 8L9.7 9.7L8 14.4L6.3 9.7L1.6 8L6.3 6.3Z" />
+                    </svg>
+                  ),
+                },
+                {
+                  key: 'doubles' as const,
+                  label: '이중성',
+                  configuredOn: layers.showDoubleStars,
+                  icon: (
+                    <svg
+                      viewBox="0 0 16 16"
+                      className="w-3.5 h-3.5 shrink-0"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <circle cx="5.6" cy="9.4" r="3.1" fill="currentColor" fillOpacity="0.22" />
+                      <circle cx="11.2" cy="5.2" r="2" fill="currentColor" fillOpacity="0.22" />
+                      <line x1="2.2" y1="9.4" x2="9" y2="9.4" strokeOpacity="0.7" />
+                    </svg>
+                  ),
+                },
+                {
+                  key: 'dso' as const,
+                  label: '심우주',
+                  configuredOn:
+                    layers.showDso ||
+                    layers.showMessierCatalog ||
+                    layers.showCaldwellCatalog ||
+                    layers.showNebulaContours ||
+                    layers.showMilkyWay,
+                  icon: (
+                    <svg
+                      viewBox="0 0 16 16"
+                      className="w-3.5 h-3.5 shrink-0"
+                      fill="none"
+                      stroke="currentColor"
+                      strokeWidth="1.4"
+                      strokeLinecap="round"
+                      strokeLinejoin="round"
+                      aria-hidden="true"
+                    >
+                      <ellipse
+                        cx="8"
+                        cy="8"
+                        rx="5.8"
+                        ry="2.9"
+                        transform="rotate(-32 8 8)"
+                      />
+                      <circle cx="8" cy="8" r="1.2" fill="currentColor" stroke="none" />
+                    </svg>
+                  ),
+                },
+                {
+                  key: 'grids' as const,
+                  label: '좌표그리드',
+                  configuredOn:
+                    layers.showGridEq ||
+                    layers.showGridAltAz ||
+                    layers.showHorizon ||
+                    layers.showTerrain ||
+                    layers.showEcliptic,
+                  icon: <Grid3x3 className="w-3.5 h-3.5 shrink-0" />,
+                },
+                {
+                  key: 'hips' as const,
+                  label: '하이브리드 실사배경',
+                  configuredOn: hips.enabled,
+                  icon: <ImageIcon className="w-3.5 h-3.5 shrink-0" />,
+                },
+              ]
+            ).map((item) => {
+              const isHidden = tempHiddenLayers[item.key];
+              const btnTone = isHidden
+                ? theme === 'white'
+                  ? 'bg-amber-100 border-amber-500 text-amber-800 shadow-xs'
+                  : theme === 'red'
+                  ? 'bg-[#450A0A] border-[#EF4444] text-[#FCA5A5]'
+                  : 'bg-amber-500/20 border-amber-400/75 text-amber-300'
+                : item.configuredOn
+                ? theme === 'white'
+                  ? 'border-transparent text-sky-700 hover:bg-slate-200/85'
+                  : theme === 'red'
+                  ? 'border-transparent text-[#FF4D4D] hover:bg-[#220404]'
+                  : 'border-transparent text-cyan-300 hover:bg-[#182438]'
+                : theme === 'white'
+                ? 'border-transparent text-slate-400 opacity-55 hover:opacity-90 hover:bg-slate-200/60'
+                : theme === 'red'
+                ? 'border-transparent text-[#7F1D1D] opacity-60 hover:opacity-95 hover:bg-[#1B0303]'
+                : 'border-transparent text-slate-500 opacity-55 hover:opacity-90 hover:bg-[#141E30]';
+
+              return (
+                <button
+                  key={item.key}
+                  type="button"
+                  onClick={() => toggleTempHiddenLayer(item.key)}
+                  aria-pressed={isHidden}
+                  aria-label={`${item.label} 일시 숨김`}
+                  title={
+                    isHidden
+                      ? `${item.label} 일시 숨김 중 (클릭하여 기존 설정 복원)`
+                      : item.configuredOn
+                      ? `${item.label} 일시 숨김 (클릭 시 기존 설정 유지한 채 숨김)`
+                      : `${item.label} (현재 설정 꺼짐 · 클릭 시 일시 숨김 전환)`
+                  }
+                  className={`relative w-6 h-6 rounded-[5px] border flex items-center justify-center transition-colors cursor-pointer shrink-0 ${btnTone}`}
+                >
+                  <span className={isHidden ? 'opacity-55' : ''}>{item.icon}</span>
+                  {isHidden && (
+                    <svg
+                      viewBox="0 0 16 16"
+                      className="pointer-events-none absolute inset-0 w-full h-full"
+                      aria-hidden="true"
+                    >
+                      <line
+                        x1="3"
+                        y1="13"
+                        x2="13"
+                        y2="3"
+                        stroke="currentColor"
+                        strokeWidth="1.7"
+                        strokeLinecap="round"
+                      />
+                    </svg>
+                  )}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {/* Right: Grouped Tool Box (관측목록/챌린지/작도), URL Share, PNG Export, Sensor FOV PNG, Print */}
@@ -4980,28 +5593,28 @@ export default function App() {
         </div>
       </header>
 
-      {/* Main Full-Bleed Observatory Workspace with Overlay Side Drawers */}
-      <main className="relative flex-1 min-h-0 overflow-hidden">
-        {/* Full-Width Star Chart + Bottom Time Dock (never pushed/resized by side menus) */}
-        <div className="w-full h-full flex flex-col min-w-0 min-h-0 overflow-hidden">
+      {/* Main Observatory Workspace: Left Overlay Drawer + Flex Star Chart + Right Pushed Drawer */}
+      <main className="relative flex-1 min-h-0 overflow-hidden flex">
+        {/* Star Chart + Bottom Time Dock (pushes left when right drawer opens) */}
+        <div className="flex-1 min-w-0 h-full flex flex-col min-h-0 overflow-hidden">
           <div className="relative flex-1 min-h-0 flex flex-col overflow-hidden">
             <StarChartCanvas
               ref={canvasHandleRef}
               view={view}
               theme={theme}
-              layers={layers}
+              layers={effectiveLayers}
               optics={optics}
               observer={observer}
-              hips={hips}
+              hips={effectiveHips}
               catalogs={catalogs}
               selected={selected}
               centerLocked={centerLocked}
-              solarTrails={solarTrails}
+              solarTrails={tempHiddenLayers.solar ? emptySolarTrails : solarTrails}
               sessionIds={sessionIds}
               sessionPlan={sessionPlan}
               challenges={chartChallenges}
               leftDrawerOpen={leftOpen}
-              rightDrawerOpen={rightOpen}
+              rightDrawerOpen={false}
               challengePickMode={isChallengePicking}
               challengePickAllowEmpty={challengePickAllowEmpty}
               challengeDraftCount={challengeDraft?.checkpoints.length ?? 0}
@@ -5050,6 +5663,7 @@ export default function App() {
               onUpdateAsterismGroup={handleUpdateAsterismGroup}
               onDeleteAsterismGroup={handleDeleteAsterismGroup}
               onToggleAsterismGroupVisible={handleToggleAsterismGroupVisible}
+              onApplyDefaultsToAsterismGroup={handleApplyDefaultsToAsterismGroup}
               onSaveAsterismGroupView={handleSaveAsterismGroupView}
               onFocusAsterismGroup={handleFocusAsterismGroup}
               onLoadAsterismPresets={handleLoadAsterismPresets}
@@ -5077,6 +5691,38 @@ export default function App() {
                   : undefined
               }
             />
+            {selected && detailWindowOpen && (
+              <CelestialInfoWindow
+                selected={selected}
+                centerLocked={centerLocked}
+                solarTrails={solarTrails}
+                theme={theme}
+                observer={observer}
+                optics={optics}
+                equipmentLocker={equipmentLocker}
+                savedSites={savedSites}
+                catalogs={catalogs}
+                sessionPlan={sessionPlan}
+                observingLists={observingListsState.lists}
+                tonightListId={observingListsState.tonightListId}
+                observationLogStore={observationLogStore}
+                asterismMode={asterismMode}
+                onClose={() => setDetailWindowOpen(false)}
+                onToggleCenterLock={handleToggleCenterLock}
+                onToggleSolarTrail={handleToggleSolarTrail}
+                onClearSolarTrails={handleClearSolarTrails}
+                onChangeView={handleChangeView}
+                onChangeOptics={setOptics}
+                onToggleSessionItem={handleToggleSessionItem}
+                onSaveObservationLog={handleSaveObservationLog}
+                onDeleteObservationLog={handleDeleteObservationLog}
+                onToggleObjectObserved={handleToggleObjectObserved}
+                onOpenObservationLogsTab={() => {
+                  setInspectorTab('log');
+                  setRightOpen(true);
+                }}
+              />
+            )}
           </div>
           <TimeControlBar
             theme={theme}
@@ -5085,8 +5731,44 @@ export default function App() {
           />
         </div>
 
-        {/* Left Overlay Control Drawer (270px) */}
+        {/* Left Overlay Control Drawer (270px, auto-hides on mouse leave) */}
         <div
+          onMouseEnter={() => {
+            pointerInLeftRef.current = true;
+            clearLeftHideTimer();
+          }}
+          onMouseLeave={() => {
+            pointerInLeftRef.current = false;
+            if (leftOpen) scheduleLeftHide(260);
+          }}
+          onPointerDownCapture={(e) => {
+            pointerDownInLeftRef.current = true;
+            const target = e.target as HTMLElement | null;
+            if (
+              target &&
+              (target.tagName === 'SELECT' ||
+                (target.tagName === 'INPUT' &&
+                  ['color', 'file', 'datetime-local', 'date', 'time'].includes(
+                    (target as HTMLInputElement).type
+                  )) ||
+                Boolean(target.closest('label')?.querySelector('input[type="color"],input[type="file"]')))
+            ) {
+              nativePickerInLeftRef.current = true;
+            }
+          }}
+          onChangeCapture={(e) => {
+            const target = e.target as HTMLElement | null;
+            if (
+              target &&
+              (target.tagName === 'SELECT' ||
+                (target.tagName === 'INPUT' &&
+                  ['color', 'file', 'datetime-local', 'date', 'time'].includes(
+                    (target as HTMLInputElement).type
+                  )))
+            ) {
+              nativePickerInLeftRef.current = false;
+            }
+          }}
           className={`no-print absolute inset-y-0 left-0 z-30 w-[270px] transition-transform duration-200 ease-out shadow-2xl ${
             leftOpen ? 'translate-x-0' : '-translate-x-full pointer-events-none'
           }`}
@@ -5128,7 +5810,18 @@ export default function App() {
         {/* Left Edge Pull-Handle Tab */}
         <button
           type="button"
-          onClick={() => setLeftOpen((o) => !o)}
+          onClick={() => {
+            clearLeftHideTimer();
+            setLeftOpen((o) => !o);
+          }}
+          onMouseEnter={() => {
+            pointerInLeftRef.current = true;
+            clearLeftHideTimer();
+          }}
+          onMouseLeave={() => {
+            pointerInLeftRef.current = false;
+            if (leftOpen) scheduleLeftHide(260);
+          }}
           title={leftOpen ? '왼쪽 메뉴 접기' : '왼쪽 메뉴 펼치기'}
           aria-label={leftOpen ? '왼쪽 메뉴 접기' : '왼쪽 메뉴 펼치기'}
           className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-14 w-5 border border-l-0 flex items-center justify-center transition-[left,background-color] duration-200 ease-out shadow-md ${ui.panel} hover:opacity-90`}
@@ -5145,122 +5838,161 @@ export default function App() {
           )}
         </button>
 
-        {/* Right Overlay Object Inspector / Session Drawer (292px) */}
+        {/* Right Overlay Menu Drawer (292px, auto-hides on mouse leave) */}
         <div
+          onMouseEnter={() => {
+            pointerInRightRef.current = true;
+            clearRightHideTimer();
+          }}
+          onMouseLeave={() => {
+            pointerInRightRef.current = false;
+            if (rightOpen) scheduleRightHide(260);
+          }}
+          onPointerDownCapture={(e) => {
+            pointerDownInRightRef.current = true;
+            const target = e.target as HTMLElement | null;
+            if (
+              target &&
+              (target.tagName === 'SELECT' ||
+                (target.tagName === 'INPUT' &&
+                  ['color', 'file', 'datetime-local', 'date', 'time'].includes(
+                    (target as HTMLInputElement).type
+                  )) ||
+                Boolean(target.closest('label')?.querySelector('input[type="color"],input[type="file"]')))
+            ) {
+              nativePickerInRightRef.current = true;
+            }
+          }}
+          onChangeCapture={(e) => {
+            const target = e.target as HTMLElement | null;
+            if (
+              target &&
+              (target.tagName === 'SELECT' ||
+                (target.tagName === 'INPUT' &&
+                  ['color', 'file', 'datetime-local', 'date', 'time'].includes(
+                    (target as HTMLInputElement).type
+                  )))
+            ) {
+              nativePickerInRightRef.current = false;
+            }
+          }}
           className={`no-print absolute inset-y-0 right-0 z-30 w-[292px] transition-transform duration-200 ease-out shadow-2xl ${
             rightOpen ? 'translate-x-0' : 'translate-x-full pointer-events-none'
           }`}
         >
-          {rightOpen && (
-            <ObjectInspector
-              selected={selected}
-              centerLocked={centerLocked}
-              solarTrails={solarTrails}
-              activeTab={inspectorTab}
-              theme={theme}
-              observer={observer}
-              optics={optics}
-              equipmentLocker={equipmentLocker}
-              savedSites={savedSites}
-              catalogs={catalogs}
-              sessionPlan={sessionPlan}
-              tonightManualEntries={observingListsState.tonightEntries}
-              observingLists={observingListsState.lists}
-              tonightListId={observingListsState.tonightListId}
-              challenges={challenges}
-              onTabChange={setInspectorTab}
-              onClose={() => setRightOpen(false)}
-              onSelect={handleSelect}
-              onToggleCenterLock={handleToggleCenterLock}
-              onToggleSolarTrail={handleToggleSolarTrail}
-              onClearSolarTrails={handleClearSolarTrails}
-              onChangeView={handleChangeView}
-              onChangeOptics={setOptics}
-              onSetTonightList={handleSetTonightList}
-              onCreateObservingList={handleCreateObservingList}
-              onRenameObservingList={handleRenameObservingList}
-              onDeleteObservingList={handleDeleteObservingList}
-              onToggleSessionItem={handleToggleSessionItem}
-              onToggleObserved={handleToggleObserved}
-              onUpdateNotes={handleUpdateNotes}
-              onAddRecommendedTonight={handleAddRecommendedTonight}
-              onImportSkylist={handleImportSkylistSession}
-              onExportSkylist={handleExportSkylistSession}
-              challengeOpacity={layers.challengeOpacity}
-              onChangeChallengeOpacity={(opacity) =>
-                setLayers((p) => ({ ...p, challengeOpacity: opacity }))
-              }
-              challengeLineWidth={layers.challengeLineWidth}
-              onChangeChallengeLineWidth={(lineWidth) =>
-                setLayers((p) => ({ ...p, challengeLineWidth: lineWidth }))
-              }
-              challengeDraft={challengeDraft}
-              challengeDraftIsNew={challengeDraftIsNew}
-              challengePickAllowEmpty={challengePickAllowEmpty}
-              challengeDraftNotice={challengeDraftNotice}
-              onStartCreateChallengeDraft={handleStartCreateChallengeDraft}
-              onStartEditChallengeDraft={handleStartEditChallengeDraft}
-              onChangeChallengeDraft={setChallengeDraft}
-              onCancelChallengeDraft={handleCancelChallengeDraft}
-              onChangeChallengePickAllowEmpty={setChallengePickAllowEmpty}
-              onClearChallengeDraftNotice={() => setChallengeDraftNotice(null)}
-              onAddCenterChallengeCheckpoint={handleAddCenterChallengeCheckpoint}
-              onToggleChallengeOnChart={handleToggleChallengeOnChart}
-              onToggleChallengeCheckpoint={handleToggleChallengeCheckpoint}
-              onUpdateChallengeCheckpointNote={handleUpdateChallengeCheckpointNote}
-              onSelectChallengeCheckpoint={handleSelectChallengeCheckpoint}
-              onFrameChallengeTrack={handleFrameChallengeTrack}
-              onPrintChallengeCertificate={handlePrintChallengeCertificate}
-              onSaveChallengeTrack={handleSaveChallengeTrack}
-              onDeleteChallengeTrack={handleDeleteChallengeTrack}
-              onResetBuiltInChallenge={handleResetBuiltInChallenge}
-              onImportChallenges={handleImportChallenges}
-              tourState={tourState}
-              tonightTourStops={tonightTourStops}
-              onStartTonightTour={handleStartTonightTour}
-              onStartChallengeTour={handleStartChallengeTour}
-              onToggleTourPlay={handleToggleTourPlay}
-              onStopTour={handleStopTour}
-              onJumpTourStop={handleJumpTourStop}
-              onChangeTourDwellSec={handleChangeTourDwellSec}
-              asterismStore={asterismStore}
-              asterismMode={asterismMode}
-              asterismSelectedId={asterismSelectedId}
-              onToggleAsterismMode={handleToggleAsterismMode}
-              onSelectAsterism={handleSelectAsterism}
-              onDeleteAsterismObject={handleDeleteAsterismObject}
-              onSetAsterismActiveLayer={handleSetAsterismActiveLayer}
-              onToggleAsterismLayerVisible={handleToggleAsterismLayerVisible}
-              onSetAllAsterismLayersVisible={handleSetAllAsterismLayersVisible}
-              onCreateAsterismLayer={handleCreateAsterismLayer}
-              onRenameAsterismLayer={handleRenameAsterismLayer}
-              onDeleteAsterismLayer={handleDeleteAsterismLayer}
-              onSetActiveAsterism={handleSetActiveAsterism}
-              onOpenAsterismLayers={handleOpenAsterismLayers}
-              onOpenAsterismShapeProps={handleOpenAsterismShapeProps}
-              onCreateAsterismGroup={handleCreateAsterismGroup}
-              onUpdateAsterismGroup={handleUpdateAsterismGroup}
-              onDeleteAsterismGroup={handleDeleteAsterismGroup}
-              onToggleAsterismGroupVisible={handleToggleAsterismGroupVisible}
-              onFocusAsterismGroup={handleFocusAsterismGroup}
-              onLoadAsterismPresets={handleLoadAsterismPresets}
-              onToggleAsterismPreset={handleToggleAsterismPreset}
-              onFocusAsterismPreset={handleFocusAsterismPreset}
-              onImportAsterismBundle={handleImportAsterismBundle}
-              observationLogStore={observationLogStore}
-              onSaveObservationLog={handleSaveObservationLog}
-              onDeleteObservationLog={handleDeleteObservationLog}
-              onToggleObjectObserved={handleToggleObjectObserved}
-              onFocusObservationTarget={handleFocusObservationTarget}
-              onImportObservationLogs={handleImportObservationLogs}
-            />
-          )}
+          <ObjectInspector
+            selected={selected}
+            activeTab={inspectorTab}
+            theme={theme}
+            observer={observer}
+            optics={optics}
+            equipmentLocker={equipmentLocker}
+            savedSites={savedSites}
+            catalogs={catalogs}
+            sessionPlan={sessionPlan}
+            tonightManualEntries={observingListsState.tonightEntries}
+            observingLists={observingListsState.lists}
+            tonightListId={observingListsState.tonightListId}
+            challenges={challenges}
+            onTabChange={setInspectorTab}
+            onClose={() => setRightOpen(false)}
+            onSelect={handleSelect}
+            onChangeView={handleChangeView}
+            onSetTonightList={handleSetTonightList}
+            onCreateObservingList={handleCreateObservingList}
+            onRenameObservingList={handleRenameObservingList}
+            onDeleteObservingList={handleDeleteObservingList}
+            onToggleSessionItem={handleToggleSessionItem}
+            onToggleObserved={handleToggleObserved}
+            onUpdateNotes={handleUpdateNotes}
+            onAddRecommendedTonight={handleAddRecommendedTonight}
+            onImportSkylist={handleImportSkylistSession}
+            onExportSkylist={handleExportSkylistSession}
+            challengeOpacity={layers.challengeOpacity}
+            onChangeChallengeOpacity={(opacity) =>
+              setLayers((p) => ({ ...p, challengeOpacity: opacity }))
+            }
+            challengeLineWidth={layers.challengeLineWidth}
+            onChangeChallengeLineWidth={(lineWidth) =>
+              setLayers((p) => ({ ...p, challengeLineWidth: lineWidth }))
+            }
+            challengeDraft={challengeDraft}
+            challengeDraftIsNew={challengeDraftIsNew}
+            challengePickAllowEmpty={challengePickAllowEmpty}
+            challengeDraftNotice={challengeDraftNotice}
+            onStartCreateChallengeDraft={handleStartCreateChallengeDraft}
+            onStartEditChallengeDraft={handleStartEditChallengeDraft}
+            onChangeChallengeDraft={setChallengeDraft}
+            onCancelChallengeDraft={handleCancelChallengeDraft}
+            onChangeChallengePickAllowEmpty={setChallengePickAllowEmpty}
+            onClearChallengeDraftNotice={() => setChallengeDraftNotice(null)}
+            onAddCenterChallengeCheckpoint={handleAddCenterChallengeCheckpoint}
+            onToggleChallengeOnChart={handleToggleChallengeOnChart}
+            onToggleChallengeCheckpoint={handleToggleChallengeCheckpoint}
+            onUpdateChallengeCheckpointNote={handleUpdateChallengeCheckpointNote}
+            onSelectChallengeCheckpoint={handleSelectChallengeCheckpoint}
+            onFrameChallengeTrack={handleFrameChallengeTrack}
+            onPrintChallengeCertificate={handlePrintChallengeCertificate}
+            onSaveChallengeTrack={handleSaveChallengeTrack}
+            onDeleteChallengeTrack={handleDeleteChallengeTrack}
+            onResetBuiltInChallenge={handleResetBuiltInChallenge}
+            onImportChallenges={handleImportChallenges}
+            tourState={tourState}
+            tonightTourStops={tonightTourStops}
+            onStartTonightTour={handleStartTonightTour}
+            onStartChallengeTour={handleStartChallengeTour}
+            onToggleTourPlay={handleToggleTourPlay}
+            onStopTour={handleStopTour}
+            onJumpTourStop={handleJumpTourStop}
+            onChangeTourDwellSec={handleChangeTourDwellSec}
+            asterismStore={asterismStore}
+            asterismMode={asterismMode}
+            asterismSelectedId={asterismSelectedId}
+            onToggleAsterismMode={handleToggleAsterismMode}
+            onSelectAsterism={handleSelectAsterism}
+            onDeleteAsterismObject={handleDeleteAsterismObject}
+            onSetAsterismActiveLayer={handleSetAsterismActiveLayer}
+            onToggleAsterismLayerVisible={handleToggleAsterismLayerVisible}
+            onSetAllAsterismLayersVisible={handleSetAllAsterismLayersVisible}
+            onCreateAsterismLayer={handleCreateAsterismLayer}
+            onRenameAsterismLayer={handleRenameAsterismLayer}
+            onDeleteAsterismLayer={handleDeleteAsterismLayer}
+            onSetActiveAsterism={handleSetActiveAsterism}
+            onOpenAsterismLayers={handleOpenAsterismLayers}
+            onOpenAsterismShapeProps={handleOpenAsterismShapeProps}
+            onCreateAsterismGroup={handleCreateAsterismGroup}
+            onUpdateAsterismGroup={handleUpdateAsterismGroup}
+            onDeleteAsterismGroup={handleDeleteAsterismGroup}
+            onToggleAsterismGroupVisible={handleToggleAsterismGroupVisible}
+            onFocusAsterismGroup={handleFocusAsterismGroup}
+            onLoadAsterismPresets={handleLoadAsterismPresets}
+            onToggleAsterismPreset={handleToggleAsterismPreset}
+            onFocusAsterismPreset={handleFocusAsterismPreset}
+            onImportAsterismBundle={handleImportAsterismBundle}
+            observationLogStore={observationLogStore}
+            onSaveObservationLog={handleSaveObservationLog}
+            onDeleteObservationLog={handleDeleteObservationLog}
+            onToggleObjectObserved={handleToggleObjectObserved}
+            onFocusObservationTarget={handleFocusObservationTarget}
+            onImportObservationLogs={handleImportObservationLogs}
+          />
         </div>
 
         {/* Right Edge Pull-Handle Tab */}
         <button
           type="button"
-          onClick={() => setRightOpen((o) => !o)}
+          onClick={() => {
+            clearRightHideTimer();
+            setRightOpen((o) => !o);
+          }}
+          onMouseEnter={() => {
+            pointerInRightRef.current = true;
+            clearRightHideTimer();
+          }}
+          onMouseLeave={() => {
+            pointerInRightRef.current = false;
+            if (rightOpen) scheduleRightHide(260);
+          }}
           title={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
           aria-label={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
           className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-14 w-5 border border-r-0 flex items-center justify-center transition-[right,background-color] duration-200 ease-out shadow-md ${ui.panel} hover:opacity-90`}

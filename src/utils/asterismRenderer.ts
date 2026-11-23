@@ -7,6 +7,7 @@ import {
   AsterismStoreState,
   AsterismTool,
   AsterismVertex,
+  OpticsLabelDirection,
   ThemeMode,
 } from '../types/astronomy';
 import { angularDistanceDeg, DEG2RAD, positionAngleDeg, RAD2DEG } from './astronomy';
@@ -34,6 +35,111 @@ export function formatAngularSeparation(deg: number): string {
   const arcmin = deg * 60;
   if (arcmin >= 1.0) return `${arcmin.toFixed(1)}′`;
   return `${(arcmin * 60).toFixed(0)}″`;
+}
+
+/** Format degrees compactly (e.g. 7.0 -> "7°", 1.70 -> "1.7°", 1.75 -> "1.75°"). */
+export function formatCompactDeg(deg: number): string {
+  if (!Number.isFinite(deg)) return '0°';
+  const rounded = Number(deg.toFixed(2));
+  return `${rounded}°`;
+}
+
+/** Build linked optical reticle / circle title such as "파인더(7°)" or "아이피스(1.7°)". */
+export function formatLinkedReticleTitle(kind: 'eyepiece' | 'finder', fovDeg: number): string {
+  return kind === 'finder'
+    ? `파인더(${formatCompactDeg(fovDeg)})`
+    : `아이피스(${formatCompactDeg(fovDeg)})`;
+}
+
+/** Unit direction vector & canvas text alignment for 8-direction circle rim label placement. */
+export function getOpticsDirectionVector(dir: OpticsLabelDirection): {
+  ux: number;
+  uy: number;
+  align: CanvasTextAlign;
+  baseline: CanvasTextBaseline;
+} {
+  switch (dir) {
+    case 'n':
+      return { ux: 0, uy: -1, align: 'center', baseline: 'bottom' };
+    case 'ne':
+      return { ux: Math.SQRT1_2, uy: -Math.SQRT1_2, align: 'left', baseline: 'bottom' };
+    case 'e':
+      return { ux: 1, uy: 0, align: 'left', baseline: 'middle' };
+    case 'se':
+      return { ux: Math.SQRT1_2, uy: Math.SQRT1_2, align: 'left', baseline: 'top' };
+    case 's':
+      return { ux: 0, uy: 1, align: 'center', baseline: 'top' };
+    case 'sw':
+      return { ux: -Math.SQRT1_2, uy: Math.SQRT1_2, align: 'right', baseline: 'top' };
+    case 'w':
+      return { ux: -1, uy: 0, align: 'right', baseline: 'middle' };
+    case 'nw':
+      return { ux: -Math.SQRT1_2, uy: -Math.SQRT1_2, align: 'right', baseline: 'bottom' };
+  }
+}
+
+/** Draw an upright rim label offset outward along one of the 8 compass directions. */
+export function drawCircleRimLabel(
+  ctx: CanvasRenderingContext2D,
+  rimX: number,
+  rimY: number,
+  dir: OpticsLabelDirection,
+  text: string,
+  color: string,
+  theme: ThemeMode,
+  alpha = 0.92
+): void {
+  if (!text.trim()) return;
+  const { ux, uy, align, baseline } = getOpticsDirectionVector(dir);
+  const gap = 6;
+  const tx = rimX + ux * gap;
+  const ty = rimY + uy * gap;
+
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.globalAlpha = Math.max(0.1, Math.min(1, alpha));
+  ctx.font = '600 10.5px "IBM Plex Mono", "Pretendard", "Noto Sans KR", sans-serif';
+  ctx.textAlign = align;
+  ctx.textBaseline = baseline;
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 2.8;
+  ctx.strokeStyle =
+    theme === 'white'
+      ? 'rgba(255,255,255,0.92)'
+      : theme === 'red'
+      ? 'rgba(10,0,0,0.92)'
+      : 'rgba(6,10,20,0.92)';
+  ctx.strokeText(text, tx, ty);
+  ctx.fillStyle = color;
+  ctx.fillText(text, tx, ty);
+  ctx.restore();
+}
+
+function findCircleRimAnchor(
+  pts: { x: number; y: number }[],
+  dir: OpticsLabelDirection
+): { x: number; y: number } | null {
+  if (pts.length === 0) return null;
+  let cx = 0;
+  let cy = 0;
+  for (let i = 0; i < pts.length; i++) {
+    cx += pts[i].x;
+    cy += pts[i].y;
+  }
+  cx /= pts.length;
+  cy /= pts.length;
+
+  const { ux, uy } = getOpticsDirectionVector(dir);
+  let best = pts[0];
+  let bestDot = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const dot = (pts[i].x - cx) * ux + (pts[i].y - cy) * uy;
+    if (dot > bestDot) {
+      bestDot = dot;
+      best = pts[i];
+    }
+  }
+  return best;
 }
 
 /**
@@ -365,6 +471,10 @@ export interface RenderAsterismsOptions {
   activeTool?: AsterismTool;
   eyepieceFovDeg?: number;
   finderFovDeg?: number;
+  reticleLineWidth?: number;
+  reticleOpacity?: number;
+  showReticleLabel?: boolean;
+  reticleLabelDirection?: OpticsLabelDirection;
   selectedObjectId: string | null;
   draft: AsterismDraftState | null;
   hoverSnap: AsterismSnapPreview | null;
@@ -390,6 +500,10 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
     activeTool = 'select',
     eyepieceFovDeg = 1.2,
     finderFovDeg = 7.0,
+    reticleLineWidth = 1.4,
+    reticleOpacity = 0.85,
+    showReticleLabel = true,
+    reticleLabelDirection = 'ne',
     selectedObjectId,
     draft,
     hoverSnap,
@@ -542,6 +656,23 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
 
           applyLineDash(ctx, obj.lineStyle, obj.lineWidth);
           ctx.stroke();
+
+          if (obj.linkedTitle && obj.linkedTitle.trim()) {
+            const dir: OpticsLabelDirection = obj.linkedTitleDirection ?? 'ne';
+            const anchor = findCircleRimAnchor(circlePts, dir);
+            if (anchor) {
+              drawCircleRimLabel(
+                ctx,
+                anchor.x,
+                anchor.y,
+                dir,
+                obj.linkedTitle,
+                color,
+                theme,
+                effAlpha
+              );
+            }
+          }
         }
       }
       // Subtle center crosshair when selected
@@ -726,12 +857,14 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
       hoverSnap &&
       (store.settings.circleLinkEyepiece || store.settings.circleLinkFinder)
     ) {
-      const linkedRadiusDeg = store.settings.circleLinkEyepiece
+      const isEyepiece = store.settings.circleLinkEyepiece;
+      const linkedRadiusDeg = isEyepiece
         ? Math.max(0.02, eyepieceFovDeg / 2)
         : Math.max(0.1, finderFovDeg / 2);
-      const linkedLabel = store.settings.circleLinkEyepiece
-        ? `아이피스 시야 Ø${(linkedRadiusDeg * 2).toFixed(2)}°`
-        : `파인더 시야 Ø${(linkedRadiusDeg * 2).toFixed(2)}°`;
+      const linkedTitle = formatLinkedReticleTitle(
+        isEyepiece ? 'eyepiece' : 'finder',
+        linkedRadiusDeg * 2
+      );
       const circlePts = projectSphericalCircle(
         hoverSnap.raDeg,
         hoverSnap.decDeg,
@@ -740,12 +873,14 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
         64
       );
       if (circlePts.length >= 16) {
+        const effPreviewWidth = Math.max(0.5, Math.min(6.0, reticleLineWidth));
+        const effPreviewAlpha = Math.max(0.1, Math.min(1.0, reticleOpacity));
         ctx.save();
         ctx.strokeStyle = activeColor;
         ctx.fillStyle = activeColor;
-        ctx.lineWidth = store.settings.defaultLineWidth;
-        ctx.globalAlpha = 0.85;
-        applyLineDash(ctx, store.settings.defaultLineStyle, store.settings.defaultLineWidth);
+        ctx.lineWidth = effPreviewWidth;
+        ctx.globalAlpha = effPreviewAlpha;
+        applyLineDash(ctx, store.settings.defaultLineStyle, effPreviewWidth);
         ctx.beginPath();
         ctx.moveTo(circlePts[0].x, circlePts[0].y);
         for (let i = 1; i < circlePts.length; i++) ctx.lineTo(circlePts[i].x, circlePts[i].y);
@@ -758,27 +893,21 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
         }
         ctx.stroke();
 
-        ctx.setLineDash([]);
-        ctx.font = '600 10px "IBM Plex Mono", "Noto Sans KR", monospace';
-        const tw = ctx.measureText(linkedLabel).width;
-        const bx = hoverSnap.x - tw / 2 - 5;
-        const by = hoverSnap.y - 26;
-        ctx.fillStyle =
-          theme === 'white'
-            ? 'rgba(255,255,255,0.92)'
-            : theme === 'red'
-            ? 'rgba(18,2,2,0.92)'
-            : 'rgba(10,15,28,0.92)';
-        ctx.strokeStyle = activeColor;
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.roundRect(bx, by - 8, tw + 10, 16, 4);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = activeColor;
-        ctx.textAlign = 'center';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(linkedLabel, hoverSnap.x, by + 0.5);
+        if (showReticleLabel) {
+          const anchor = findCircleRimAnchor(circlePts, reticleLabelDirection);
+          if (anchor) {
+            drawCircleRimLabel(
+              ctx,
+              anchor.x,
+              anchor.y,
+              reticleLabelDirection,
+              linkedTitle,
+              activeColor,
+              theme,
+              effPreviewAlpha
+            );
+          }
+        }
         ctx.restore();
       }
     }

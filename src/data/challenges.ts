@@ -1,7 +1,4 @@
-import { ChallengeCheckpoint, ChallengeTrack } from '../types/astronomy';
-import { DSO_CATALOG } from './dso';
-
-const DSO_BY_ID = new Map(DSO_CATALOG.map((d) => [d.id.toUpperCase(), d]));
+import { ChallengeCheckpoint, ChallengeTrack, DeepSkyObject } from '../types/astronomy';
 
 interface MessierStageSpec {
   stage: string;
@@ -56,24 +53,13 @@ function buildMessierMarathonCheckpoints(): ChallengeCheckpoint[] {
   let seq = 1;
   for (const group of MESSIER_MARATHON_STAGES) {
     for (const id of group.ids) {
-      const ref = DSO_BY_ID.get(id.toUpperCase());
-      const displayName = ref?.koName
-        ? `${id} ${ref.koName}`
-        : ref?.name
-        ? `${id} (${ref.name})`
-        : id;
       list.push({
         id: `mm-${id.toLowerCase()}`,
         code: `#${String(seq).padStart(3, '0')}`,
-        name: displayName,
+        name: id,
         catalogId: id,
         kind: 'dso',
         stage: group.stage,
-        constellation: ref?.con,
-        objectType: ref?.type,
-        mag: ref?.mag,
-        ra: ref?.ra,
-        dec: ref?.dec,
         guideNote:
           id === 'M74'
             ? '일몰 직후 서쪽 저고도에서 가장 먼저 잡아야 하는 출발점입니다.'
@@ -346,24 +332,16 @@ function createSummerNebulaTour(): ChallengeTrack {
     { id: 'M8', note: '궁수자리 석호 성운 — 여름철 은하수 중심부의 거대한 발광성운' },
     { id: 'M22', note: '궁수자리 대표 구상성단 — 북반구에서 가장 웅장한 구상성단 중 하나' },
   ];
-  const checkpoints: ChallengeCheckpoint[] = specs.map((sp, i) => {
-    const ref = DSO_BY_ID.get(sp.id);
-    return {
-      id: `sum-${sp.id.toLowerCase()}`,
-      code: `S${String(i + 1).padStart(2, '0')}`,
-      name: ref?.koName ? `${sp.id} ${ref.koName}` : sp.id,
-      catalogId: sp.id,
-      kind: 'dso',
-      stage: i < 4 ? '1구간 · 백조~방패 여름 은하수' : '2구간 · 궁수자리 은하 중심 성운대',
-      constellation: ref?.con,
-      objectType: ref?.type,
-      mag: ref?.mag,
-      ra: ref?.ra,
-      dec: ref?.dec,
-      guideNote: sp.note,
-      observed: false,
-    };
-  });
+  const checkpoints: ChallengeCheckpoint[] = specs.map((sp, i) => ({
+    id: `sum-${sp.id.toLowerCase()}`,
+    code: `S${String(i + 1).padStart(2, '0')}`,
+    name: sp.id,
+    catalogId: sp.id,
+    kind: 'dso',
+    stage: i < 4 ? '1구간 · 백조~방패 여름 은하수' : '2구간 · 궁수자리 은하 중심 성운대',
+    guideNote: sp.note,
+    observed: false,
+  }));
 
   return {
     id: 'summer-milkyway-nebula-tour',
@@ -400,24 +378,16 @@ function createSpringGalaxyTour(): ChallengeTrack {
     { id: 'M64', note: '머리털자리 검은눈 은하 — 핵 앞의 짙은 암흑먼지 띠' },
     { id: 'M104', note: '처녀자리 솜브레로 은하 — 선명한 적도 먼지 띠와 거대 헤일로' },
   ];
-  const checkpoints: ChallengeCheckpoint[] = specs.map((sp, i) => {
-    const ref = DSO_BY_ID.get(sp.id);
-    return {
-      id: `spr-${sp.id.toLowerCase()}`,
-      code: `G${String(i + 1).padStart(2, '0')}`,
-      name: ref?.koName ? `${sp.id} ${ref.koName}` : sp.id,
-      catalogId: sp.id,
-      kind: 'dso',
-      stage: i < 4 ? '1구간 · 북쪽 큰곰·사냥개 은하벨트' : '2구간 · 사자~처녀 은하 회랑',
-      constellation: ref?.con,
-      objectType: ref?.type,
-      mag: ref?.mag,
-      ra: ref?.ra,
-      dec: ref?.dec,
-      guideNote: sp.note,
-      observed: false,
-    };
-  });
+  const checkpoints: ChallengeCheckpoint[] = specs.map((sp, i) => ({
+    id: `spr-${sp.id.toLowerCase()}`,
+    code: `G${String(i + 1).padStart(2, '0')}`,
+    name: sp.id,
+    catalogId: sp.id,
+    kind: 'dso',
+    stage: i < 4 ? '1구간 · 북쪽 큰곰·사냥개 은하벨트' : '2구간 · 사자~처녀 은하 회랑',
+    guideNote: sp.note,
+    observed: false,
+  }));
 
   return {
     id: 'spring-galaxy-tour',
@@ -568,3 +538,63 @@ export function createDefaultChallengeTracks(): ChallengeTrack[] {
     createSpringGalaxyTour(),
   ];
 }
+
+/**
+ * Hydrates built-in challenge checkpoints with coordinates, magnitudes, and localized names
+ * once external DSO JSON catalogs finish loading from /public/data/*.json.
+ */
+export function hydrateChallengeTracksWithCatalog(
+  tracks: ChallengeTrack[],
+  dsosBright: DeepSkyObject[]
+): ChallengeTrack[] {
+  if (dsosBright.length === 0) return tracks;
+  const dsoByNorm = new Map<string, DeepSkyObject>();
+  for (const d of dsosBright) {
+    dsoByNorm.set(d.id.replace(/\s+/g, '').toUpperCase(), d);
+    if (d.altId) dsoByNorm.set(d.altId.replace(/\s+/g, '').toUpperCase(), d);
+  }
+
+  let anyChanged = false;
+  const next = tracks.map((track) => {
+    let trackChanged = false;
+    const checkpoints = track.checkpoints.map((cp) => {
+      if (cp.kind !== 'dso' || !cp.catalogId) return cp;
+      const ref = dsoByNorm.get(cp.catalogId.replace(/\s+/g, '').toUpperCase());
+      if (!ref) return cp;
+
+      const richName =
+        cp.name === cp.catalogId
+          ? ref.koName
+            ? `${cp.catalogId} ${ref.koName}`
+            : ref.name
+            ? `${cp.catalogId} (${ref.name})`
+            : cp.name
+          : cp.name;
+
+      const needsUpdate =
+        cp.ra === undefined ||
+        cp.dec === undefined ||
+        cp.mag === undefined ||
+        !cp.constellation ||
+        !cp.objectType ||
+        richName !== cp.name;
+
+      if (!needsUpdate) return cp;
+      trackChanged = true;
+      anyChanged = true;
+      return {
+        ...cp,
+        name: richName,
+        constellation: cp.constellation ?? ref.con,
+        objectType: cp.objectType ?? ref.type,
+        mag: cp.mag ?? ref.mag,
+        ra: cp.ra ?? ref.ra,
+        dec: cp.dec ?? ref.dec,
+      };
+    });
+    return trackChanged ? { ...track, checkpoints } : track;
+  });
+
+  return anyChanged ? next : tracks;
+}
+

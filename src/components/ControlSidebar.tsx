@@ -17,9 +17,7 @@ import {
   Trash2,
   Upload,
 } from 'lucide-react';
-import { CALDWELL_CATALOG } from '../data/caldwell';
-import { CatalogSnapshot } from '../data/catalogLoader';
-import { DSO_CATALOG } from '../data/dso';
+import { CatalogSnapshot, searchHipparcosCatalog } from '../data/catalogLoader';
 import {
   isSmartTelescopeRotatable,
   normalizeTelescopeOpticalType,
@@ -261,6 +259,7 @@ export function ControlSidebar({
     return activeCam?.isSmartTelescope ? 'smart' : 'combo';
   });
   const [query, setQuery] = useState('');
+  const [remoteHipHits, setRemoteHipHits] = useState<Star[]>([]);
   const [activeConAbbr, setActiveConAbbr] = useState<string | null>(null);
   const [quickSaveOpen, setQuickSaveOpen] = useState(false);
   const [quickSiteName, setQuickSiteName] = useState('');
@@ -279,6 +278,29 @@ export function ControlSidebar({
       // Ignore storage write failure
     }
   }, [openSections]);
+
+  // Live full-sky Hipparcos (118,216 stars) lookup when user searches a HIP number
+  useEffect(() => {
+    const trimmed = query.trim();
+    const compact = trimmed.replace(/\s+/g, '').toLowerCase();
+    const isHipQuery =
+      exploreCategory === 'all' &&
+      (/^hip\d+$/.test(compact) || /^\d{2,6}$/.test(compact));
+    if (!isHipQuery) {
+      setRemoteHipHits([]);
+      return;
+    }
+    let cancelled = false;
+    const timer = window.setTimeout(() => {
+      void searchHipparcosCatalog(trimmed).then((hits) => {
+        if (!cancelled) setRemoteHipHits(hits);
+      });
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [exploreCategory, query]);
 
   const isSectionOpen = (id: string) => Boolean(openSections[id]);
   const toggleSection = (id: string) =>
@@ -304,16 +326,7 @@ export function ControlSidebar({
   const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
 
   const messierList = useMemo(() => {
-    const map = new Map<number, (typeof DSO_CATALOG)[number]>();
-    for (const d of DSO_CATALOG) {
-      const m = /^M(\d+)$/.exec(d.id);
-      if (m) {
-        map.set(Number(m[1]), {
-          ...d,
-          altId: d.altId ? formatCatalogCode(d.altId) : undefined,
-        });
-      }
-    }
+    const map = new Map<number, DeepSkyObject>();
     for (const d of catalogs.dsosBright) {
       const m = /^M(\d+)$/.exec(d.id);
       if (m) {
@@ -362,9 +375,9 @@ export function ControlSidebar({
   const filteredCaldwell = useMemo(() => {
     const q = query.trim().toLowerCase();
     const qCompact = q.replace(/\s+/g, '');
-    if (!q) return CALDWELL_CATALOG;
-    const scored: { item: (typeof CALDWELL_CATALOG)[number]; score: number }[] = [];
-    for (const c of CALDWELL_CATALOG) {
+    if (!q) return catalogs.caldwell;
+    const scored: { item: (typeof catalogs.caldwell)[number]; score: number }[] = [];
+    for (const c of catalogs.caldwell) {
       const aliases = getDsoSearchAliases(c, c.caldwellId);
       const score = scoreSearchMatch(
         [
@@ -382,7 +395,7 @@ export function ControlSidebar({
     }
     scored.sort((a, b) => b.score - a.score || a.item.caldwellNumber - b.item.caldwellNumber);
     return scored.map((s) => s.item);
-  }, [query]);
+  }, [catalogs.caldwell, query]);
 
   const ngcIcList = useMemo(() => {
     if (exploreCategory !== 'ngcic') return [];
@@ -468,12 +481,12 @@ export function ControlSidebar({
     };
 
     for (const d of messierList) addEntry(d, d.id);
-    for (const c of CALDWELL_CATALOG) addEntry(c, c.caldwellId);
+    for (const c of catalogs.caldwell) addEntry(c, c.caldwellId);
     for (const d of catalogs.dsosBright) addEntry(d);
     for (const d of catalogs.dsosDeep) addEntry(d);
 
     return Array.from(byKey.values()).sort((a, b) => a.dso.mag - b.dso.mag);
-  }, [exploreCategory, messierList, catalogs.dsosBright, catalogs.dsosDeep]);
+  }, [exploreCategory, messierList, catalogs.caldwell, catalogs.dsosBright, catalogs.dsosDeep]);
 
   const filteredNgcIc = useMemo(() => {
     if (exploreCategory !== 'ngcic') return { items: [], totalMatches: 0 };
@@ -550,44 +563,7 @@ export function ControlSidebar({
     const qCompact = q.replace(/\s+/g, '');
 
     if (!q) {
-      const featured: GlobalSearchItem[] = [];
-      const featuredSolarIds = ['Sun', 'Moon', 'Jupiter', 'Saturn', 'Mars', 'Venus'];
-      for (const id of featuredSolarIds) {
-        const body = solarBodies.find((b) => b.id === id);
-        if (body) {
-          featured.push({ kind: 'planet', key: `planet:${body.id}`, score: 100, mag: body.mag, body });
-        }
-      }
-      const featuredMessierIds = ['M31', 'M42', 'M45', 'M13', 'M51', 'M57', 'M8', 'M27'];
-      for (const id of featuredMessierIds) {
-        const dso = messierList.find((m) => m.id === id);
-        if (dso) {
-          featured.push({
-            kind: 'dso',
-            key: `dso:${dso.id}`,
-            score: 90,
-            mag: dso.mag,
-            dso,
-            badge: '메시에',
-            primaryId: dso.id,
-            secondaryId: dso.altId,
-          });
-        }
-      }
-      const topStars = [...catalogs.brightStars]
-        .filter((s) => Boolean(s.koName || s.name))
-        .sort((a, b) => a.mag - b.mag)
-        .slice(0, 6);
-      for (const star of topStars) {
-        featured.push({
-          kind: 'star',
-          key: `star:${star.id}`,
-          score: 80,
-          mag: star.mag,
-          star,
-        });
-      }
-      return { items: featured, totalMatches: featured.length };
+      return { items: [] as GlobalSearchItem[], totalMatches: 0 };
     }
 
     const results: GlobalSearchItem[] = [];
@@ -654,6 +630,7 @@ export function ControlSidebar({
         const hipLabel = star.hip ? `HIP ${star.hip}` : star.id;
         const score = scoreSearchMatch([hipLabel, star.id], [], q, qCompact);
         if (score > 0) {
+          if (star.hip) seenStarHip.add(star.hip);
           results.push({
             kind: 'star',
             key: `star:${star.id}`,
@@ -664,6 +641,24 @@ export function ControlSidebar({
           deepStarHits++;
           if (deepStarHits >= 30) break;
         }
+      }
+    }
+    if (wantsHip && remoteHipHits.length > 0) {
+      for (const star of remoteHipHits) {
+        if (star.hip && seenStarHip.has(star.hip)) continue;
+        if (star.hip) seenStarHip.add(star.hip);
+        const hipLabel = star.hip ? `HIP ${star.hip}` : star.id;
+        const score = Math.max(
+          85,
+          scoreSearchMatch([star.koName, star.name, star.bayer, hipLabel, star.id], [star.con], q, qCompact)
+        );
+        results.push({
+          kind: 'star',
+          key: `star:${star.id}`,
+          score,
+          mag: star.mag,
+          star,
+        });
       }
     }
 
@@ -699,7 +694,7 @@ export function ControlSidebar({
       }
     }
 
-    for (const entry of CALDWELL_CATALOG) {
+    for (const entry of catalogs.caldwell) {
       const k1 = normDsoKey(entry.caldwellId);
       const k2 = normDsoKey(entry.id);
       if (k1) seenDsoIds.add(k1);
@@ -812,10 +807,12 @@ export function ControlSidebar({
     messierList,
     catalogs.brightStars,
     catalogs.deepStars,
+    catalogs.caldwell,
     catalogs.doubleStars,
     catalogs.dsosBright,
     catalogs.darkNebulae,
     catalogs.dsosDeep,
+    remoteHipHits,
   ]);
 
   const jumpToDso = (dso: DeepSkyObject) => {
@@ -1122,15 +1119,13 @@ export function ControlSidebar({
 
           {/* Scrollable Card List */}
           <div className="flex-1 min-h-0 overflow-y-auto astro-scroll space-y-1.5 pr-0.5">
-            {exploreCategory === 'all' && (
+            {exploreCategory === 'all' && query.trim() && (
               <>
                 <div className={`flex items-center justify-between px-0.5 text-[9.5px] tracking-[-0.05em] ${ui.textMuted}`}>
                   <span>
-                    {query.trim()
-                      ? `통합 검색 결과 ${allSearchResults.totalMatches.toLocaleString()}건`
-                      : '추천 주요 천체 · 전체 카탈로그 통합 검색'}
+                    통합 검색 결과 {allSearchResults.totalMatches.toLocaleString()}건
                   </span>
-                  {query.trim() && allSearchResults.totalMatches > 80 && (
+                  {allSearchResults.totalMatches > 80 && (
                     <span className="font-mono">상위 80</span>
                   )}
                 </div>
@@ -3352,7 +3347,7 @@ export function ControlSidebar({
               {/* Star Hopping Path Toggle */}
               <label className="flex items-center justify-between gap-1.5 pt-1 px-1 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
-                  선택 천체 별 호핑 가이드 경로
+                  선택된 천체대상 호핑(경로) 가이드
                 </span>
                 <input
                   type="checkbox"

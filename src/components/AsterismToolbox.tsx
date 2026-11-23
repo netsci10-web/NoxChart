@@ -3,7 +3,6 @@ import {
   ArrowUpRight,
   Check,
   Circle,
-  Copy,
   Crosshair,
   Download,
   Eye,
@@ -15,9 +14,7 @@ import {
   MousePointer2,
   Navigation,
   Plus,
-  QrCode,
   Redo2,
-  Share2,
   SlidersHorizontal,
   Spline,
   Trash2,
@@ -26,7 +23,6 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import QRCode from 'qrcode';
 import {
   AsterismDraftState,
   AsterismGroup,
@@ -37,17 +33,21 @@ import {
   AsterismTool,
   AsterismToolboxPopover,
   ChartViewState,
+  OpticsLabelDirection,
   OpticsSettings,
   ThemeMode,
 } from '../types/astronomy';
 import {
   ASTERISM_COLOR_SWATCHES,
-  buildAsterismShareUrl,
   downloadAsterismsJson,
   downloadSingleAsterismJson,
   parseAsterismsFromJson,
 } from '../utils/asterismStorage';
-import { formatAngularSeparation, getCircleRadiusDeg } from '../utils/asterismRenderer';
+import {
+  formatAngularSeparation,
+  formatLinkedReticleTitle,
+  getCircleRadiusDeg,
+} from '../utils/asterismRenderer';
 import { getUiTheme } from '../utils/themeClasses';
 
 interface AsterismToolboxProps {
@@ -84,6 +84,7 @@ interface AsterismToolboxProps {
   onUpdateAsterismGroup: (asterismId: string, patch: Partial<AsterismGroup>) => void;
   onDeleteAsterismGroup: (asterismId: string) => void;
   onToggleAsterismGroupVisible: (asterismId: string) => void;
+  onApplyDefaultsToAsterismGroup: (asterismId: string) => void;
   onSaveAsterismGroupView: (asterismId: string) => void;
   onFocusAsterismGroup: (grp: AsterismGroup) => void;
   onLoadPresets: () => number;
@@ -154,6 +155,21 @@ const FOV_PRESETS: { label: string; range: [number, number] }[] = [
   { label: '고배율', range: [0.05, 2.5] },
 ];
 
+const LABEL_DIRECTION_GRID: (
+  | { dir: OpticsLabelDirection; glyph: string; title: string }
+  | null
+)[] = [
+  { dir: 'nw', glyph: '↖', title: '좌상 (북서)' },
+  { dir: 'n', glyph: '↑', title: '상 (북)' },
+  { dir: 'ne', glyph: '↗', title: '우상 (북동)' },
+  { dir: 'w', glyph: '←', title: '좌 (서)' },
+  null,
+  { dir: 'e', glyph: '→', title: '우 (동)' },
+  { dir: 'sw', glyph: '↙', title: '좌하 (남서)' },
+  { dir: 's', glyph: '↓', title: '하 (남)' },
+  { dir: 'se', glyph: '↘', title: '우하 (남동)' },
+];
+
 function getShapeTypeLabel(obj: AsterismObject): string {
   if (obj.type === 'polyline') return obj.smooth ? '원호' : '선';
   if (obj.type === 'polygon') return '다각형';
@@ -180,7 +196,6 @@ function formatShortDec(decDeg: number): string {
 export function AsterismToolbox({
   theme,
   rightDrawerOpen,
-  view,
   optics,
   store,
   activeTool,
@@ -206,20 +221,123 @@ export function AsterismToolbox({
   onUpdateAsterismGroup,
   onDeleteAsterismGroup,
   onToggleAsterismGroupVisible,
+  onApplyDefaultsToAsterismGroup,
   onSaveAsterismGroupView,
   onFocusAsterismGroup,
   onImportBundle,
   onChangeOptics,
-  onChangeView,
 }: AsterismToolboxProps) {
   const ui = getUiTheme(theme);
-  const [shareOpen, setShareOpen] = useState(false);
-  const [shareUrl, setShareUrl] = useState('');
-  const [qrDataUrl, setQrDataUrl] = useState<string | null>(null);
-  const [qrError, setQrError] = useState<string | null>(null);
-  const [copiedShare, setCopiedShare] = useState(false);
+  const [backupOpen, setBackupOpen] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [popoverAutoHidden, setPopoverAutoHidden] = useState(false);
   const importInputRef = useRef<HTMLInputElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const hideTimerRef = useRef<number | null>(null);
+  const pointerInPopoverRef = useRef(false);
+  const pointerInActiveTriggerRef = useRef(false);
+  const pointerDownInPopoverRef = useRef(false);
+  const nativePickerOpenRef = useRef(false);
+
+  const clearHideTimer = () => {
+    if (hideTimerRef.current !== null) {
+      window.clearTimeout(hideTimerRef.current);
+      hideTimerRef.current = null;
+    }
+  };
+
+  const schedulePopoverHide = (delayMs = 190) => {
+    clearHideTimer();
+    if (popover === 'none') return;
+    hideTimerRef.current = window.setTimeout(() => {
+      hideTimerRef.current = null;
+      if (
+        pointerInPopoverRef.current ||
+        pointerInActiveTriggerRef.current ||
+        pointerDownInPopoverRef.current ||
+        nativePickerOpenRef.current
+      ) {
+        return;
+      }
+      setPopoverAutoHidden(true);
+    }, delayMs);
+  };
+
+  useEffect(() => {
+    clearHideTimer();
+    setPopoverAutoHidden(false);
+    if (popover === 'none') {
+      pointerInPopoverRef.current = false;
+      pointerInActiveTriggerRef.current = false;
+      pointerDownInPopoverRef.current = false;
+      nativePickerOpenRef.current = false;
+    }
+  }, [popover]);
+
+  useEffect(() => {
+    const handleWinPointerUp = () => {
+      if (!pointerDownInPopoverRef.current) return;
+      pointerDownInPopoverRef.current = false;
+      if (
+        popover !== 'none' &&
+        !pointerInPopoverRef.current &&
+        !pointerInActiveTriggerRef.current &&
+        !nativePickerOpenRef.current
+      ) {
+        schedulePopoverHide(180);
+      }
+    };
+    const handleWinFocus = () => {
+      if (!nativePickerOpenRef.current) return;
+      nativePickerOpenRef.current = false;
+      if (
+        popover !== 'none' &&
+        !pointerInPopoverRef.current &&
+        !pointerInActiveTriggerRef.current
+      ) {
+        schedulePopoverHide(180);
+      }
+    };
+    window.addEventListener('pointerup', handleWinPointerUp);
+    window.addEventListener('pointercancel', handleWinPointerUp);
+    window.addEventListener('focus', handleWinFocus);
+    return () => {
+      window.removeEventListener('pointerup', handleWinPointerUp);
+      window.removeEventListener('pointercancel', handleWinPointerUp);
+      window.removeEventListener('focus', handleWinFocus);
+    };
+  }, [popover]);
+
+  useEffect(() => {
+    return () => {
+      clearHideTimer();
+    };
+  }, []);
+
+  const handlePopoverTriggerClick = (target: Exclude<AsterismToolboxPopover, 'none'>) => {
+    clearHideTimer();
+    if (popover === target) {
+      pointerInActiveTriggerRef.current = false;
+      onChangePopover('none');
+    } else {
+      pointerInActiveTriggerRef.current = true;
+      setPopoverAutoHidden(false);
+      onChangePopover(target);
+    }
+  };
+
+  const handlePopoverTriggerEnter = (target: Exclude<AsterismToolboxPopover, 'none'>) => {
+    if (popover !== target) return;
+    pointerInActiveTriggerRef.current = true;
+    clearHideTimer();
+    setPopoverAutoHidden(false);
+  };
+
+  const handlePopoverTriggerLeave = (target: Exclude<AsterismToolboxPopover, 'none'>) => {
+    if (popover !== target) return;
+    pointerInActiveTriggerRef.current = false;
+    schedulePopoverHide(220);
+  };
 
   const finderFovDeg = optics.finderFovDeg ?? 7.0;
   const finderLabel = optics.finderLabel?.trim() || '7×50 파인더';
@@ -249,52 +367,6 @@ export function AsterismToolbox({
     const t = window.setTimeout(() => setNotice(null), 2800);
     return () => window.clearTimeout(t);
   }, [notice]);
-
-  // Generate share URL & QR when Share modal opens
-  useEffect(() => {
-    if (!shareOpen) return;
-    if (store.asterisms.length === 0 && store.objects.length === 0) {
-      setShareUrl('');
-      setQrDataUrl(null);
-      setQrError('공유할 성군이 없습니다. 먼저 성군을 작도하세요.');
-      return;
-    }
-    const url = buildAsterismShareUrl(store.layers, store.asterisms, store.objects, {
-      ra: view.ra,
-      dec: view.dec,
-      fsz: view.fsz,
-    });
-    setShareUrl(url);
-    if (url.length > 2600) {
-      setQrDataUrl(null);
-      setQrError(
-        `데이터 크기가 커서(${url.length}자) QR 코드 용량을 초과했습니다. JSON 파일 내보내기 또는 URL 복사를 이용하세요.`
-      );
-      return;
-    }
-    setQrError(null);
-    QRCode.toDataURL(url, {
-      width: 220,
-      margin: 1,
-      color: {
-        dark: theme === 'red' ? '#FF4444' : '#0F172A',
-        light: theme === 'red' ? '#120202' : '#FFFFFF',
-      },
-    })
-      .then((data) => setQrDataUrl(data))
-      .catch(() => setQrError('QR 코드 생성에 실패했습니다.'));
-  }, [shareOpen, store.layers, store.asterisms, store.objects, view.ra, view.dec, view.fsz, theme]);
-
-  const handleCopyShareUrl = async () => {
-    if (!shareUrl) return;
-    try {
-      await navigator.clipboard.writeText(shareUrl);
-      setCopiedShare(true);
-      window.setTimeout(() => setCopiedShare(false), 1800);
-    } catch {
-      setNotice('클립보드 복사가 차단되었습니다. URL을 직접 복사하세요.');
-    }
-  };
 
   const handleImportJsonFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -338,7 +410,7 @@ export function AsterismToolbox({
     }
   };
 
-  const rightEdgeOffsetPx = rightDrawerOpen ? 304 : 12;
+  const rightEdgeOffsetPx = rightDrawerOpen ? 304 : 28;
   const popoverRightPx = rightEdgeOffsetPx + 58;
 
   const accentRangeCls =
@@ -355,8 +427,6 @@ export function AsterismToolbox({
         : 0;
     return `${optics.eyepieceFocalLengthMm}mm ${optics.eyepieceAfovDeg}°${mag > 0 ? ` · ${mag}×` : ''}`;
   })();
-
-  const activeToolMeta = TOOL_BUTTONS.find((t) => t.id === activeTool) ?? TOOL_BUTTONS[0];
 
   const popoverTitle =
     popover === 'props'
@@ -457,90 +527,53 @@ export function AsterismToolbox({
         onChange={handleImportJsonFile}
       />
 
-      {/* Top-Center Active Drawing Status Banner */}
-      <div
-        className={`no-print absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-2 px-3 py-1.5 border text-[11px] shadow-sm backdrop-blur-sm max-w-[92vw] ${ui.hudOverlay}`}
-        style={{ borderRadius: '6px' }}
-      >
-        <span
-          className={`w-2 h-2 rounded-full shrink-0 ${
-            theme === 'red' ? 'bg-red-500' : theme === 'white' ? 'bg-blue-600' : 'bg-cyan-400'
-          }`}
-        />
-        <span className={`font-semibold whitespace-nowrap ${ui.textPrimary}`}>성군 작도</span>
-        {activeAsterism ? (
-          <span
-            className={`px-1.5 py-0.5 border text-[10px] font-medium truncate max-w-[140px] ${
-              theme === 'white'
-                ? 'border-amber-400/70 bg-amber-50 text-amber-800'
-                : theme === 'red'
-                ? 'border-red-800 bg-[#260606] text-red-300'
-                : 'border-amber-400/40 bg-amber-500/15 text-amber-200'
-            }`}
-            style={{ borderRadius: '4px' }}
-            title={`현재 제작중인 성군: ${activeAsterism.name}`}
-          >
-            {activeAsterism.name}
-          </span>
-        ) : (
-          <span className={`text-[10px] whitespace-nowrap ${ui.textMuted}`}>
-            (항성 클릭 시 새 성군 생성)
-          </span>
-        )}
-        <span className={`text-[10px] truncate hidden md:inline ${ui.textSecondary}`}>
-          {draft
-            ? draft.type === 'circle'
-              ? '중심 지정됨 · 외곽 반경을 클릭하여 원 완성 (ESC 취소)'
-              : `${draft.vertices.length}개 정점 · 더블클릭 / Enter로 완료 · ESC 취소`
-            : activeTool === 'circle' &&
-              (store.settings.circleLinkEyepiece || store.settings.circleLinkFinder)
-            ? store.settings.circleLinkEyepiece
-              ? `아이피스 시야(Ø${optics.eyepieceFovDeg.toFixed(2)}°) 연동 · 클릭으로 즉시 원 그리기`
-              : `파인더 시야(Ø${finderFovDeg.toFixed(2)}°) 연동 · 클릭으로 즉시 원 그리기`
-            : activeToolMeta.hint}
-        </span>
-        {draft && (
-          <div className="flex items-center gap-1 ml-1">
-            {draft.type !== 'circle' && (
+      {/* Minimal Action Pill ONLY while actively plotting draft vertices or showing a brief save toast */}
+      {(draft || notice) && (
+        <div
+          className={`no-print absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 px-2.5 py-1 border text-[10.5px] shadow-sm backdrop-blur-sm ${ui.hudOverlay}`}
+          style={{ borderRadius: '6px' }}
+        >
+          {draft && (
+            <div className="flex items-center gap-1">
+              {draft.type !== 'circle' && (
+                <button
+                  type="button"
+                  onClick={onFinishDraft}
+                  disabled={draft.vertices.length < (draft.type === 'polygon' ? 3 : 2)}
+                  className={`px-1.5 py-0.5 border text-[10px] font-semibold flex items-center gap-0.5 ${
+                    draft.vertices.length >= (draft.type === 'polygon' ? 3 : 2)
+                      ? ui.buttonActive
+                      : `${ui.buttonIdle} opacity-45 cursor-not-allowed`
+                  }`}
+                  style={{ borderRadius: '4px' }}
+                >
+                  <Check className="w-3 h-3" />
+                  <span>완료</span>
+                </button>
+              )}
               <button
                 type="button"
-                onClick={onFinishDraft}
-                disabled={draft.vertices.length < (draft.type === 'polygon' ? 3 : 2)}
-                className={`px-1.5 py-0.5 border text-[10px] font-semibold flex items-center gap-0.5 ${
-                  draft.vertices.length >= (draft.type === 'polygon' ? 3 : 2)
-                    ? ui.buttonActive
-                    : `${ui.buttonIdle} opacity-45 cursor-not-allowed`
-                }`}
+                onClick={onUndoDraftPoint}
+                className={`px-1.5 py-0.5 border text-[10px] ${ui.buttonIdle}`}
                 style={{ borderRadius: '4px' }}
+                title="마지막 점 되돌리기 (Backspace)"
               >
-                <Check className="w-3 h-3" />
-                <span>완료</span>
+                점 취소
               </button>
-            )}
-            <button
-              type="button"
-              onClick={onUndoDraftPoint}
-              className={`px-1.5 py-0.5 border text-[10px] ${ui.buttonIdle}`}
-              style={{ borderRadius: '4px' }}
-              title="마지막 점 되돌리기 (Backspace)"
-            >
-              점 취소
-            </button>
-            <button
-              type="button"
-              onClick={onCancelDraft}
-              className={`px-1.5 py-0.5 border text-[10px] ${ui.buttonIdle}`}
-              style={{ borderRadius: '4px' }}
-              title="작도 취소 (ESC)"
-            >
-              취소
-            </button>
-          </div>
-        )}
-        {notice && (
-          <span className={`text-[10px] font-medium ml-1 ${ui.accentText}`}>· {notice}</span>
-        )}
-      </div>
+              <button
+                type="button"
+                onClick={onCancelDraft}
+                className={`px-1.5 py-0.5 border text-[10px] ${ui.buttonIdle}`}
+                style={{ borderRadius: '4px' }}
+                title="작도 취소 (ESC)"
+              >
+                취소
+              </button>
+            </div>
+          )}
+          {notice && <span className={`text-[10px] font-medium ${ui.accentText}`}>{notice}</span>}
+        </div>
+      )}
 
       {/* Right-Edge Vertical Floating Drawing Toolbox */}
       <div
@@ -594,8 +627,16 @@ export function AsterismToolbox({
         {/* Properties Popover Toggle ("속성") */}
         <button
           type="button"
-          onClick={() => onChangePopover(popover === 'props' ? 'none' : 'props')}
-          title={selectedObj ? '선택된 도형 속성 편집' : '성군 속성 및 작도 스타일 설정'}
+          onClick={() => handlePopoverTriggerClick('props')}
+          onMouseEnter={() => handlePopoverTriggerEnter('props')}
+          onMouseLeave={() => handlePopoverTriggerLeave('props')}
+          title={
+            popover === 'props'
+              ? '속성 창 활성화됨 (마우스를 올리면 표시 · 다시 클릭하면 닫기)'
+              : selectedObj
+              ? '선택된 도형 속성 편집'
+              : '성군 속성 및 작도 스타일 설정'
+          }
           className={`w-9 h-8 border flex flex-col items-center justify-center gap-0.5 transition-colors ${
             popover === 'props' ? ui.buttonActive : ui.buttonIdle
           }`}
@@ -608,8 +649,14 @@ export function AsterismToolbox({
         {/* Active Asterism Layer Manager Popover Toggle */}
         <button
           type="button"
-          onClick={() => onChangePopover(popover === 'layers' ? 'none' : 'layers')}
-          title="현재 제작중인 성군레이어 관리"
+          onClick={() => handlePopoverTriggerClick('layers')}
+          onMouseEnter={() => handlePopoverTriggerEnter('layers')}
+          onMouseLeave={() => handlePopoverTriggerLeave('layers')}
+          title={
+            popover === 'layers'
+              ? '레이어 창 활성화됨 (마우스를 올리면 표시 · 다시 클릭하면 닫기)'
+              : '현재 제작중인 성군레이어 관리'
+          }
           className={`w-9 h-8 border flex flex-col items-center justify-center gap-0.5 transition-colors relative ${
             popover === 'layers' ? ui.buttonActive : ui.buttonIdle
           }`}
@@ -627,8 +674,14 @@ export function AsterismToolbox({
         {/* Optical Eyepiece / Finder Integration Popover Toggle */}
         <button
           type="button"
-          onClick={() => onChangePopover(popover === 'optics' ? 'none' : 'optics')}
-          title="아이피스 · 파인더 시야 원 연동"
+          onClick={() => handlePopoverTriggerClick('optics')}
+          onMouseEnter={() => handlePopoverTriggerEnter('optics')}
+          onMouseLeave={() => handlePopoverTriggerLeave('optics')}
+          title={
+            popover === 'optics'
+              ? '시야원 창 활성화됨 (마우스를 올리면 표시 · 다시 클릭하면 닫기)'
+              : '아이피스 · 파인더 시야 원 연동'
+          }
           className={`w-9 h-8 border flex flex-col items-center justify-center gap-0.5 transition-colors ${
             popover === 'optics' || optics.showEyepiece || optics.showFinder7x50
               ? ui.buttonActive
@@ -670,15 +723,15 @@ export function AsterismToolbox({
           </button>
         </div>
 
-        {/* Share / Backup Modal */}
+        {/* Backup Modal */}
         <button
           type="button"
-          onClick={() => setShareOpen(true)}
-          title="개별/전체 성군 JSON 백업 · URL/QR 공유"
+          onClick={() => setBackupOpen(true)}
+          title="성군 백업관리 (개별/전체 JSON 백업 및 불러오기)"
           className={`w-9 h-8 border flex flex-col items-center justify-center gap-0.5 transition-colors ${ui.buttonIdle}`}
           style={{ borderRadius: '5px' }}
         >
-          <Share2 className="w-3.5 h-3.5 shrink-0" />
+          <Download className="w-3.5 h-3.5 shrink-0" />
           <span className="text-[8px] leading-none font-medium">백업</span>
         </button>
 
@@ -697,7 +750,57 @@ export function AsterismToolbox({
       {/* Contextual Floating Popover Panel (to the left of the vertical toolbox) */}
       {popover !== 'none' && (
         <div
-          className={`no-print absolute top-1/2 -translate-y-1/2 z-20 w-[284px] max-h-[80vh] overflow-y-auto astro-scroll border p-3 shadow-lg backdrop-blur-md text-[11px] space-y-3 ${ui.panel}`}
+          ref={popoverRef}
+          aria-hidden={popoverAutoHidden}
+          onMouseEnter={() => {
+            if (popoverAutoHidden) return;
+            pointerInPopoverRef.current = true;
+            clearHideTimer();
+          }}
+          onMouseLeave={() => {
+            pointerInPopoverRef.current = false;
+            schedulePopoverHide(180);
+          }}
+          onPointerDownCapture={(e) => {
+            pointerDownInPopoverRef.current = true;
+            const target = e.target as HTMLElement | null;
+            if (
+              target &&
+              (target.tagName === 'SELECT' ||
+                (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'color') ||
+                Boolean(target.closest('label')?.querySelector('input[type="color"]')))
+            ) {
+              nativePickerOpenRef.current = true;
+            }
+          }}
+          onChangeCapture={(e) => {
+            const target = e.target as HTMLElement | null;
+            if (
+              target &&
+              (target.tagName === 'SELECT' ||
+                (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'color'))
+            ) {
+              nativePickerOpenRef.current = false;
+            }
+          }}
+          onBlurCapture={(e) => {
+            const target = e.target as HTMLElement | null;
+            if (
+              target &&
+              (target.tagName === 'SELECT' ||
+                (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'color'))
+            ) {
+              nativePickerOpenRef.current = false;
+              if (!pointerInPopoverRef.current && !pointerInActiveTriggerRef.current) {
+                schedulePopoverHide(180);
+              }
+            }
+          }}
+          className={`no-print absolute top-1/2 -translate-y-1/2 z-20 w-[284px] max-h-[80vh] overflow-y-auto astro-scroll border p-3 shadow-lg backdrop-blur-md text-[11px] space-y-3 transition-all duration-150 ${
+            popoverAutoHidden
+              ? 'opacity-0 translate-x-1.5 pointer-events-none'
+              : 'opacity-100 translate-x-0 pointer-events-auto'
+          } ${ui.panel}`}
           style={{ right: `${popoverRightPx}px`, borderRadius: '8px' }}
         >
           <div className={`flex items-center justify-between pb-1.5 border-b ${ui.divider}`}>
@@ -946,6 +1049,84 @@ export function AsterismToolbox({
                         }
                         className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
                       />
+                    </div>
+                  )}
+
+                  {/* Circle Linked Optical Title & 8-Direction Position */}
+                  {selectedObj.type === 'circle' && (
+                    <div className={`pt-2 border-t space-y-1.5 ${ui.divider}`}>
+                      <label className="flex items-center justify-between cursor-pointer">
+                        <span className={`text-[10px] ${ui.textSecondary}`}>
+                          시야 연동 제목 표시
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(selectedObj.linkedTitle)}
+                          onChange={(e) => {
+                            if (e.target.checked) {
+                              const diam = getCircleRadiusDeg(selectedObj) * 2;
+                              onUpdateObject(selectedObj.id, {
+                                linkedTitle: formatLinkedReticleTitle('finder', diam),
+                                linkedTitleDirection:
+                                  selectedObj.linkedTitleDirection ??
+                                  optics.reticleLabelDirection ??
+                                  'ne',
+                              });
+                            } else {
+                              onUpdateObject(selectedObj.id, { linkedTitle: undefined });
+                            }
+                          }}
+                          className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                        />
+                      </label>
+                      {selectedObj.linkedTitle && (
+                        <div className="space-y-1.5">
+                          <input
+                            type="text"
+                            value={selectedObj.linkedTitle}
+                            onChange={(e) =>
+                              onUpdateObject(selectedObj.id, { linkedTitle: e.target.value })
+                            }
+                            placeholder="예: 파인더(7°)"
+                            className={`w-full px-2 py-1 border text-[10.5px] ${ui.input}`}
+                            style={{ borderRadius: '4px' }}
+                          />
+                          <div className="flex items-center justify-between gap-2">
+                            <span className={`text-[10px] ${ui.textSecondary}`}>제목 위치</span>
+                            <div className="grid grid-cols-3 gap-0.5 w-[78px]">
+                              {LABEL_DIRECTION_GRID.map((cell, idx) =>
+                                cell ? (
+                                  <button
+                                    key={cell.dir}
+                                    type="button"
+                                    title={cell.title}
+                                    onClick={() =>
+                                      onUpdateObject(selectedObj.id, {
+                                        linkedTitleDirection: cell.dir,
+                                      })
+                                    }
+                                    className={`h-5 border text-[10px] leading-none flex items-center justify-center ${
+                                      (selectedObj.linkedTitleDirection ?? 'ne') === cell.dir
+                                        ? ui.buttonActive
+                                        : ui.buttonIdle
+                                    }`}
+                                    style={{ borderRadius: '3px' }}
+                                  >
+                                    {cell.glyph}
+                                  </button>
+                                ) : (
+                                  <div
+                                    key={`center-${idx}`}
+                                    className={`h-5 flex items-center justify-center text-[9px] ${ui.textMuted}`}
+                                  >
+                                    ○
+                                  </div>
+                                )
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1396,16 +1577,38 @@ export function AsterismToolbox({
                     }`}
                     style={{ borderRadius: '6px' }}
                   >
-                    <div
-                      className={`text-[10.5px] font-semibold ${
-                        theme === 'white'
-                          ? 'text-sky-900'
-                          : theme === 'red'
-                          ? 'text-[#FCA5A5]'
-                          : 'text-cyan-300'
-                      }`}
-                    >
-                      새 도형 기본 작도 속성
+                    <div className="flex items-center justify-between gap-2">
+                      <div
+                        className={`text-[10.5px] font-semibold ${
+                          theme === 'white'
+                            ? 'text-sky-900'
+                            : theme === 'red'
+                            ? 'text-[#FCA5A5]'
+                            : 'text-cyan-300'
+                        }`}
+                      >
+                        새 도형 기본 작도 속성
+                      </div>
+                      <button
+                        type="button"
+                        disabled={!activeAsterism || activeAsterismShapes.length === 0}
+                        onClick={() => {
+                          if (!activeAsterism) return;
+                          onApplyDefaultsToAsterismGroup(activeAsterism.id);
+                          setNotice(
+                            `‘${activeAsterism.name}’ 도형 ${activeAsterismShapes.length}개에 일괄 적용했습니다.`
+                          );
+                        }}
+                        title="현재 성군의 모든 도형에 선 두께·선 투명도·텍스트 크기·텍스트 투명도를 일괄 적용"
+                        className={`px-2 py-0.5 border text-[9.5px] font-semibold whitespace-nowrap shrink-0 transition-colors ${
+                          !activeAsterism || activeAsterismShapes.length === 0
+                            ? `${ui.buttonIdle} opacity-45 cursor-not-allowed`
+                            : ui.buttonActive
+                        }`}
+                        style={{ borderRadius: '4px' }}
+                      >
+                        적용
+                      </button>
                     </div>
 
                     {/* Polyline Mode Default: 선 vs 원호 */}
@@ -1940,49 +2143,120 @@ export function AsterismToolbox({
                 </label>
               </div>
 
-              <div className={`pt-2 border-t space-y-1 ${ui.divider}`}>
-                <div className={`text-[10px] font-medium ${ui.textSecondary}`}>
-                  광학계 반전 동기화 (라벨 정방향 유지)
-                </div>
-                <div className="grid grid-cols-2 gap-1">
-                  <button
-                    type="button"
-                    onClick={() => onChangeView((p) => ({ ...p, flipH: !p.flipH }))}
-                    className={`py-1 border text-[10px] ${
-                      view.flipH ? ui.buttonActive : ui.buttonIdle
-                    }`}
-                    style={{ borderRadius: '4px' }}
-                  >
-                    좌우반전 (천정미러)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      onChangeView((p) => ({
+              <div className={`pt-2 border-t space-y-2 ${ui.divider}`}>
+                <div>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className={ui.textSecondary}>시야연동 선 두께</span>
+                    <span className={`font-mono tabular-nums ${ui.textPrimary}`}>
+                      {(optics.reticleLineWidth ?? 1.4).toFixed(1)}px
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.5}
+                    max={6.0}
+                    step={0.1}
+                    value={optics.reticleLineWidth ?? 1.4}
+                    onChange={(e) =>
+                      onChangeOptics((p) => ({
                         ...p,
-                        flipH: !(p.flipH && p.flipV),
-                        flipV: !(p.flipH && p.flipV),
+                        reticleLineWidth: Number(e.target.value),
                       }))
                     }
-                    className={`py-1 border text-[10px] ${
-                      view.flipH && view.flipV ? ui.buttonActive : ui.buttonIdle
-                    }`}
-                    style={{ borderRadius: '4px' }}
-                  >
-                    180° 도립 (뉴턴식)
-                  </button>
+                    className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                  />
                 </div>
+
+                <div>
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className={ui.textSecondary}>시야연동 투명도</span>
+                    <span className={`font-mono tabular-nums ${ui.textPrimary}`}>
+                      {Math.round((optics.reticleOpacity ?? 0.85) * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={1.0}
+                    step={0.05}
+                    value={optics.reticleOpacity ?? 0.85}
+                    onChange={(e) =>
+                      onChangeOptics((p) => ({
+                        ...p,
+                        reticleOpacity: Number(e.target.value),
+                      }))
+                    }
+                    className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                  />
+                </div>
+
+                <label className="flex items-center justify-between py-0.5 cursor-pointer">
+                  <span className={ui.textSecondary}>
+                    연동 제목 표시 (예: {formatLinkedReticleTitle('finder', finderFovDeg)})
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={optics.showReticleLabel !== false}
+                    onChange={(e) =>
+                      onChangeOptics((p) => ({
+                        ...p,
+                        showReticleLabel: e.target.checked,
+                      }))
+                    }
+                    className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                  />
+                </label>
+
+                {optics.showReticleLabel !== false && (
+                  <div className="flex items-center justify-between gap-2 pt-0.5">
+                    <span className={`text-[10px] ${ui.textSecondary}`}>제목 위치 (8방향)</span>
+                    <div className="grid grid-cols-3 gap-0.5 w-[84px]">
+                      {LABEL_DIRECTION_GRID.map((cell, idx) =>
+                        cell ? (
+                          <button
+                            key={cell.dir}
+                            type="button"
+                            title={cell.title}
+                            aria-label={cell.title}
+                            onClick={() =>
+                              onChangeOptics((p) => ({
+                                ...p,
+                                reticleLabelDirection: cell.dir,
+                              }))
+                            }
+                            className={`h-6 border text-[11px] leading-none flex items-center justify-center transition-colors ${
+                              (optics.reticleLabelDirection ?? 'ne') === cell.dir
+                                ? ui.buttonActive
+                                : ui.buttonIdle
+                            }`}
+                            style={{ borderRadius: '4px' }}
+                          >
+                            {cell.glyph}
+                          </button>
+                        ) : (
+                          <div
+                            key={`dir-center-${idx}`}
+                            className={`h-6 flex items-center justify-center text-[10px] ${ui.textMuted}`}
+                            aria-hidden="true"
+                          >
+                            ○
+                          </div>
+                        )
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
         </div>
       )}
 
-      {/* Share & Individual / Full Backup Modal */}
-      {shareOpen && (
+      {/* Individual / Full Backup Modal ("성군 백업관리") */}
+      {backupOpen && (
         <div
           className="no-print fixed inset-0 z-50 bg-black/65 flex items-center justify-center p-4"
-          onClick={() => setShareOpen(false)}
+          onClick={() => setBackupOpen(false)}
         >
           <div
             className={`w-full max-w-md border p-4 space-y-3 text-xs shadow-xl ${ui.panel}`}
@@ -1991,15 +2265,13 @@ export function AsterismToolbox({
           >
             <div className={`flex items-center justify-between pb-2 border-b ${ui.divider}`}>
               <div className="flex items-center gap-1.5">
-                <QrCode className={`w-4 h-4 ${ui.accentText}`} />
-                <h3 className={`font-semibold text-sm ${ui.textPrimary}`}>
-                  성군 백업 및 공유 관리
-                </h3>
+                <Download className={`w-4 h-4 ${ui.accentText}`} />
+                <h3 className={`font-semibold text-sm ${ui.textPrimary}`}>성군 백업관리</h3>
               </div>
               <button
                 type="button"
-                onClick={() => setShareOpen(false)}
-                aria-label="공유 모달 닫기"
+                onClick={() => setBackupOpen(false)}
+                aria-label="백업 모달 닫기"
                 className={`p-1 border ${ui.buttonIdle}`}
                 style={{ borderRadius: '4px' }}
               >
@@ -2057,57 +2329,6 @@ export function AsterismToolbox({
                 <Upload className="w-3.5 h-3.5" />
                 <span>JSON 백업 불러오기 (개별 / 전체)</span>
               </button>
-            </div>
-
-            {/* URL Share & QR Code */}
-            <div className={`pt-2.5 border-t space-y-2 ${ui.divider}`}>
-              <div className={`text-[11px] font-semibold ${ui.textSecondary}`}>
-                URL 압축 링크 및 QR 코드 공유
-              </div>
-              {shareUrl && (
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    readOnly
-                    value={shareUrl}
-                    className={`flex-1 min-w-0 px-2 py-1 border font-mono text-[10px] ${ui.input}`}
-                    style={{ borderRadius: '4px' }}
-                  />
-                  <button
-                    type="button"
-                    onClick={handleCopyShareUrl}
-                    className={`px-2.5 py-1 border font-medium flex items-center gap-1 shrink-0 ${
-                      copiedShare ? ui.buttonActive : ui.buttonIdle
-                    }`}
-                    style={{ borderRadius: '4px' }}
-                  >
-                    {copiedShare ? (
-                      <Check className="w-3.5 h-3.5" />
-                    ) : (
-                      <Copy className="w-3.5 h-3.5" />
-                    )}
-                    <span>{copiedShare ? '복사됨' : '복사'}</span>
-                  </button>
-                </div>
-              )}
-
-              {qrDataUrl ? (
-                <div className="flex flex-col items-center gap-1.5 py-2">
-                  <img
-                    src={qrDataUrl}
-                    alt="성군 벡터 데이터 공유 QR 코드"
-                    className={`w-[196px] h-[196px] border p-1.5 ${ui.border}`}
-                    style={{ borderRadius: '6px' }}
-                  />
-                  <span className={`text-[10px] ${ui.textMuted}`}>
-                    스마트폰·태블릿으로 스캔하면 현재 시야와 성군 데이터가 즉시 불러와집니다.
-                  </span>
-                </div>
-              ) : (
-                qrError && (
-                  <p className={`text-[10.5px] leading-snug ${ui.textMuted}`}>{qrError}</p>
-                )
-              )}
             </div>
           </div>
         </div>

@@ -8,9 +8,7 @@ import {
   Plus,
   Undo2,
 } from 'lucide-react';
-import { CALDWELL_CATALOG } from '../data/caldwell';
 import { CatalogSnapshot, GAIA_LIVE_MAX_FSZ } from '../data/catalogLoader';
-import { DSO_CATALOG } from '../data/dso';
 import {
   AsterismDraftState,
   AsterismGroup,
@@ -20,6 +18,7 @@ import {
   AsterismTool,
   AsterismToolboxPopover,
   AsterismVertex,
+  CaldwellEntry,
   ChallengeTrack,
   ChartViewState,
   DEFAULT_SENSOR_EXPORT_CAPTION,
@@ -28,6 +27,7 @@ import {
   LayerSettings,
   ObserverConfig,
   ObservingSessionEntry,
+  OpticsLabelDirection,
   OpticsSettings,
   ScreenTarget,
   SelectedItem,
@@ -49,7 +49,7 @@ import {
   RAD2DEG,
   unprojectStereographic,
 } from '../utils/astronomy';
-import { hitTestAsterisms } from '../utils/asterismRenderer';
+import { formatLinkedReticleTitle, hitTestAsterisms } from '../utils/asterismRenderer';
 import { formatCatalogCode, formatObjectDisplayName } from '../utils/catalogNames';
 import { renderStarChart, RenderResult } from '../utils/chartRenderer';
 import { getPlanetRenderer } from '../utils/planetRenderer';
@@ -122,7 +122,16 @@ interface StarChartCanvasProps {
   onUndoAsterismDraftPoint: () => void;
   onCancelAsterismDraft: () => void;
   onCreateAsterismLabel: (vertex: AsterismVertex) => void;
-  onCreateAsterismCircle: (center: AsterismVertex, radiusDeg: number) => void;
+  onCreateAsterismCircle: (
+    center: AsterismVertex,
+    radiusDeg: number,
+    linkedOptions?: {
+      lineWidth?: number;
+      opacity?: number;
+      linkedTitle?: string;
+      linkedTitleDirection?: OpticsLabelDirection;
+    }
+  ) => void;
   onStartNewAsterismFromStar: (vertex: AsterismVertex) => void;
   onMoveAsterismVertex: (objectId: string, vertexIndex: number, vertex: AsterismVertex) => void;
   onInsertAsterismVertex: (objectId: string, segmentIndex: number, vertex: AsterismVertex) => void;
@@ -144,6 +153,7 @@ interface StarChartCanvasProps {
   onUpdateAsterismGroup: (asterismId: string, patch: Partial<AsterismGroup>) => void;
   onDeleteAsterismGroup: (asterismId: string) => void;
   onToggleAsterismGroupVisible: (asterismId: string) => void;
+  onApplyDefaultsToAsterismGroup: (asterismId: string) => void;
   onSaveAsterismGroupView: (asterismId: string) => void;
   onFocusAsterismGroup: (grp: AsterismGroup) => void;
   onLoadAsterismPresets: () => number;
@@ -171,11 +181,12 @@ function formatDsoFooterName(dso: DeepSkyObject, caldwellId?: string): string {
 }
 
 function formatSelectedFooterObject(
-  selected: SelectedItem
+  selected: SelectedItem,
+  caldwell: CaldwellEntry[]
 ): { label: string; conAbbr?: string } {
   if (selected.kind === 'dso') {
     const dso = selected.data;
-    const calMatch = CALDWELL_CATALOG.find(
+    const calMatch = caldwell.find(
       (c) =>
         c.id.replace(/\s+/g, '').toUpperCase() === dso.id.replace(/\s+/g, '').toUpperCase() ||
         (dso.altId &&
@@ -232,7 +243,7 @@ function findCenterNamedObject(
         ? Math.min(2.0, ((selected.data.majAx || 0) / 60) * 0.55)
         : 0;
     if (dist <= Math.max(baseThresholdDeg, dsoRadiusDeg)) {
-      return formatSelectedFooterObject(selected);
+      return formatSelectedFooterObject(selected, catalogs.caldwell);
     }
   }
 
@@ -261,7 +272,7 @@ function findCenterNamedObject(
 
   // 3. Deep Sky Objects (Messier, Caldwell, NGC, IC, Dark Nebulae)
   const caldwellByKey = new Map<string, string>();
-  for (const c of CALDWELL_CATALOG) {
+  for (const c of catalogs.caldwell) {
     caldwellByKey.set(c.id.replace(/\s+/g, '').toUpperCase(), c.caldwellId);
   }
 
@@ -292,8 +303,7 @@ function findCenterNamedObject(
     }
   };
 
-  for (const dso of DSO_CATALOG) evalDso(dso);
-  for (const c of CALDWELL_CATALOG) evalDso(c, c.caldwellId);
+  for (const c of catalogs.caldwell) evalDso(c, c.caldwellId);
   for (const dso of catalogs.dsosBright) evalDso(dso);
   for (const dso of catalogs.dsosDeep) evalDso(dso);
   for (const dso of catalogs.darkNebulae) evalDso(dso);
@@ -465,6 +475,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       onUpdateAsterismGroup,
       onDeleteAsterismGroup,
       onToggleAsterismGroupVisible,
+      onApplyDefaultsToAsterismGroup,
       onSaveAsterismGroupView,
       onFocusAsterismGroup,
       onLoadAsterismPresets,
@@ -1770,10 +1781,20 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
               asterismTool === 'circle' &&
               (asterismStore.settings.circleLinkEyepiece || asterismStore.settings.circleLinkFinder)
             ) {
-              const linkedRadiusDeg = asterismStore.settings.circleLinkEyepiece
-                ? Math.max(0.02, optics.eyepieceFovDeg / 2)
-                : Math.max(0.1, (optics.finderFovDeg ?? 7.0) / 2);
-              onCreateAsterismCircle(snapToVertex(snap), linkedRadiusDeg);
+              const isEyepiece = asterismStore.settings.circleLinkEyepiece;
+              const linkedFovDeg = isEyepiece
+                ? Math.max(0.04, optics.eyepieceFovDeg)
+                : Math.max(0.2, optics.finderFovDeg ?? 7.0);
+              const linkedRadiusDeg = linkedFovDeg / 2;
+              onCreateAsterismCircle(snapToVertex(snap), linkedRadiusDeg, {
+                lineWidth: Math.max(0.5, Math.min(6.0, optics.reticleLineWidth ?? 1.4)),
+                opacity: Math.max(0.1, Math.min(1.0, optics.reticleOpacity ?? 0.85)),
+                linkedTitle:
+                  optics.showReticleLabel !== false
+                    ? formatLinkedReticleTitle(isEyepiece ? 'eyepiece' : 'finder', linkedFovDeg)
+                    : undefined,
+                linkedTitleDirection: optics.reticleLabelDirection ?? 'ne',
+              });
             } else {
               onAddAsterismDraftPoint(snapToVertex(snap));
             }
@@ -2296,6 +2317,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             onUpdateAsterismGroup={onUpdateAsterismGroup}
             onDeleteAsterismGroup={onDeleteAsterismGroup}
             onToggleAsterismGroupVisible={onToggleAsterismGroupVisible}
+            onApplyDefaultsToAsterismGroup={onApplyDefaultsToAsterismGroup}
             onSaveAsterismGroupView={onSaveAsterismGroupView}
             onFocusAsterismGroup={onFocusAsterismGroup}
             onLoadPresets={onLoadAsterismPresets}

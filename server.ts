@@ -46,6 +46,7 @@ function getCoreBundleAsset(): GzippedAsset | null {
       '{' +
       `"starsBright":${readJsonText('stars-bright.json')},` +
       `"dsosBright":${readJsonText('dsos-bright.json')},` +
+      `"caldwell":${readJsonText('caldwell.json')},` +
       `"constellations":${readJsonText('constellations.json')},` +
       `"milkyWay":${readJsonText('milkyway.json')},` +
       `"nebulaContours":${readJsonText('nebula-contours.json')},` +
@@ -59,6 +60,79 @@ function getCoreBundleAsset(): GzippedAsset | null {
   } catch {
     return null;
   }
+}
+
+type HipIndexTuple = [
+  number, // hip
+  number, // ra
+  number, // dec
+  number, // mag
+  number, // bv
+  string, // name
+  string, // koName
+  string, // bayer
+  string  // con
+];
+
+let hipAllIndex: { byHip: Map<number, HipIndexTuple>; list: HipIndexTuple[] } | null = null;
+
+function getHipIndex() {
+  if (hipAllIndex) return hipAllIndex;
+  const byHip = new Map<number, HipIndexTuple>();
+  const readArr = (rel: string): unknown[][] => {
+    const full = path.join(PUBLIC_DATA_DIR, rel);
+    if (!fs.existsSync(full)) return [];
+    try {
+      const parsed = JSON.parse(fs.readFileSync(full, 'utf-8'));
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+  for (const r of readArr('stars-bright.json')) {
+    const hip = Number(r[0]);
+    if (!Number.isFinite(hip)) continue;
+    byHip.set(hip, [
+      hip,
+      Number(r[1]),
+      Number(r[2]),
+      Number(r[3]),
+      Number(r[4]),
+      String(r[5] ?? ''),
+      String(r[6] ?? ''),
+      String(r[7] ?? ''),
+      String(r[8] ?? ''),
+    ]);
+  }
+  const addCompact = (rows: unknown[][]) => {
+    for (const r of rows) {
+      const hip = Number(r[0]);
+      if (!Number.isFinite(hip) || byHip.has(hip)) continue;
+      byHip.set(hip, [
+        hip,
+        Number(r[1]),
+        Number(r[2]),
+        Number(r[3]),
+        Number(r[4]),
+        '',
+        '',
+        '',
+        '',
+      ]);
+    }
+  };
+  addCompact(readArr('stars-deep.json'));
+  const ultraDir = path.join(PUBLIC_DATA_DIR, 'stars-ultra');
+  if (fs.existsSync(ultraDir)) {
+    for (const file of fs.readdirSync(ultraDir)) {
+      if (file.endsWith('.json')) {
+        addCompact(readArr(path.join('stars-ultra', file)));
+      }
+    }
+  }
+  const list = Array.from(byHip.values()).sort((a, b) => a[3] - b[3]);
+  hipAllIndex = { byHip, list };
+  return hipAllIndex;
 }
 
 function sendJsonAsset(req: express.Request, res: express.Response, asset: GzippedAsset) {
@@ -123,7 +197,7 @@ async function createServer() {
     });
   });
 
-  // Single pre-gzipped core catalog bundle (replaces 7 simultaneous boot fetches)
+  // Single pre-gzipped core catalog bundle (replaces multiple simultaneous boot fetches)
   app.get('/api/catalogs/core', (req, res) => {
     const asset = getCoreBundleAsset();
     if (!asset) {
@@ -131,6 +205,32 @@ async function createServer() {
       return;
     }
     sendJsonAsset(req, res, asset);
+  });
+
+  // Complete 118,216-star Hipparcos Catalogue lookup by HIP number (exact + prefix)
+  app.get('/api/catalogs/hip', (req, res) => {
+    const rawQ = String(req.query.q || '').trim();
+    const digits = rawQ.replace(/^hip\s*/i, '').replace(/\s+/g, '');
+    if (!/^\d{1,6}$/.test(digits)) {
+      res.json({ stars: [] });
+      return;
+    }
+    const { byHip, list } = getHipIndex();
+    const hits: HipIndexTuple[] = [];
+    const exactNum = Number(digits);
+    const exact = byHip.get(exactNum);
+    if (exact) hits.push(exact);
+    if (digits.length >= 2) {
+      for (let i = 0; i < list.length && hits.length < 25; i++) {
+        const row = list[i];
+        if (row[0] === exactNum) continue;
+        if (String(row[0]).startsWith(digits)) {
+          hits.push(row);
+        }
+      }
+    }
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.json({ stars: hits });
   });
 
   // Direct Express gzipped static serving for /data/*.json (bypasses Vite dev middleware)

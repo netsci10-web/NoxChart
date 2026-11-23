@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import {
+  CaldwellEntry,
   Constellation,
   DeepSkyObject,
   DoubleStarPair,
@@ -11,10 +12,6 @@ import {
 } from '../types/astronomy';
 import { DEG2RAD, getDsoLimitingMagnitude, getLimitingMagnitude } from '../utils/astronomy';
 import { formatCatalogCode, normalizeCatalogToken } from '../utils/catalogNames';
-import { CALDWELL_CATALOG } from './caldwell';
-import { CONSTELLATIONS as FALLBACK_CONSTELLATIONS } from './constellations';
-import { DSO_CATALOG as FALLBACK_DSOS } from './dso';
-import { BRIGHT_STARS as FALLBACK_STARS } from './stars';
 
 type BrightStarTuple = [
   number, // hip
@@ -103,6 +100,7 @@ export interface CatalogSnapshot {
   doubleStars: DoubleStarSystem[];
   dsosBright: DeepSkyObject[];
   dsosDeep: DeepSkyObject[];
+  caldwell: CaldwellEntry[];
   darkNebulae: DeepSkyObject[];
   nebulaContours: NebulaContour[];
   constellations: Constellation[];
@@ -115,18 +113,19 @@ export interface CatalogSnapshot {
 }
 
 const cache: CatalogSnapshot = {
-  brightStars: FALLBACK_STARS,
+  brightStars: [],
   deepStars: [],
   ultraStarTiles: new Map<string, Star[]>(),
   gaiaStars: [],
   gaiaPatch: null,
   gaiaLoading: false,
   doubleStars: [],
-  dsosBright: FALLBACK_DSOS,
+  dsosBright: [],
   dsosDeep: [],
+  caldwell: [],
   darkNebulae: [],
   nebulaContours: [],
-  constellations: FALLBACK_CONSTELLATIONS,
+  constellations: [],
   constellationBoundaries: [],
   milkyWay: [],
   coreLoaded: false,
@@ -141,6 +140,7 @@ let deepDsosPromise: Promise<void> | null = null;
 let doubleStarsPromise: Promise<void> | null = null;
 const ultraTilePromises = new Map<string, Promise<void>>();
 const gaiaPatchCache = new Map<string, { stars: Star[]; patch: GaiaPatchMeta }>();
+const hipSearchCache = new Map<string, Star[]>();
 const catalogListeners = new Set<() => void>();
 
 function notifyCatalogListeners(): void {
@@ -197,7 +197,9 @@ interface DsoNameFallback {
   koName?: string;
 }
 
-const dsoFallbackByToken = (() => {
+let dsoFallbackByToken = new Map<string, DsoNameFallback>();
+
+function rebuildDsoFallbackMap(caldwell: CaldwellEntry[]): void {
   const map = new Map<string, DsoNameFallback>();
   const register = (keyRaw: string | undefined, meta: DsoNameFallback) => {
     const token = normalizeCatalogToken(keyRaw);
@@ -209,22 +211,7 @@ const dsoFallbackByToken = (() => {
       koName: prev?.koName || meta.koName,
     });
   };
-  for (const d of FALLBACK_DSOS) {
-    const meta: DsoNameFallback = {
-      altId: d.altId ? formatCatalogCode(d.altId) : undefined,
-      name: d.name,
-      koName: d.koName,
-    };
-    register(d.id, meta);
-    if (d.altId) {
-      register(d.altId, {
-        altId: formatCatalogCode(d.id),
-        name: d.name,
-        koName: d.koName,
-      });
-    }
-  }
-  for (const c of CALDWELL_CATALOG) {
+  for (const c of caldwell) {
     register(c.id, {
       altId: c.caldwellId,
       name: c.name,
@@ -236,8 +223,8 @@ const dsoFallbackByToken = (() => {
       koName: c.koName,
     });
   }
-  return map;
-})();
+  dsoFallbackByToken = map;
+}
 
 function mapDso(t: DsoTuple): DeepSkyObject {
   const [rawId, rawAltId, type, ra, dec, mag, majAx, minAx, pa, rawName, rawKoName, con] = t;
@@ -386,6 +373,7 @@ async function safeFetchJson<T>(url: string, retries = 2): Promise<T | null> {
 interface CoreCatalogBundle {
   starsBright?: BrightStarTuple[];
   dsosBright?: DsoTuple[];
+  caldwell?: CaldwellEntry[];
   constellations?: Constellation[];
   milkyWay?: MilkyWayLayer[];
   nebulaContours?: NebulaContour[];
@@ -398,9 +386,13 @@ export async function ensureCoreCatalogs(): Promise<void> {
   if (corePromise) return corePromise;
 
   corePromise = (async () => {
-    // Primary path: single pre-gzipped server bundle (~260 KB) instead of 7 simultaneous requests
+    // Primary path: single pre-gzipped server bundle loaded from external /public/data/*.json files
     const bundle = await safeFetchJson<CoreCatalogBundle>('/api/catalogs/core', 2);
     if (bundle && bundle.starsBright && bundle.dsosBright && bundle.constellations) {
+      if (bundle.caldwell && bundle.caldwell.length > 0) {
+        cache.caldwell = bundle.caldwell;
+        rebuildDsoFallbackMap(cache.caldwell);
+      }
       cache.brightStars = bundle.starsBright.map(mapBrightStar).sort((a, b) => a.mag - b.mag);
       cache.dsosBright = bundle.dsosBright.map(mapDso).sort((a, b) => a.mag - b.mag);
       cache.constellations = bundle.constellations;
@@ -413,18 +405,27 @@ export async function ensureCoreCatalogs(): Promise<void> {
         cache.constellationBoundaries = bundle.constellationBoundaries;
       }
       cache.coreLoaded = true;
+      notifyCatalogListeners();
       return;
     }
 
-    // Fallback for static-only hosts (e.g., GitHub Pages): load relative to BASE_URL
-    const starsRaw = await safeFetchJson<BrightStarTuple[]>(`${DATA_BASE}/stars-bright.json`, 1);
-    const dsosRaw = await safeFetchJson<DsoTuple[]>(`${DATA_BASE}/dsos-bright.json`, 1);
-    const consRaw = await safeFetchJson<Constellation[]>(`${DATA_BASE}/constellations.json`, 1);
-    const mwRaw = await safeFetchJson<MilkyWayLayer[]>(`${DATA_BASE}/milkyway.json`, 1);
-    const nebRaw = await safeFetchJson<NebulaContour[]>(`${DATA_BASE}/nebula-contours.json`, 1);
-    const darkRaw = await safeFetchJson<DsoTuple[]>(`${DATA_BASE}/dark-nebulae.json`, 1);
-    const bndRaw = await safeFetchJson<[number, number][][]>(`${DATA_BASE}/constellation-boundaries.json`, 1);
+    // Fallback for static-only hosts: load external JSON files directly from /data/*.json
+    const [starsRaw, dsosRaw, caldwellRaw, consRaw, mwRaw, nebRaw, darkRaw, bndRaw] =
+      await Promise.all([
+        safeFetchJson<BrightStarTuple[]>(`${DATA_BASE}/stars-bright.json`, 1),
+        safeFetchJson<DsoTuple[]>(`${DATA_BASE}/dsos-bright.json`, 1),
+        safeFetchJson<CaldwellEntry[]>(`${DATA_BASE}/caldwell.json`, 1),
+        safeFetchJson<Constellation[]>(`${DATA_BASE}/constellations.json`, 1),
+        safeFetchJson<MilkyWayLayer[]>(`${DATA_BASE}/milkyway.json`, 1),
+        safeFetchJson<NebulaContour[]>(`${DATA_BASE}/nebula-contours.json`, 1),
+        safeFetchJson<DsoTuple[]>(`${DATA_BASE}/dark-nebulae.json`, 1),
+        safeFetchJson<[number, number][][]>(`${DATA_BASE}/constellation-boundaries.json`, 1),
+      ]);
 
+    if (caldwellRaw && caldwellRaw.length > 0) {
+      cache.caldwell = caldwellRaw;
+      rebuildDsoFallbackMap(cache.caldwell);
+    }
     if (starsRaw) {
       cache.brightStars = starsRaw.map(mapBrightStar).sort((a, b) => a.mag - b.mag);
     }
@@ -449,6 +450,7 @@ export async function ensureCoreCatalogs(): Promise<void> {
 
     if (starsRaw && dsosRaw && consRaw) {
       cache.coreLoaded = true;
+      notifyCatalogListeners();
     } else {
       corePromise = null;
     }
@@ -529,6 +531,53 @@ export async function ensureDoubleStars(): Promise<void> {
   return doubleStarsPromise;
 }
 
+/**
+ * Search across all 118,216 Hipparcos stars (bright + deep + 36 ultra tiles) by HIP number.
+ * Uses server-side /api/catalogs/hip index over external JSON files, with client fallback.
+ */
+export async function searchHipparcosCatalog(rawQuery: string): Promise<Star[]> {
+  const digits = rawQuery.trim().replace(/^hip\s*/i, '').replace(/\s+/g, '');
+  if (!/^\d{1,6}$/.test(digits)) return [];
+
+  const cached = hipSearchCache.get(digits);
+  if (cached) return cached;
+
+  const json = await safeFetchJson<{ stars?: BrightStarTuple[] }>(
+    `/api/catalogs/hip?q=${encodeURIComponent(digits)}`,
+    0
+  );
+  if (json && Array.isArray(json.stars)) {
+    const mapped = json.stars.map(mapBrightStar);
+    if (hipSearchCache.size > 80) {
+      const oldest = hipSearchCache.keys().next().value;
+      if (oldest) hipSearchCache.delete(oldest);
+    }
+    hipSearchCache.set(digits, mapped);
+    return mapped;
+  }
+
+  // Fallback for static-only hosts without server API
+  const hits: Star[] = [];
+  const seen = new Set<number>();
+  const scan = (list: Star[]) => {
+    for (let i = 0; i < list.length && hits.length < 25; i++) {
+      const s = list[i];
+      if (!s.hip || seen.has(s.hip)) continue;
+      if (String(s.hip) === digits || (digits.length >= 2 && String(s.hip).startsWith(digits))) {
+        seen.add(s.hip);
+        hits.push(s);
+      }
+    }
+  };
+  scan(cache.brightStars);
+  scan(cache.deepStars);
+  for (const tile of cache.ultraStarTiles.values()) {
+    if (hits.length >= 25) break;
+    scan(tile);
+  }
+  return hits;
+}
+
 export function getCatalogSnapshot(): CatalogSnapshot {
   return {
     ...cache,
@@ -538,12 +587,12 @@ export function getCatalogSnapshot(): CatalogSnapshot {
 export const GAIA_LIVE_MAX_FSZ = 5.5;
 
 /**
- * React hook providing reactive LoD access to:
- * - 118,216 Hipparcos stars (up to 13.78m) via 36 spatial tiles
+ * React hook providing reactive LoD access to external catalog files in /public/data/:
+ * - 118,216 Hipparcos stars (up to 13.78m) via stars-bright + stars-deep + 36 spatial ultra tiles
  * - Live ESA Gaia DR3 stars (8.3m–15.8m) when zoomed into eyepiece/finder FOV (<= 5.5°)
  * - 8,260 Washington Double Star (WDS) visual double & multiple systems
- * - 12,344 OpenNGC/Messier/IC DSOs + 391 Barnard/LDN Dark Nebulae
- * - 513 FChart3 multi-level Nebula Contours + 782 IAU Constellation Boundaries
+ * - 12,344 OpenNGC/Messier/IC DSOs + 109 Caldwell + 391 Barnard/LDN Dark Nebulae
+ * - 513 FChart3 multi-level Nebula Contours + 88 IAU Constellations + 782 Boundaries
  */
 export function useCatalogData(
   raHours: number,
@@ -575,11 +624,11 @@ export function useCatalogData(
     };
   }, []);
 
-  // Lazy-load deep stars (mag 6.0-8.5, ~36k stars) AFTER core bundle completes
+  // Lazy-load deep Hipparcos stars (mag 6.01–8.00, 36,367 stars) after core bundle completes
   useEffect(() => {
     if (!cache.coreLoaded) return;
     const magLimit = getLimitingMagnitude(fsz, magOffset);
-    if ((magLimit > 5.8 || fsz <= 50) && !cache.deepStarsLoaded) {
+    if ((magLimit > 5.8 || fsz <= 50 || searchActive) && !cache.deepStarsLoaded) {
       let mounted = true;
       ensureDeepStars().then(() => {
         if (mounted) setTick((t) => t + 1);
@@ -588,13 +637,13 @@ export function useCatalogData(
         mounted = false;
       };
     }
-  }, [fsz, magOffset, tick]);
+  }, [fsz, magOffset, searchActive, tick]);
 
-  // Lazy-load spatial Hipparcos sky tiles (mag 8.5-13.78, ~76.8k stars) in gentle debounced batches
+  // Lazy-load spatial Hipparcos ultra tiles (mag 8.01–13.78, 76,805 stars) with zero gap after 8.0m
   useEffect(() => {
     if (!cache.coreLoaded) return;
     const magLimit = getLimitingMagnitude(fsz, magOffset);
-    if (magLimit <= 8.3 && fsz > 28) return;
+    if (magLimit <= 8.0 && fsz > 28) return;
 
     const neededKeys = getVisibleUltraTileKeys(raHours, decDeg, fsz).filter(
       (k) => !cache.ultraStarTiles.has(k)
@@ -612,7 +661,7 @@ export function useCatalogData(
           setTick((t) => t + 1);
         }
       }
-    }, 140);
+    }, 120);
     return () => {
       mounted = false;
       window.clearTimeout(timer);
@@ -649,7 +698,6 @@ export function useCatalogData(
   }, [loadDoubleStars, searchActive, tick]);
 
   // Live ESA Gaia DR3 faint star streaming ONLY at narrow eyepiece/finder FOV (<= 5.5°)
-  // Uses debounce + stale-response ignore (never aborts in-flight HTTP requests mid-stream)
   useEffect(() => {
     const magLimit = getLimitingMagnitude(fsz, magOffset);
     if (!enableGaiaLive || fsz > GAIA_LIVE_MAX_FSZ || magLimit <= 9.0) {
@@ -658,7 +706,6 @@ export function useCatalogData(
     }
 
     const raDeg = ((raHours * 15) % 360 + 360) % 360;
-    // Cover entire rectangular screen diagonal (half-diagonal ~ 0.85 * fsz for 16:9) + pan buffer
     const radius = Math.max(0.55, Math.min(5.5, fsz * 0.98));
     const step = radius <= 1.2 ? 0.25 : 0.5;
     const qRa = ((Math.round(raDeg / step) * step) % 360 + 360) % 360;
@@ -734,6 +781,7 @@ export function useCatalogData(
     doubleStars: cache.doubleStars,
     dsosBright: cache.dsosBright,
     dsosDeep: cache.dsosDeep,
+    caldwell: cache.caldwell,
     darkNebulae: cache.darkNebulae,
     nebulaContours: cache.nebulaContours,
     constellations: cache.constellations,

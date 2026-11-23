@@ -1,4 +1,3 @@
-import { CALDWELL_CATALOG } from '../data/caldwell';
 import { CatalogSnapshot } from '../data/catalogLoader';
 import {
   DeepSkyObject,
@@ -188,13 +187,16 @@ export function exportObservingListToSkylist(
     ...catalogs.dsosBright,
     ...catalogs.darkNebulae,
     ...catalogs.dsosDeep,
-    ...CALDWELL_CATALOG,
+    ...catalogs.caldwell,
   ];
   const allStars: Star[] = [
     ...catalogs.brightStars,
     ...catalogs.deepStars,
     ...catalogs.gaiaStars,
   ];
+  for (const tile of catalogs.ultraStarTiles.values()) {
+    for (const st of tile) allStars.push(st);
+  }
   const solarBodies = getSolarSystemBodies(obsTimeMs);
 
   const lines: string[] = [
@@ -357,13 +359,16 @@ export function resolveSkylistObjects(
     ...catalogs.dsosBright,
     ...catalogs.darkNebulae,
     ...catalogs.dsosDeep,
-    ...CALDWELL_CATALOG,
+    ...catalogs.caldwell,
   ];
   const allStars: Star[] = [
     ...catalogs.brightStars,
     ...catalogs.deepStars,
     ...catalogs.gaiaStars,
   ];
+  for (const tile of catalogs.ultraStarTiles.values()) {
+    for (const st of tile) allStars.push(st);
+  }
 
   // Build fast normalized indices
   const solarMap = new Map<string, SolarSystemBody>();

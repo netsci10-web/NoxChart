@@ -1,6 +1,4 @@
-import { CALDWELL_CATALOG } from '../data/caldwell';
 import { CatalogSnapshot } from '../data/catalogLoader';
-import { DSO_CATALOG } from '../data/dso';
 import {
   ChallengeTrack,
   DeepSkyObject,
@@ -437,8 +435,7 @@ function resolveCuratedTarget(
   if (spec.kind === 'dso') {
     const pools: DeepSkyObject[][] = [
       catalogs.dsosBright,
-      CALDWELL_CATALOG,
-      DSO_CATALOG,
+      catalogs.caldwell,
       catalogs.darkNebulae,
       catalogs.dsosDeep,
     ];
@@ -699,8 +696,7 @@ export function buildChallengeTourStops(
   const solarBodies = getSolarSystemBodies(obsTimeMs);
   const allDsos = [
     ...catalogs.dsosBright,
-    ...CALDWELL_CATALOG,
-    ...DSO_CATALOG,
+    ...catalogs.caldwell,
     ...catalogs.darkNebulae,
     ...catalogs.dsosDeep,
   ];

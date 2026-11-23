@@ -1,11 +1,9 @@
-import { CALDWELL_CATALOG } from '../data/caldwell';
 import {
   CatalogSnapshot,
   GAIA_LIVE_MAX_FSZ,
   getVisibleUltraTileKeys,
 } from '../data/catalogLoader';
-import { DSO_CATALOG } from '../data/dso';
-import { getFieldStarsInBounds } from '../data/stars';
+import { getFieldStarsInBounds } from './fieldStars';
 import {
   AsterismDraftState,
   AsterismSnapPreview,
@@ -50,7 +48,12 @@ import {
   ProjectionParams,
   RAD2DEG,
 } from './astronomy';
-import { renderAsterismsPass } from './asterismRenderer';
+import {
+  drawCircleRimLabel,
+  formatLinkedReticleTitle,
+  getOpticsDirectionVector,
+  renderAsterismsPass,
+} from './asterismRenderer';
 import { LabelPlacer } from './labelPlacer';
 import { getPlanetRenderer } from './planetRenderer';
 import {
@@ -1010,17 +1013,22 @@ function drawOpticalReticles(
     ctx.restore();
   }
 
+  const reticleLineWidth = Math.max(0.5, Math.min(6.0, optics.reticleLineWidth ?? 1.4));
+  const reticleOpacity = Math.max(0.1, Math.min(1.0, optics.reticleOpacity ?? 0.85));
+  const showReticleLabel = optics.showReticleLabel !== false;
+  const reticleLabelDirection = optics.reticleLabelDirection ?? 'ne';
+  const reticleDirVec = getOpticsDirectionVector(reticleLabelDirection);
+
   if (optics.showFinder7x50) {
     const finderFov = Math.max(0.5, Math.min(30, optics.finderFovDeg ?? 7.0));
-    const finderLabel = optics.finderLabel?.trim() || '7×50 파인더';
     const finderR = stereoRadiusPx(finderFov);
     if (finderR >= 4 && finderR < Math.max(width, height) * 1.6) {
       ctx.save();
       const finderColor =
         theme === 'white' ? '#0284C7' : theme === 'red' ? '#EF4444' : '#22D3EE';
       ctx.strokeStyle = finderColor;
-      ctx.globalAlpha = 0.82;
-      ctx.lineWidth = 1.35;
+      ctx.globalAlpha = reticleOpacity;
+      ctx.lineWidth = reticleLineWidth;
       ctx.beginPath();
       ctx.arc(cx, cy, finderR, 0, Math.PI * 2);
       const tk = 6;
@@ -1033,10 +1041,17 @@ function drawOpticalReticles(
       ctx.moveTo(cx, cy + finderR - tk);
       ctx.lineTo(cx, cy + finderR + tk);
       ctx.stroke();
-      if (finderR > 14 && finderR < Math.min(width, height) * 0.5) {
-        ctx.fillStyle = finderColor;
-        ctx.font = '500 10px "IBM Plex Mono", monospace';
-        ctx.fillText(`${finderLabel} (${finderFov.toFixed(1)}°)`, cx + 6, cy - finderR - 5);
+      if (showReticleLabel && finderR > 14 && finderR < Math.min(width, height) * 0.5) {
+        drawCircleRimLabel(
+          ctx,
+          cx + reticleDirVec.ux * finderR,
+          cy + reticleDirVec.uy * finderR,
+          reticleLabelDirection,
+          formatLinkedReticleTitle('finder', finderFov),
+          finderColor,
+          theme,
+          reticleOpacity
+        );
       }
       ctx.restore();
     }
@@ -1057,15 +1072,15 @@ function drawOpticalReticles(
             : theme === 'red'
             ? 'rgba(20, 0, 0, 0.85)'
             : 'rgba(6, 10, 20, 0.85)';
-        ctx.lineWidth = 3.8;
+        ctx.lineWidth = Math.max(3.2, reticleLineWidth + 2.2);
         ctx.beginPath();
         ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
         ctx.stroke();
       }
 
       ctx.strokeStyle = epColor;
-      ctx.globalAlpha = eyepieceFlipActive ? 0.96 : 0.9;
-      ctx.lineWidth = eyepieceFlipActive ? 1.85 : 1.5;
+      ctx.globalAlpha = reticleOpacity;
+      ctx.lineWidth = eyepieceFlipActive ? Math.max(reticleLineWidth, 1.85) : reticleLineWidth;
       ctx.beginPath();
       ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
       ctx.stroke();
@@ -1077,28 +1092,38 @@ function drawOpticalReticles(
         const tickAngle = -Math.PI / 2 + normRot * DEG2RAD;
         const cosT = Math.cos(tickAngle);
         const sinT = Math.sin(tickAngle);
-        ctx.lineWidth = 2.0;
+        ctx.lineWidth = Math.max(1.5, reticleLineWidth + 0.4);
         ctx.beginPath();
         ctx.moveTo(cx + cosT * (rPx - 4), cy + sinT * (rPx - 4));
         ctx.lineTo(cx + cosT * (rPx + 6), cy + sinT * (rPx + 6));
         ctx.stroke();
       }
 
-      ctx.fillStyle = epColor;
-      ctx.font = '500 10px "IBM Plex Mono", "Pretendard", monospace';
-      const magText =
-        optics.eyepieceInputMode === 'calc' && optics.eyepieceFocalLengthMm > 0
-          ? ` · ${(optics.telescopeFocalLengthMm / optics.eyepieceFocalLengthMm).toFixed(0)}×`
-          : '';
-      const flipTag = eyepieceFlipActive ? getOpticalFlipTag(view.flipH, view.flipV) : '';
-      const rotTag = rotActive ? `회전 ${Math.round(normRot)}°` : '';
-      const extraTags = [flipTag, rotTag].filter(Boolean).join(' · ');
-      const extraSuffix = extraTags ? ` · ${extraTags}` : '';
-      ctx.fillText(
-        `아이피스 (${optics.eyepieceFovDeg.toFixed(2)}°${magText}${extraSuffix})`,
-        cx + 4,
-        cy + rPx + 12
-      );
+      if (showReticleLabel) {
+        const magText =
+          optics.eyepieceInputMode === 'calc' && optics.eyepieceFocalLengthMm > 0
+            ? ` · ${(optics.telescopeFocalLengthMm / optics.eyepieceFocalLengthMm).toFixed(0)}×`
+            : '';
+        const flipTag = eyepieceFlipActive ? getOpticalFlipTag(view.flipH, view.flipV) : '';
+        const rotTag = rotActive ? `회전 ${Math.round(normRot)}°` : '';
+        const extraTags = [flipTag, rotTag].filter(Boolean).join(' · ');
+        const extraSuffix = extraTags ? ` · ${extraTags}` : '';
+        const baseTitle = formatLinkedReticleTitle('eyepiece', optics.eyepieceFovDeg);
+        const fullLabel =
+          magText || extraSuffix
+            ? `${baseTitle.slice(0, -1)}${magText}${extraSuffix})`
+            : baseTitle;
+        drawCircleRimLabel(
+          ctx,
+          cx + reticleDirVec.ux * rPx,
+          cy + reticleDirVec.uy * rPx,
+          reticleLabelDirection,
+          fullLabel,
+          epColor,
+          theme,
+          reticleOpacity
+        );
+      }
       ctx.restore();
     }
   }
@@ -1267,12 +1292,54 @@ function renderStarChartPass(
 
   const gridLineWidth = Math.max(0.2, Math.min(2.5, layers.gridLineWidth ?? 0.8));
 
-  // 3. Equatorial RA / Dec Grid
+  const gridAspect = Math.max(width, height) / Math.max(1, Math.min(width, height));
+  const formatGridDeg = (deg: number, signed: boolean): string => {
+    const isNeg = deg < -1e-6;
+    const totalArcMin = Math.round(Math.abs(deg) * 60);
+    const wholeDeg = Math.floor(totalArcMin / 60);
+    const arcMin = totalArcMin % 60;
+    const sign = signed ? (isNeg ? '-' : '+') : '';
+    if (arcMin === 0) return `${sign}${wholeDeg}°`;
+    return `${sign}${wholeDeg}°${String(arcMin).padStart(2, '0')}′`;
+  };
+
+  // 3. Equatorial RA / Dec Grid (progressive steps down to 0.5°)
   if (layers.showGridEq) {
     const raStepDeg =
-      view.fsz > 120 ? 30 : view.fsz > 45 ? 15 : view.fsz > 15 ? 7.5 : view.fsz > 5 ? 2.5 : 1;
+      view.fsz > 120
+        ? 30
+        : view.fsz > 45
+        ? 15
+        : view.fsz > 18
+        ? 7.5
+        : view.fsz > 7.5
+        ? 2.5
+        : view.fsz > 2.8
+        ? 1
+        : 0.5;
     const decStepDeg =
-      view.fsz > 120 ? 30 : view.fsz > 45 ? 15 : view.fsz > 15 ? 10 : view.fsz > 5 ? 5 : 1;
+      view.fsz > 120
+        ? 30
+        : view.fsz > 45
+        ? 15
+        : view.fsz > 20
+        ? 10
+        : view.fsz > 9
+        ? 5
+        : view.fsz > 4.5
+        ? 2
+        : view.fsz > 2.2
+        ? 1
+        : 0.5;
+
+    const eqViewRadius = Math.min(
+      95,
+      view.fsz * 0.62 * gridAspect + Math.max(raStepDeg, decStepDeg) * 2
+    );
+    const decLimit = decStepDeg <= 1 ? 88 : decStepDeg <= 5 ? 85 : 75;
+    const decStartIdx = Math.ceil(Math.max(-decLimit, proj.dec0Deg - eqViewRadius) / decStepDeg);
+    const decEndIdx = Math.floor(Math.min(decLimit, proj.dec0Deg + eqViewRadius) / decStepDeg);
+    const useEqCull = eqViewRadius < 50 && Math.abs(proj.dec0Deg) + eqViewRadius < 82;
 
     ctx.save();
     ctx.strokeStyle = palette.gridEq;
@@ -1280,36 +1347,110 @@ function renderStarChartPass(
     ctx.fillStyle = palette.gridEqText;
     ctx.font = '10px "IBM Plex Mono", monospace';
 
-    for (let d = -75; d <= 75; d += decStepDeg) {
-      if (d === 0) {
+    for (let idx = decStartIdx; idx <= decEndIdx; idx++) {
+      const d = Math.round(idx * decStepDeg * 100) / 100;
+      const isEquator = Math.abs(d) < 1e-6;
+      const isHalfDeg = decStepDeg < 1 && !Number.isInteger(d);
+      if (isEquator || isHalfDeg) {
         ctx.save();
-        ctx.lineWidth = gridLineWidth * 1.45;
+        if (isEquator) {
+          ctx.lineWidth = gridLineWidth * 1.45;
+        } else {
+          ctx.lineWidth = gridLineWidth * 0.8;
+          ctx.globalAlpha = 0.72;
+        }
       }
+
       const pts: { raDeg: number; decDeg: number }[] = [];
-      for (let r = 0; r <= 360; r += 5) {
-        pts.push({ raDeg: r, decDeg: d });
+      if (useEqCull && Math.abs(d) < 82) {
+        const raHalfSpan = Math.min(
+          180,
+          eqViewRadius / Math.max(0.14, Math.cos(d * DEG2RAD)) + raStepDeg * 1.5
+        );
+        if (raHalfSpan >= 175) {
+          const rStep = Math.max(1, Math.min(5, view.fsz / 10));
+          for (let r = 0; r <= 360; r += rStep) {
+            pts.push({ raDeg: r, decDeg: d });
+          }
+          drawProjectedCurve(ctx, pts, proj, true);
+        } else {
+          const rStart = proj.ra0Deg - raHalfSpan;
+          const rEnd = proj.ra0Deg + raHalfSpan;
+          const rStep = Math.max(0.2, Math.min(4, (raHalfSpan * 2) / 36));
+          for (let r = rStart; r <= rEnd + rStep * 0.5; r += rStep) {
+            const clamped = Math.min(rEnd, r);
+            pts.push({ raDeg: ((clamped % 360) + 360) % 360, decDeg: d });
+          }
+          drawProjectedCurve(ctx, pts, proj, false);
+        }
+      } else {
+        for (let r = 0; r <= 360; r += 5) {
+          pts.push({ raDeg: r, decDeg: d });
+        }
+        drawProjectedCurve(ctx, pts, proj, true);
       }
-      drawProjectedCurve(ctx, pts, proj, true);
-      if (d === 0) ctx.restore();
+
+      if (isEquator || isHalfDeg) ctx.restore();
 
       const labelPt = projectStereographic(proj.ra0Deg, d, proj, 0);
       if (labelPt) {
-        ctx.fillText(`${d >= 0 ? '+' : ''}${d}°`, labelPt.x + 4, labelPt.y - 4);
+        ctx.fillText(formatGridDeg(d, true), labelPt.x + 4, labelPt.y - 4);
       }
     }
 
-    for (let r = 0; r < 360; r += raStepDeg) {
+    const eqMeridianRAs: number[] = [];
+    if (useEqCull) {
+      const maxAbsDec = Math.min(82, Math.abs(proj.dec0Deg) + eqViewRadius);
+      const raHalfSpan = Math.min(
+        180,
+        eqViewRadius / Math.max(0.14, Math.cos(maxAbsDec * DEG2RAD)) + raStepDeg * 2
+      );
+      const kStart = Math.floor((proj.ra0Deg - raHalfSpan) / raStepDeg);
+      const kEnd = Math.ceil((proj.ra0Deg + raHalfSpan) / raStepDeg);
+      const seenRa = new Set<number>();
+      for (let k = kStart; k <= kEnd; k++) {
+        const raw = Math.round(k * raStepDeg * 100) / 100;
+        const norm = Math.round((((raw % 360) + 360) % 360) * 100) / 100;
+        const key = norm >= 360 ? 0 : norm;
+        if (!seenRa.has(key)) {
+          seenRa.add(key);
+          eqMeridianRAs.push(key);
+        }
+      }
+    } else {
+      const count = Math.round(360 / raStepDeg);
+      for (let k = 0; k < count; k++) {
+        eqMeridianRAs.push(Math.round(k * raStepDeg * 100) / 100);
+      }
+    }
+
+    const merDecMin = useEqCull ? Math.max(-88, proj.dec0Deg - eqViewRadius) : -85;
+    const merDecMax = useEqCull ? Math.min(88, proj.dec0Deg + eqViewRadius) : 85;
+    const merDecSample = useEqCull ? Math.max(0.2, Math.min(5, (merDecMax - merDecMin) / 36)) : 5;
+    const labelDecLimit = decStepDeg <= 1 ? 86 : 75;
+    const labelDec = Math.max(-labelDecLimit, Math.min(labelDecLimit, proj.dec0Deg));
+
+    for (const r of eqMeridianRAs) {
+      const isHalfDeg = raStepDeg < 1 && !Number.isInteger(r);
+      if (isHalfDeg) {
+        ctx.save();
+        ctx.lineWidth = gridLineWidth * 0.8;
+        ctx.globalAlpha = 0.72;
+      }
+
       const pts: { raDeg: number; decDeg: number }[] = [];
-      for (let d = -85; d <= 85; d += 5) {
-        pts.push({ raDeg: r, decDeg: d });
+      for (let d = merDecMin; d <= merDecMax + merDecSample * 0.5; d += merDecSample) {
+        pts.push({ raDeg: r, decDeg: Math.min(merDecMax, d) });
       }
       drawProjectedCurve(ctx, pts, proj, false);
 
-      const labelDec = Math.max(-75, Math.min(75, proj.dec0Deg));
+      if (isHalfDeg) ctx.restore();
+
       const labelPt = projectStereographic(r, labelDec, proj, 0);
       if (labelPt) {
-        const hrs = Math.floor(r / 15);
-        const mins = Math.round((r / 15 - hrs) * 60);
+        const totalMin = Math.round((r / 15) * 60);
+        const hrs = Math.floor(totalMin / 60) % 24;
+        const mins = totalMin % 60;
         const raTxt = mins > 0 ? `${hrs}h${String(mins).padStart(2, '0')}m` : `${hrs}h`;
         ctx.fillText(raTxt, labelPt.x + 3, labelPt.y + 11);
       }
@@ -1337,10 +1478,46 @@ function renderStarChartPass(
     ctx.restore();
   }
 
-  // 5. Alt-Az Grid & Local Horizon Circle (with Ground Dimming in Horizontal Mode)
+  // 5. Alt-Az Grid & Local Horizon Circle (progressive steps down to 0.5°)
   if (layers.showGridAltAz) {
-    const azStep = view.fsz > 90 ? 30 : view.fsz > 30 ? 15 : view.fsz > 10 ? 5 : 2;
-    const altStep = view.fsz > 90 ? 15 : view.fsz > 30 ? 10 : view.fsz > 10 ? 5 : 2;
+    const azStep =
+      view.fsz > 90
+        ? 30
+        : view.fsz > 35
+        ? 15
+        : view.fsz > 14
+        ? 5
+        : view.fsz > 6
+        ? 2
+        : view.fsz > 2.6
+        ? 1
+        : 0.5;
+    const altStep =
+      view.fsz > 90
+        ? 15
+        : view.fsz > 35
+        ? 10
+        : view.fsz > 14
+        ? 5
+        : view.fsz > 6
+        ? 2
+        : view.fsz > 2.6
+        ? 1
+        : 0.5;
+
+    const hzViewRadius = Math.min(
+      95,
+      view.fsz * 0.62 * gridAspect + Math.max(azStep, altStep) * 2
+    );
+    const minAltBound = view.coordSystem === 'horizontal' ? (altStep <= 1 ? -85 : -60) : 0;
+    const maxAltBound = altStep <= 1 ? 88 : 80;
+    const altStartIdx = Math.ceil(
+      Math.max(minAltBound, proj.alt0Deg - hzViewRadius) / altStep
+    );
+    const altEndIdx = Math.floor(
+      Math.min(maxAltBound, proj.alt0Deg + hzViewRadius) / altStep
+    );
+    const useHzCull = hzViewRadius < 50 && Math.abs(proj.alt0Deg) + hzViewRadius < 82;
 
     ctx.save();
     ctx.strokeStyle = palette.gridAltAz;
@@ -1348,36 +1525,117 @@ function renderStarChartPass(
     ctx.fillStyle = palette.gridAltAzText;
     ctx.font = '10px "IBM Plex Mono", monospace';
 
-    for (let alt = -60; alt <= 80; alt += altStep) {
-      if (alt === 0) continue;
+    for (let idx = altStartIdx; idx <= altEndIdx; idx++) {
+      const alt = Math.round(idx * altStep * 100) / 100;
+      if (Math.abs(alt) < 1e-6) continue;
       if (view.coordSystem === 'equatorial' && alt < 0) continue;
-      const pts: { raDeg: number; decDeg: number }[] = [];
-      for (let az = 0; az <= 360; az += 4) {
-        pts.push(horizontalToEquatorial(alt, az, lstDeg, observer.lat));
+
+      const isHalfDeg = altStep < 1 && !Number.isInteger(alt);
+      if (isHalfDeg) {
+        ctx.save();
+        ctx.lineWidth = gridLineWidth * 0.8;
+        ctx.globalAlpha = 0.72;
       }
-      drawProjectedCurve(ctx, pts, proj, true);
+
+      const pts: { raDeg: number; decDeg: number }[] = [];
+      if (useHzCull && Math.abs(alt) < 82) {
+        const azHalfSpan = Math.min(
+          180,
+          hzViewRadius / Math.max(0.14, Math.cos(alt * DEG2RAD)) + azStep * 1.5
+        );
+        if (azHalfSpan >= 175) {
+          const aStep = Math.max(1, Math.min(4, view.fsz / 10));
+          for (let az = 0; az <= 360; az += aStep) {
+            pts.push(horizontalToEquatorial(alt, az, lstDeg, observer.lat));
+          }
+          drawProjectedCurve(ctx, pts, proj, true);
+        } else {
+          const aStart = proj.az0Deg - azHalfSpan;
+          const aEnd = proj.az0Deg + azHalfSpan;
+          const aStep = Math.max(0.2, Math.min(4, (azHalfSpan * 2) / 36));
+          for (let az = aStart; az <= aEnd + aStep * 0.5; az += aStep) {
+            const clamped = Math.min(aEnd, az);
+            pts.push(
+              horizontalToEquatorial(alt, ((clamped % 360) + 360) % 360, lstDeg, observer.lat)
+            );
+          }
+          drawProjectedCurve(ctx, pts, proj, false);
+        }
+      } else {
+        for (let az = 0; az <= 360; az += 4) {
+          pts.push(horizontalToEquatorial(alt, az, lstDeg, observer.lat));
+        }
+        drawProjectedCurve(ctx, pts, proj, true);
+      }
+
+      if (isHalfDeg) ctx.restore();
 
       if (view.coordSystem === 'horizontal') {
         const lbl = projectHorizontalRaw(alt, proj.az0Deg, proj, -0.1);
-        if (lbl && lbl.x > 16 && lbl.x < width - 34 && lbl.y > 16 && lbl.y < height - 16) {
-          ctx.fillText(`${alt > 0 ? '+' : ''}${alt}°`, lbl.x + 4, lbl.y - 3);
+        if (lbl && lbl.x > 16 && lbl.x < width - 48 && lbl.y > 16 && lbl.y < height - 16) {
+          ctx.fillText(formatGridDeg(alt, true), lbl.x + 4, lbl.y - 3);
         }
       }
     }
 
-    for (let az = 0; az < 360; az += azStep) {
+    const hzAzimuths: number[] = [];
+    if (useHzCull) {
+      const maxAbsAlt = Math.min(82, Math.abs(proj.alt0Deg) + hzViewRadius);
+      const azHalfSpan = Math.min(
+        180,
+        hzViewRadius / Math.max(0.14, Math.cos(maxAbsAlt * DEG2RAD)) + azStep * 2
+      );
+      const kStart = Math.floor((proj.az0Deg - azHalfSpan) / azStep);
+      const kEnd = Math.ceil((proj.az0Deg + azHalfSpan) / azStep);
+      const seenAz = new Set<number>();
+      for (let k = kStart; k <= kEnd; k++) {
+        const raw = Math.round(k * azStep * 100) / 100;
+        const norm = Math.round((((raw % 360) + 360) % 360) * 100) / 100;
+        const key = norm >= 360 ? 0 : norm;
+        if (!seenAz.has(key)) {
+          seenAz.add(key);
+          hzAzimuths.push(key);
+        }
+      }
+    } else {
+      const count = Math.round(360 / azStep);
+      for (let k = 0; k < count; k++) {
+        hzAzimuths.push(Math.round(k * azStep * 100) / 100);
+      }
+    }
+
+    const merAltMin = useHzCull
+      ? Math.max(minAltBound, proj.alt0Deg - hzViewRadius)
+      : view.coordSystem === 'horizontal'
+      ? -60
+      : 0;
+    const merAltMax = useHzCull ? Math.min(88, proj.alt0Deg + hzViewRadius) : 86;
+    const merAltSample = useHzCull ? Math.max(0.2, Math.min(4, (merAltMax - merAltMin) / 36)) : 4;
+    const lblAlt = Math.max(
+      altStep <= 1 ? -75 : 2,
+      Math.min(altStep <= 1 ? 86 : 75, proj.alt0Deg)
+    );
+
+    for (const az of hzAzimuths) {
+      const isHalfDeg = azStep < 1 && !Number.isInteger(az);
+      if (isHalfDeg) {
+        ctx.save();
+        ctx.lineWidth = gridLineWidth * 0.8;
+        ctx.globalAlpha = 0.72;
+      }
+
       const pts: { raDeg: number; decDeg: number }[] = [];
-      const minAlt = view.coordSystem === 'horizontal' ? -60 : 0;
-      for (let alt = minAlt; alt <= 86; alt += 4) {
-        pts.push(horizontalToEquatorial(alt, az, lstDeg, observer.lat));
+      for (let alt = merAltMin; alt <= merAltMax + merAltSample * 0.5; alt += merAltSample) {
+        pts.push(horizontalToEquatorial(Math.min(merAltMax, alt), az, lstDeg, observer.lat));
       }
       drawProjectedCurve(ctx, pts, proj, false);
 
+      if (isHalfDeg) ctx.restore();
+
       if (view.coordSystem === 'horizontal') {
-        const lblAlt = Math.max(2, Math.min(75, proj.alt0Deg));
         const lbl = projectHorizontalRaw(lblAlt, az, proj, -0.1);
-        if (lbl && lbl.x > 16 && lbl.x < width - 34 && lbl.y > 16 && lbl.y < height - 16) {
-          ctx.fillText(`${az}°`, lbl.x + 3, lbl.y + 11);
+        if (lbl && lbl.x > 16 && lbl.x < width - 48 && lbl.y > 16 && lbl.y < height - 16) {
+          ctx.fillText(formatGridDeg(az, false), lbl.x + 3, lbl.y + 11);
         }
       }
     }
@@ -1523,8 +1781,8 @@ function renderStarChartPass(
       if (k2) selectedDsoKeys.add(k2);
     }
 
-    const caldwellByNormKey = new Map<string, (typeof CALDWELL_CATALOG)[number]>();
-    for (const c of CALDWELL_CATALOG) {
+    const caldwellByNormKey = new Map<string, (typeof catalogs.caldwell)[number]>();
+    for (const c of catalogs.caldwell) {
       caldwellByNormKey.set(normDsoId(c.id), c);
       caldwellByNormKey.set(normDsoId(c.caldwellId), c);
     }
@@ -1635,17 +1893,9 @@ function renderStarChartPass(
 
     // 7b. Known DSO Override: Messier Catalog (M1–M110) — strictly M1–M110 only
     if (showKnownMessier) {
-      const messierSource =
-        catalogs.dsosBright.length > 0 ? catalogs.dsosBright : DSO_CATALOG;
+      const messierSource = catalogs.dsosBright;
       for (let i = 0; i < messierSource.length; i++) {
         const dso = messierSource[i];
-        if (!isMessierId(dso.id)) continue;
-        if (isSeenDso(dso)) continue;
-        pushPendingDso(dso, checkSelectedDso(dso), true);
-      }
-      // Fallback for any Messier entries present in bundled DSO_CATALOG not yet in dsosBright
-      for (let i = 0; i < DSO_CATALOG.length; i++) {
-        const dso = DSO_CATALOG[i];
         if (!isMessierId(dso.id)) continue;
         if (isSeenDso(dso)) continue;
         pushPendingDso(dso, checkSelectedDso(dso), true);
@@ -1654,8 +1904,8 @@ function renderStarChartPass(
 
     // 7c. Known DSO Override: Caldwell Catalog (C1–C109) — visible even when showDso is OFF
     if (showKnownCaldwell) {
-      for (let i = 0; i < CALDWELL_CATALOG.length; i++) {
-        const c = CALDWELL_CATALOG[i];
+      for (let i = 0; i < catalogs.caldwell.length; i++) {
+        const c = catalogs.caldwell[i];
         if (isSeenDso(c, c.caldwellId)) continue;
         pushPendingDso(c, checkSelectedDso(c), true, c.caldwellId, c.caldwellId);
       }
@@ -1892,9 +2142,9 @@ function renderStarChartPass(
     }
   }
 
-  // 8c. Spatially-Tiled Hipparcos Ultra Stars (mag 8.5 - 13.78)
-  // Always fills areas outside an active Gaia patch so there is ZERO circular cutoff gap!
-  if (magLimit > 8.3 && catalogs.ultraStarTiles.size > 0) {
+  // 8c. Spatially-Tiled Hipparcos Ultra Stars (mag 8.01 - 13.78)
+  // Always fills areas outside an active Gaia patch AND 8.01m-8.30m inside a Gaia patch!
+  if (magLimit > 8.0 && catalogs.ultraStarTiles.size > 0) {
     const tileKeys = getVisibleUltraTileKeys(view.ra, view.dec, view.fsz);
     for (const key of tileKeys) {
       const tileStars = catalogs.ultraStarTiles.get(key);
@@ -1902,7 +2152,7 @@ function renderStarChartPass(
       for (let i = 0; i < tileStars.length; i++) {
         const star = tileStars[i];
         if (star.mag > magLimit) break;
-        if (gaiaActive && isInsideGaiaPatch(star.ra, star.dec)) continue;
+        if (gaiaActive && star.mag > 8.3 && isInsideGaiaPatch(star.ra, star.dec)) continue;
         const pt = projectStereographic(star.ra, star.dec, proj, 10);
         if (!pt) continue;
         const isSelected = selected?.kind === 'star' && selected.data.id === star.id;
@@ -1918,13 +2168,13 @@ function renderStarChartPass(
           isSelected,
           dimmed: altCheck.dimmed,
         });
-        if (view.fsz <= 8 && star.mag <= 11.5) {
+        if (view.fsz <= 12 && star.mag <= Math.min(13.8, magLimit)) {
           targets.push({
             kind: 'star',
             id: star.id,
             x: pt.x,
             y: pt.y,
-            radius: 6,
+            radius: Math.max(6, r + 3),
             mag: star.mag,
             item: { kind: 'star', data: star },
           });
@@ -1933,7 +2183,7 @@ function renderStarChartPass(
     }
   }
 
-  // 8d. Deep Hipparcos Stars (mag 6.0 - 8.5)
+  // 8d. Deep Hipparcos Stars (mag 6.01 - 8.00)
   if (magLimit > 5.8 && catalogs.deepStars.length > 0) {
     const deepList = catalogs.deepStars;
     for (let i = 0; i < deepList.length; i++) {
@@ -1955,7 +2205,7 @@ function renderStarChartPass(
         isSelected,
         dimmed: altCheck.dimmed,
       });
-      if (view.fsz <= 18 && star.mag <= 8.0) {
+      if (view.fsz <= 25 && star.mag <= 8.0) {
         targets.push({
           kind: 'star',
           id: star.id,
@@ -2007,6 +2257,37 @@ function renderStarChartPass(
       mag: star.mag,
       item: { kind: 'star', data: star },
     });
+  }
+
+  // Ensure a newly searched/selected faint Hipparcos star is always visible & clickable
+  // even while its ultra tile is still streaming or if current magLimit is brighter than the star
+  if (selected?.kind === 'star' && !drawableStars.some((d) => d.isSelected)) {
+    const selStar = selected.data;
+    const pt = projectStereographic(selStar.ra, selStar.dec, proj, 20);
+    if (pt) {
+      const r = Math.max(
+        1.8,
+        getStarRadiusPogson(selStar.mag, Math.max(magLimit, selStar.mag + 0.5), view.fsz)
+      );
+      drawableStars.push({
+        star: selStar,
+        x: pt.x,
+        y: pt.y,
+        radius: r,
+        isBright: selStar.mag <= 6.0,
+        isSelected: true,
+        dimmed: false,
+      });
+      targets.push({
+        kind: 'star',
+        id: selStar.id,
+        x: pt.x,
+        y: pt.y,
+        radius: Math.max(8, r + 4),
+        mag: selStar.mag,
+        item: { kind: 'star', data: selStar },
+      });
+    }
   }
 
   // Viewport-relative top-N% apparent-magnitude star labels & known proper star names
@@ -3369,9 +3650,16 @@ function renderStarChartPass(
       ...catalogs.dsosBright,
       ...catalogs.darkNebulae,
       ...catalogs.dsosDeep,
-      ...CALDWELL_CATALOG,
+      ...catalogs.caldwell,
     ];
-    const allStars = [...catalogs.brightStars, ...catalogs.deepStars, ...catalogs.gaiaStars];
+    const allStars: Star[] = [
+      ...catalogs.brightStars,
+      ...catalogs.deepStars,
+      ...catalogs.gaiaStars,
+    ];
+    for (const tile of catalogs.ultraStarTiles.values()) {
+      for (const st of tile) allStars.push(st);
+    }
     const sessionSolarBodies = getSolarSystemBodies(obsTimeMs);
     const existingTargetIds = new Set(targets.map((t) => `${t.kind}:${t.id}`));
 
@@ -3521,7 +3809,7 @@ function renderStarChartPass(
       ...catalogs.dsosBright,
       ...catalogs.darkNebulae,
       ...catalogs.dsosDeep,
-      ...CALDWELL_CATALOG,
+      ...catalogs.caldwell,
     ];
     const dsoLookup = new Map<string, DeepSkyObject>();
     for (const d of allChallengeDsos) {
@@ -3969,6 +4257,10 @@ function renderStarChartPass(
       activeTool: asterismCtx.activeTool,
       eyepieceFovDeg: optics.eyepieceFovDeg,
       finderFovDeg: optics.finderFovDeg ?? 7.0,
+      reticleLineWidth: optics.reticleLineWidth ?? 1.4,
+      reticleOpacity: optics.reticleOpacity ?? 0.85,
+      showReticleLabel: optics.showReticleLabel !== false,
+      reticleLabelDirection: optics.reticleLabelDirection ?? 'ne',
       selectedObjectId: asterismCtx.selectedObjectId,
       draft: asterismCtx.draft,
       hoverSnap: asterismCtx.hoverSnap,

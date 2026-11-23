@@ -8,6 +8,7 @@ import {
   AsterismSettings,
   AsterismStoreState,
   AsterismVertex,
+  OpticsLabelDirection,
 } from '../types/astronomy';
 
 export const ASTERISM_STORAGE_KEY = 'noxchart_asterisms_v1';
@@ -244,6 +245,16 @@ function clamp(v: unknown, fallback: number, min: number, max: number): number {
 
 const VALID_LINE_STYLES: AsterismLineStyle[] = ['dashed', 'dashdot', 'solid'];
 const VALID_ANCHORS: AsterismLabelAnchor[] = ['top', 'bottom', 'left', 'right'];
+const VALID_OPTICS_LABEL_DIRS: OpticsLabelDirection[] = [
+  'n',
+  'ne',
+  'e',
+  'se',
+  's',
+  'sw',
+  'w',
+  'nw',
+];
 const VALID_OBJ_TYPES: AsterismObject['type'][] = [
   'polyline',
   'polygon',
@@ -417,6 +428,15 @@ export function sanitizeAsterismObject(
     eyepieceTag:
       typeof o.eyepieceTag === 'string' && o.eyepieceTag.trim()
         ? o.eyepieceTag.slice(0, 120)
+        : undefined,
+    linkedTitle:
+      type === 'circle' && typeof o.linkedTitle === 'string' && o.linkedTitle.trim()
+        ? o.linkedTitle.trim().slice(0, 80)
+        : undefined,
+    linkedTitleDirection:
+      type === 'circle' &&
+      VALID_OPTICS_LABEL_DIRS.includes(o.linkedTitleDirection as OpticsLabelDirection)
+        ? (o.linkedTitleDirection as OpticsLabelDirection)
         : undefined,
     labelAnchor: VALID_ANCHORS.includes(o.labelAnchor as AsterismLabelAnchor)
       ? (o.labelAnchor as AsterismLabelAnchor)

@@ -17,7 +17,7 @@ import {
   Eye,
   EyeOff,
   MapPin,
-  Maximize2,
+  Navigation,
   Pause,
   Play,
   Plus,
@@ -33,8 +33,10 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { CALDWELL_CATALOG } from '../data/caldwell';
-import { createDefaultChallengeTracks } from '../data/challenges';
+import {
+  createDefaultChallengeTracks,
+  hydrateChallengeTracksWithCatalog,
+} from '../data/challenges';
 import { CatalogSnapshot, ensureDeepDsos } from '../data/catalogLoader';
 import {
   ChallengeCheckpoint,
@@ -282,7 +284,7 @@ export function ChallengePanel({
     if (cp.kind === 'dso') {
       const pools = [
         catalogs.dsosBright,
-        CALDWELL_CATALOG,
+        catalogs.caldwell,
         catalogs.dsosDeep,
         catalogs.darkNebulae,
       ];
@@ -318,8 +320,11 @@ export function ChallengePanel({
 
   const missingBuiltInTracks = useMemo(() => {
     const existingIds = new Set(tracks.map((t) => t.id));
-    return createDefaultChallengeTracks().filter((d) => !existingIds.has(d.id));
-  }, [tracks]);
+    return hydrateChallengeTracksWithCatalog(
+      createDefaultChallengeTracks(),
+      catalogs.dsosBright
+    ).filter((d) => !existingIds.has(d.id));
+  }, [tracks, catalogs.dsosBright]);
 
   const handleConfirmDelete = () => {
     if (!deleteTarget) return;
@@ -347,7 +352,7 @@ export function ChallengePanel({
 
     const allDsos = [
       ...catalogs.dsosBright,
-      ...CALDWELL_CATALOG,
+      ...catalogs.caldwell,
       ...catalogs.dsosDeep,
       ...catalogs.darkNebulae,
     ];
@@ -1192,11 +1197,12 @@ export function ChallengePanel({
             <button
               type="button"
               onClick={() => onFrameTrack(selectedTrack)}
-              title="코스 전체가 보이도록 성도 맞추기"
+              title="코스 전체가 들어오는 시야로 이동 및 확대"
+              aria-label="코스 전체 시야로 이동"
               className={`p-1 border ${ui.buttonIdle}`}
               style={{ borderRadius: '4px' }}
             >
-              <Maximize2 className="w-3 h-3" />
+              <Navigation className="w-3 h-3" />
             </button>
             <button
               type="button"
@@ -1424,20 +1430,32 @@ export function ChallengePanel({
           {stageGroups.map((group) => {
             if (group.items.length === 0) return null;
             const stageComplete = group.stageDone === group.stageTotal && group.stageTotal > 0;
+            const stageCardTone =
+              theme === 'white'
+                ? 'border-violet-300/75 bg-violet-50/70'
+                : theme === 'red'
+                ? 'border-[#731834] bg-[#1A040C]'
+                : 'border-violet-500/30 bg-violet-500/10';
+            const stageHeaderTone =
+              theme === 'white'
+                ? 'bg-violet-100/85 border-violet-200/90'
+                : theme === 'red'
+                ? 'bg-[#280612] border-[#61132B]'
+                : 'bg-violet-500/18 border-violet-500/25';
+            const stageDividerTone =
+              theme === 'white'
+                ? 'divide-violet-200/80'
+                : theme === 'red'
+                ? 'divide-[#4F1024]'
+                : 'divide-violet-500/20';
             return (
               <div
                 key={group.stage}
-                className={`border overflow-hidden ${ui.border}`}
+                className={`border overflow-hidden ${stageCardTone}`}
                 style={{ borderRadius: '6px' }}
               >
                 <div
-                  className={`px-2 py-1 border-b flex items-center justify-between gap-1 ${ui.divider} ${
-                    theme === 'white'
-                      ? 'bg-slate-50'
-                      : theme === 'red'
-                      ? 'bg-[#160202]'
-                      : 'bg-[#0C1424]'
-                  }`}
+                  className={`px-2 py-1 border-b flex items-center justify-between gap-1 ${stageHeaderTone}`}
                 >
                   <span
                     className={`text-[10px] font-semibold tracking-[-0.04em] truncate ${
@@ -1454,7 +1472,7 @@ export function ChallengePanel({
                     {group.stageDone}/{group.stageTotal}
                   </span>
                 </div>
-                <div className={`divide-y ${ui.divider}`}>
+                <div className={`divide-y ${stageDividerTone}`}>
                   {group.items.map((cp) => {
                     const expanded = expandedCpId === cp.id;
                     const coords = resolveCheckpointCoords(cp);
@@ -1462,12 +1480,21 @@ export function ChallengePanel({
                       ? equatorialToHorizontal(coords.ra, coords.dec, lstDeg, observer.lat)
                       : null;
                     const isBelowHorizon = hz !== null && hz.altDeg < 0;
+                    const cpRowHover = isBelowHorizon
+                      ? theme === 'white'
+                        ? 'bg-slate-100/80 opacity-70'
+                        : theme === 'red'
+                        ? 'bg-[#0C0104] opacity-70'
+                        : 'bg-slate-900/50 opacity-70'
+                      : theme === 'white'
+                      ? 'hover:bg-violet-100/65'
+                      : theme === 'red'
+                      ? 'hover:bg-[#23050F]'
+                      : 'hover:bg-violet-500/15';
                     return (
                       <div
                         key={cp.id}
-                        className={`p-1.5 space-y-1 transition-opacity ${
-                          isBelowHorizon ? 'opacity-70' : ''
-                        }`}
+                        className={`p-1.5 space-y-1 transition-colors ${cpRowHover}`}
                       >
                         <div className="flex items-start gap-1.5">
                           <button
@@ -1976,11 +2003,15 @@ export function ChallengePanel({
               className={`border p-2 space-y-1.5 transition-colors ${
                 track.activeOnChart
                   ? theme === 'white'
-                    ? 'border-blue-500 bg-blue-50/40'
+                    ? 'border-violet-500/85 bg-violet-100/95'
                     : theme === 'red'
-                    ? 'border-[#DC2626] bg-[#1E0303]'
-                    : 'border-cyan-500/60 bg-cyan-950/20'
-                  : ui.border
+                    ? 'border-[#E11D48] bg-[#2D0614]'
+                    : 'border-violet-400/70 bg-violet-500/22'
+                  : theme === 'white'
+                  ? 'border-violet-300/75 bg-violet-50/80 hover:bg-violet-100/60'
+                  : theme === 'red'
+                  ? 'border-[#731834] bg-[#1B040D] hover:bg-[#240611]'
+                  : 'border-violet-500/30 bg-violet-500/10 hover:bg-violet-500/15'
               }`}
               style={{ borderRadius: '6px' }}
             >
@@ -2035,11 +2066,12 @@ export function ChallengePanel({
                   <button
                     type="button"
                     onClick={() => onFrameTrack(track)}
-                    title="성도에 코스 전체 맞춤 보기"
+                    title="코스 전체가 들어오는 시야로 이동 및 확대"
+                    aria-label={`${track.title} 전체 코스 시야로 이동`}
                     className={`p-1 border ${ui.buttonIdle}`}
                     style={{ borderRadius: '4px' }}
                   >
-                    <Maximize2 className="w-3 h-3" />
+                    <Navigation className="w-3 h-3" />
                   </button>
                   <button
                     type="button"

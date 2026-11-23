@@ -1,35 +1,22 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  BookmarkCheck,
-  BookmarkPlus,
-  BookOpen,
-  Calendar,
   Check,
   CheckCircle2,
   CheckSquare,
   ChevronDown,
   ChevronRight,
   Circle,
-  Compass,
-  Crosshair,
   Download,
   FolderPlus,
   ListChecks,
-  MapPin,
-  Navigation,
   Pencil,
-  Plus,
-  Route,
   Sparkles,
   Square,
   Star,
-  Target,
   Trash2,
   Upload,
-  Wrench,
   X,
 } from 'lucide-react';
-import { CALDWELL_CATALOG } from '../data/caldwell';
 import { CatalogSnapshot } from '../data/catalogLoader';
 import {
   AsterismGroup,
@@ -42,7 +29,6 @@ import {
   EquipmentLockerState,
   ObservationLogEntry,
   ObservationLogStoreState,
-  ObservationSeeingGrade,
   ObserverConfig,
   ObservingListGroup,
   ObservingSessionEntry,
@@ -52,33 +38,15 @@ import {
   ThemeMode,
 } from '../types/astronomy';
 import {
-  DEG2RAD,
   equatorialToHorizontal,
-  findStarHopGuides,
-  formatDec,
-  formatRA,
-  RAD2DEG,
-  getAltitudeCurve,
   getCompassDirection,
-  getDsoTypeLabel,
   getLSTDeg,
 } from '../utils/astronomy';
 import {
   formatCatalogCode,
   formatObjectDisplayName,
-  getSecondaryDesignations,
 } from '../utils/catalogNames';
-import { computePlanetOrientation } from '../utils/planetRenderer';
 import { getSolarSystemBodies } from '../utils/solarSystem';
-import {
-  buildActiveEquipmentSummary,
-  formatObservationDateTime,
-  fromDateTimeLocalValue,
-  getSeeingLabel,
-  getSelectedObjectMeta,
-  SEEING_OPTIONS,
-  toDateTimeLocalValue,
-} from '../utils/observationLogStorage';
 import { BuiltInAsterismPreset } from '../utils/asterismStorage';
 import { GuidedTourState, TourStop } from '../utils/tonightTour';
 import { getUiTheme } from '../utils/themeClasses';
@@ -89,9 +57,7 @@ import { ObservationLogPanel } from './ObservationLogPanel';
 
 interface ObjectInspectorProps {
   selected: SelectedItem | null;
-  centerLocked: boolean;
-  solarTrails: Record<string, number>;
-  activeTab: 'detail' | 'session' | 'challenge' | 'asterism' | 'log';
+  activeTab: 'session' | 'challenge' | 'asterism' | 'log';
   theme: ThemeMode;
   observer: ObserverConfig;
   optics: OpticsSettings;
@@ -103,14 +69,10 @@ interface ObjectInspectorProps {
   observingLists: ObservingListGroup[];
   tonightListId: string | null;
   challenges: ChallengeTrack[];
-  onTabChange: (tab: 'detail' | 'session' | 'challenge' | 'asterism' | 'log') => void;
+  onTabChange: (tab: 'session' | 'challenge' | 'asterism' | 'log') => void;
   onClose: () => void;
   onSelect: (item: SelectedItem | null) => void;
-  onToggleCenterLock: () => void;
-  onToggleSolarTrail: (bodyId: string) => void;
-  onClearSolarTrails: () => void;
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
-  onChangeOptics: (updater: (prev: OpticsSettings) => OpticsSettings) => void;
   onSetTonightList: (listId: string | null) => void;
   onCreateObservingList: (name: string) => string;
   onRenameObservingList: (listId: string, newName: string) => void;
@@ -223,8 +185,6 @@ interface ObjectInspectorProps {
 
 export function ObjectInspector({
   selected,
-  centerLocked,
-  solarTrails,
   activeTab,
   theme,
   observer,
@@ -240,11 +200,7 @@ export function ObjectInspector({
   onTabChange,
   onClose,
   onSelect,
-  onToggleCenterLock,
-  onToggleSolarTrail,
-  onClearSolarTrails,
   onChangeView,
-  onChangeOptics,
   onSetTonightList,
   onCreateObservingList,
   onRenameObservingList,
@@ -347,17 +303,7 @@ export function ObjectInspector({
     }
     return {};
   });
-  const [detailTargetListId, setDetailTargetListId] = useState<string>('__tonight__');
   const [recommend25Active, setRecommend25Active] = useState(false);
-  const [detailLogDraft, setDetailLogDraft] = useState<{
-    id: string | null;
-    observedAtLocal: string;
-    location: string;
-    equipment: string;
-    seeing: ObservationSeeingGrade;
-    rating: number;
-    notes: string;
-  } | null>(null);
 
   useEffect(() => {
     try {
@@ -367,31 +313,9 @@ export function ObjectInspector({
     }
   }, [expandedListIds]);
 
-  useEffect(() => {
-    setDetailLogDraft(null);
-  }, [selected?.data.id]);
-
-  useEffect(() => {
-    if (
-      detailTargetListId !== '__tonight__' &&
-      !observingLists.some((l) => l.id === detailTargetListId)
-    ) {
-      setDetailTargetListId('__tonight__');
-    }
-  }, [detailTargetListId, observingLists]);
-
-  const effectiveDetailListId =
-    detailTargetListId === '__tonight__' ||
-    observingLists.some((l) => l.id === detailTargetListId)
-      ? detailTargetListId
-      : '__tonight__';
   const activeTonightList = tonightListId
     ? observingLists.find((l) => l.id === tonightListId) ?? null
     : null;
-  const detailTargetList =
-    effectiveDetailListId === '__tonight__'
-      ? null
-      : observingLists.find((l) => l.id === effectiveDetailListId) ?? null;
   const manualEntryIdSet = useMemo(
     () => new Set(tonightManualEntries.map((e) => e.id)),
     [tonightManualEntries]
@@ -400,90 +324,17 @@ export function ObjectInspector({
   const obsTimeMs = observer.useLiveTime ? Date.now() : observer.timestampMs;
   const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
 
-  const selectedData = selected?.data;
-  const selectedAltAz = useMemo(() => {
-    if (!selectedData) return null;
-    return equatorialToHorizontal(selectedData.ra, selectedData.dec, lstDeg, observer.lat);
-  }, [selectedData, lstDeg, observer.lat]);
-
-  const selectedPlanetPhys = useMemo(() => {
-    if (selected?.kind !== 'planet') return null;
-    const bodies = getSolarSystemBodies(obsTimeMs);
-    const sun = bodies.find((b) => b.id === 'Sun');
-    return computePlanetOrientation(selected.data, sun, obsTimeMs)?.phys ?? null;
-  }, [selected, obsTimeMs]);
-
-  const altCurve = useMemo(() => {
-    if (!selectedData) return [];
-    return getAltitudeCurve(
-      selectedData.ra,
-      selectedData.dec,
-      observer.lat,
-      observer.lon,
-      obsTimeMs
-    );
-  }, [selectedData, observer.lat, observer.lon, obsTimeMs]);
-
-  const hopGuides = useMemo(() => {
-    if (!selected) return [];
-    const label =
-      selected.kind === 'dso'
-        ? selected.data.id
-        : selected.kind === 'planet'
-        ? selected.data.koName
-        : selected.kind === 'double'
-        ? selected.data.koName || selected.data.name || selected.data.bayer || selected.data.disc
-        : selected.data.koName || selected.data.name || selected.data.bayer || selected.data.id;
-    return findStarHopGuides(
-      selected.data.ra,
-      selected.data.dec,
-      label,
-      catalogs.brightStars,
-      selected.kind === 'star' ? selected.data.id : undefined,
-      selected.kind === 'star' ? selected.data.hip : undefined
-    );
-  }, [selected, catalogs.brightStars]);
-
-  const focusHopRoute = (
-    fromRa: number,
-    fromDec: number,
-    toRa: number,
-    toDec: number,
-    distDeg: number
-  ) => {
-    const a1 = fromRa * DEG2RAD;
-    const d1 = fromDec * DEG2RAD;
-    const a2 = toRa * DEG2RAD;
-    const d2 = toDec * DEG2RAD;
-    const mx = Math.cos(d1) * Math.cos(a1) + Math.cos(d2) * Math.cos(a2);
-    const my = Math.cos(d1) * Math.sin(a1) + Math.cos(d2) * Math.sin(a2);
-    const mz = Math.sin(d1) + Math.sin(d2);
-    const len = Math.hypot(mx, my, mz) || 1;
-    const midRaDeg = (((Math.atan2(my / len, mx / len) * RAD2DEG) + 360) % 360);
-    const midDecDeg = Math.asin(Math.max(-1, Math.min(1, mz / len))) * RAD2DEG;
-    onChangeOptics((p) => ({ ...p, showStarHop: true }));
-    onChangeView((p) => ({
-      ...p,
-      ra: ((midRaDeg / 15) % 24 + 24) % 24,
-      dec: midDecDeg,
-      fsz: Math.max(12, Math.min(95, distDeg * 1.65)),
-    }));
-  };
-
-  const sessionEntry = selected
-    ? effectiveDetailListId === '__tonight__'
-      ? sessionPlan.find((e) => e.id === selected.data.id)
-      : detailTargetList?.entries.find((e) => e.id === selected.data.id)
-    : undefined;
-
   const resolveEntriesList = useMemo(() => {
     const allDsos = [
       ...catalogs.dsosBright,
       ...catalogs.darkNebulae,
       ...catalogs.dsosDeep,
-      ...CALDWELL_CATALOG,
+      ...catalogs.caldwell,
     ];
     const allStars = [...catalogs.brightStars, ...catalogs.deepStars, ...catalogs.gaiaStars];
+    for (const tile of catalogs.ultraStarTiles.values()) {
+      for (const st of tile) allStars.push(st);
+    }
     const solarBodies = getSolarSystemBodies(obsTimeMs);
     const dsoById = new Map(allDsos.map((d) => [d.id, d] as const));
     const starById = new Map(allStars.map((s) => [s.id, s] as const));
@@ -587,7 +438,6 @@ export function ObjectInspector({
 
   const jumpToSessionObject = (item: SelectedItem) => {
     onSelect(item);
-    onTabChange('detail');
     onChangeView((p) => ({
       ...p,
       ra: ((item.data.ra / 15) % 24 + 24) % 24,
@@ -625,53 +475,17 @@ export function ObjectInspector({
     }
   };
 
-  // Compact SVG polyline for 24h altitude curve (tuned for 270px panel width)
-  const svgW = 230;
-  const svgH = 74;
-  const altToY = (alt: number) => svgH / 2 - (alt / 90) * (svgH / 2 - 5);
-  const horizonY = altToY(0);
-  const optimalY = altToY(30);
-  const curvePoints = altCurve
-    .map((pt, idx) => {
-      const x = (idx / Math.max(1, altCurve.length - 1)) * svgW;
-      const y = altToY(pt.altDeg);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
-    .join(' ');
-  const nowPoint = altCurve.find((p) => p.offsetHours === 0);
-  const nowIdx = altCurve.findIndex((p) => p.offsetHours === 0);
-  const nowX = nowIdx >= 0 ? (nowIdx / Math.max(1, altCurve.length - 1)) * svgW : svgW / 2;
-  const nowY = nowPoint ? altToY(nowPoint.altDeg) : horizonY;
-  const maxAlt = altCurve.reduce((m, p) => (p.altDeg > m.altDeg ? p : m), {
-    offsetHours: 0,
-    label: '--:--',
-    altDeg: -90,
-  });
-
-  const strokeColor =
-    theme === 'red' ? '#EF4444' : theme === 'white' ? '#2563EB' : '#06B6D4';
-
   return (
     <aside
       className={`no-print w-[292px] shrink-0 h-full border-l flex flex-col overflow-hidden ${ui.panel}`}
     >
-      {/* Header Tabs */}
+      {/* Header Tabs (4 tabs: 관측목록, 챌린지, 성군작도, 관측기록) */}
       <div className={`flex items-center justify-between gap-1 border-b px-1.5 py-1.5 ${ui.divider}`}>
-        <div className="flex items-center gap-0.5 min-w-0 flex-1">
-          <button
-            type="button"
-            onClick={() => onTabChange('detail')}
-            className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
-              activeTab === 'detail' ? ui.buttonActive : ui.buttonIdle
-            }`}
-            style={{ borderRadius: '4px' }}
-          >
-            천체정보
-          </button>
+        <div className="flex items-center gap-1 min-w-0 flex-1">
           <button
             type="button"
             onClick={() => onTabChange('session')}
-            className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+            className={`px-2 py-1 text-[10px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
               activeTab === 'session' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
@@ -681,7 +495,7 @@ export function ObjectInspector({
           <button
             type="button"
             onClick={() => onTabChange('challenge')}
-            className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
+            className={`px-2 py-1 text-[10px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
               activeTab === 'challenge' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
@@ -700,7 +514,7 @@ export function ObjectInspector({
             type="button"
             onClick={() => onTabChange('asterism')}
             title="성군 작도 그룹 · 성군 · 도형 및 대표 성군 프리셋 관리"
-            className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
+            className={`px-2 py-1 text-[10px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
               activeTab === 'asterism' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
@@ -716,7 +530,7 @@ export function ObjectInspector({
             type="button"
             onClick={() => onTabChange('log')}
             title="관측기록 관리 (일시·장비·장소·관측내용)"
-            className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
+            className={`px-2 py-1 text-[10px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
               activeTab === 'log' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
@@ -743,930 +557,7 @@ export function ObjectInspector({
 
       {/* Body */}
       <div className="flex-1 overflow-y-auto astro-scroll p-2.5 text-[11px] space-y-3">
-        {activeTab === 'detail' ? (
-          selected ? (
-            <>
-              {/* Title & Classification */}
-              <div className="space-y-0.5">
-                <div className={`text-[10px] font-mono tracking-[-0.04em] truncate ${ui.textMuted}`}>
-                  {selected.kind === 'dso'
-                    ? (() => {
-                        const primaryCode = formatCatalogCode(selected.data.id) || selected.data.id;
-                        const secs = getSecondaryDesignations(primaryCode, selected.data.altId);
-                        return [primaryCode, ...secs, selected.data.con].filter(Boolean).join(' · ');
-                      })()
-                    : selected.kind === 'planet'
-                    ? `${selected.data.symbol} 태양계 · ${selected.data.category}`
-                    : selected.kind === 'double'
-                    ? `${selected.data.disc} · ${selected.data.id}${selected.data.con ? ` · ${selected.data.con}` : ''}`
-                    : `${selected.data.bayer ?? selected.data.id}${selected.data.hip ? ` · HIP ${selected.data.hip}` : ''}${selected.data.con ? ` · ${selected.data.con}` : ''}`}
-                </div>
-                <h2
-                  className={`text-[15px] font-semibold leading-tight tracking-[-0.04em] break-keep ${ui.textPrimary}`}
-                >
-                  {selected.kind === 'dso'
-                    ? formatObjectDisplayName(
-                        selected.data.koName,
-                        selected.data.name,
-                        formatCatalogCode(selected.data.id) || selected.data.id
-                      )
-                    : selected.kind === 'planet'
-                    ? formatObjectDisplayName(
-                        selected.data.koName,
-                        selected.data.name,
-                        selected.data.id
-                      )
-                    : selected.kind === 'double'
-                    ? formatObjectDisplayName(
-                        selected.data.koName,
-                        selected.data.name,
-                        selected.data.bayer || selected.data.disc
-                      )
-                    : formatObjectDisplayName(
-                        selected.data.koName,
-                        selected.data.name,
-                        selected.data.bayer || selected.data.id
-                      )}
-                </h2>
-                <div className={`text-[10.5px] tracking-[-0.04em] truncate ${ui.textSecondary}`}>
-                  {selected.kind === 'dso'
-                    ? getDsoTypeLabel(selected.data.type)
-                    : selected.kind === 'planet'
-                    ? selected.data.category
-                    : selected.kind === 'double'
-                    ? selected.data.isMultiple
-                      ? `다중성 (Multiple Star · ${selected.data.compCount}구성성)`
-                      : '이중성 (Double Star · 2구성성)'
-                    : '항성 (Fixed Star)'}
-                </div>
-              </div>
-
-              {/* Action Row: 시야중심 | 선택마크 | 목록추가 */}
-              <div className="grid grid-cols-3 gap-1">
-                <button
-                  type="button"
-                  onClick={onToggleCenterLock}
-                  title={
-                    centerLocked
-                      ? '시야 중심 추적 중 (클릭 또는 하늘 배경 클릭 시 해제)'
-                      : '시야 중심 고정 (시간 가속 시 자동 추적)'
-                  }
-                  className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${
-                    centerLocked ? ui.buttonActive : ui.buttonIdle
-                  }`}
-                  style={{ borderRadius: '5px' }}
-                >
-                  <Crosshair className="w-3 h-3 shrink-0" />
-                  <span>시야 중심</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onChangeOptics((p) => ({ ...p, showSelectionMark: !p.showSelectionMark }))
-                  }
-                  title={optics.showSelectionMark ? '선택 마크 숨기기' : '선택 마크 표시'}
-                  className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${
-                    optics.showSelectionMark ? ui.buttonActive : ui.buttonIdle
-                  }`}
-                  style={{ borderRadius: '5px' }}
-                >
-                  <Target className="w-3 h-3 shrink-0" />
-                  <span>선택 마크</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onToggleSessionItem(selected, effectiveDetailListId)}
-                  title={
-                    sessionEntry
-                      ? `‘${
-                          effectiveDetailListId === '__tonight__'
-                            ? '오늘 밤 관측목록'
-                            : detailTargetList?.name ?? '관측 목록'
-                        }’에서 제거`
-                      : `‘${
-                          effectiveDetailListId === '__tonight__'
-                            ? '오늘 밤 관측목록'
-                            : detailTargetList?.name ?? '관측 목록'
-                        }’에 추가`
-                  }
-                  className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${
-                    sessionEntry ? ui.buttonActive : ui.buttonIdle
-                  }`}
-                  style={{ borderRadius: '5px' }}
-                >
-                  {sessionEntry ? (
-                    <>
-                      <BookmarkCheck className="w-3 h-3 shrink-0" />
-                      <span>저장됨</span>
-                    </>
-                  ) : (
-                    <>
-                      <BookmarkPlus className="w-3 h-3 shrink-0" />
-                      <span>목록 추가</span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              {/* Target Observing List Category Selector (Tonight vs Managed Lists) */}
-              {observingLists.length > 0 && (
-                <div className="flex items-center gap-1.5">
-                  <span
-                    className={`text-[10px] tracking-[-0.05em] whitespace-nowrap shrink-0 ${ui.textMuted}`}
-                  >
-                    대상 목록
-                  </span>
-                  <select
-                    value={effectiveDetailListId}
-                    onChange={(e) => setDetailTargetListId(e.target.value)}
-                    aria-label="대상을 담을 관측 목록 선택"
-                    className={`flex-1 min-w-0 px-1.5 py-1 border text-[10px] truncate ${ui.input}`}
-                    style={{ borderRadius: '4px' }}
-                  >
-                    <option value="__tonight__">
-                      ★ 오늘 밤 관측목록 ({sessionPlan.length})
-                      {sessionPlan.some((e) => e.id === selected.data.id) ? ' ✓' : ''}
-                    </option>
-                    {observingLists.map((list) => {
-                      const hasItem = list.entries.some((e) => e.id === selected.data.id);
-                      const isTonight = list.id === tonightListId;
-                      return (
-                        <option key={list.id} value={list.id}>
-                          {isTonight ? '[오늘관측] ' : ''}
-                          {list.name} ({list.entries.length})
-                          {hasItem ? ' ✓' : ''}
-                        </option>
-                      );
-                    })}
-                  </select>
-                </div>
-              )}
-
-              {/* Solar System 10-Day Forward Trajectory Button */}
-              {selected.kind === 'planet' && (() => {
-                const trailStartMs = solarTrails[selected.data.id];
-                const isTrailActive = trailStartMs !== undefined;
-                const activeTrailCount = Object.keys(solarTrails).length;
-                const rangeText = (() => {
-                  const baseMs = isTrailActive ? trailStartMs : Date.now();
-                  const d0 = new Date(baseMs);
-                  const d10 = new Date(baseMs + 10 * 86400000);
-                  return `${d0.getMonth() + 1}/${d0.getDate()}~${d10.getMonth() + 1}/${d10.getDate()}`;
-                })();
-                return (
-                  <div className="flex items-center gap-1">
-                    <button
-                      type="button"
-                      onClick={() => onToggleSolarTrail(selected.data.id)}
-                      title={
-                        isTrailActive
-                          ? `오늘 기준 10일간 궤적(${rangeText}) 숨기기`
-                          : `오늘 날짜 기준으로 앞으로 10일간(${rangeText})의 궤적과 매일 날짜 라벨 표시`
-                      }
-                      className={`flex-1 py-1.5 px-2 border text-[10.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1.5 whitespace-nowrap transition-colors ${
-                        isTrailActive ? ui.buttonActive : ui.buttonIdle
-                      }`}
-                      style={{ borderRadius: '5px' }}
-                    >
-                      <Route className="w-3.5 h-3.5 shrink-0" />
-                      <span>
-                        {isTrailActive ? `궤적 표시 중 (${rangeText})` : `궤적 그리기 (10일 · ${rangeText})`}
-                      </span>
-                    </button>
-                    {activeTrailCount > 0 && (
-                      <button
-                        type="button"
-                        onClick={onClearSolarTrails}
-                        title="표시된 모든 궤적 지우기"
-                        className={`py-1.5 px-2 border text-[10px] tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 transition-colors ${ui.buttonIdle}`}
-                        style={{ borderRadius: '5px' }}
-                      >
-                        지우기
-                      </button>
-                    )}
-                  </div>
-                );
-              })()}
-
-              {/* Precision Telemetry Grid */}
-              <div
-                className={`border divide-y text-[10.5px] ${ui.border} ${ui.divider}`}
-                style={{ borderRadius: '6px' }}
-              >
-                <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                  <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                    적경 RA
-                  </span>
-                  <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
-                    {formatRA(selected.data.ra)}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                  <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                    적위 Dec
-                  </span>
-                  <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
-                    {formatDec(selected.data.dec)}
-                  </span>
-                </div>
-                {selectedAltAz && (
-                  <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                    <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                      고도 / 방위
-                    </span>
-                    <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
-                      {selectedAltAz.altDeg.toFixed(1)}° / {selectedAltAz.azDeg.toFixed(0)}°(
-                      {getCompassDirection(selectedAltAz.azDeg)})
-                    </span>
-                  </div>
-                )}
-                <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                  <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                    겉보기 등급
-                  </span>
-                  <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right">
-                    {selected.data.mag.toFixed(2)}m
-                  </span>
-                </div>
-                {selected.kind === 'dso' ? (
-                  <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                    <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                      시직경 / PA
-                    </span>
-                    <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
-                      {selected.data.majAx.toFixed(1)}′×{selected.data.minAx.toFixed(1)}′ · {selected.data.pa}°
-                    </span>
-                  </div>
-                ) : selected.kind === 'planet' ? (
-                  <>
-                    <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                      <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                        지구 거리
-                      </span>
-                      <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
-                        {selected.data.id === 'Moon'
-                          ? `${Math.round(selected.data.distAu * 149597870.7).toLocaleString()} km`
-                          : `${selected.data.distAu.toFixed(3)} AU`}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                      <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                        위상 / 이각
-                      </span>
-                      <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
-                        {selected.data.phasePct}% · {selected.data.elongationDeg.toFixed(1)}°
-                      </span>
-                    </div>
-                    {selectedPlanetPhys && (
-                      <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                        <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                          {selectedPlanetPhys.hasRings ? '고리 / 자전축' : '자전축 PA / B'}
-                        </span>
-                        <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
-                          {selectedPlanetPhys.hasRings
-                            ? `${selectedPlanetPhys.ringTiltDeg >= 0 ? '+' : ''}${selectedPlanetPhys.ringTiltDeg.toFixed(1)}° · PA ${selectedPlanetPhys.northPolePaDeg.toFixed(0)}°`
-                            : `PA ${selectedPlanetPhys.northPolePaDeg.toFixed(0)}° · ${selectedPlanetPhys.subEarthLatDeg >= 0 ? '+' : ''}${selectedPlanetPhys.subEarthLatDeg.toFixed(1)}°`}
-                        </span>
-                      </div>
-                    )}
-                  </>
-                ) : selected.kind === 'double' ? (
-                  <>
-                    <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                      <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                        주성 / 동반성
-                      </span>
-                      <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
-                        {selected.data.mag1.toFixed(2)}m / {selected.data.mag2.toFixed(2)}m (Δ
-                        {Math.abs(selected.data.mag2 - selected.data.mag1).toFixed(1)})
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                      <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                        이격각(ρ) / PA(θ)
-                      </span>
-                      <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
-                        {selected.data.sep.toFixed(1)}″ · {selected.data.pa}° ({selected.data.lastYear})
-                      </span>
-                    </div>
-                    {selected.data.spec && (
-                      <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                        <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                          분광형
-                        </span>
-                        <span className="font-mono text-[10px] tracking-[-0.04em] text-right truncate">
-                          {selected.data.spec}
-                        </span>
-                      </div>
-                    )}
-                  </>
-                ) : (
-                  <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-                    <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                      색지수 B-V
-                    </span>
-                    <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right">
-                      {selected.data.bv.toFixed(2)}
-                    </span>
-                  </div>
-                )}
-              </div>
-
-              {/* Multiple Star Component Pairs Breakdown */}
-              {selected.kind === 'double' && selected.data.pairs && selected.data.pairs.length > 1 && (
-                <div className={`border p-2 space-y-1.5 ${ui.border}`} style={{ borderRadius: '6px' }}>
-                  <div className="flex items-center justify-between gap-1">
-                    <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                      구성성 페어 목록 (WDS)
-                    </span>
-                    <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
-                      {selected.data.pairs.length}쌍
-                    </span>
-                  </div>
-                  <div className={`divide-y ${ui.divider} font-mono text-[10px] tabular-nums`}>
-                    {selected.data.pairs.map((pair, idx) => (
-                      <div
-                        key={`${pair.comp}-${idx}`}
-                        className="py-1 flex items-center justify-between gap-1"
-                      >
-                        <span className={`font-semibold shrink-0 ${ui.accentText}`}>
-                          {pair.comp}
-                        </span>
-                        <span className={`truncate ${ui.textSecondary}`}>
-                          {pair.mag1.toFixed(1)}/{pair.mag2.toFixed(1)}m
-                        </span>
-                        <span className={`shrink-0 ${ui.textMuted}`}>
-                          {pair.sep.toFixed(1)}″ · {pair.pa}°
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* 24-Hour Altitude Curve */}
-              <div className={`border p-2 space-y-1.5 ${ui.border}`} style={{ borderRadius: '6px' }}>
-                <div className="flex items-center justify-between gap-1">
-                  <span className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                    24시간 고도
-                  </span>
-                  <span className={`font-mono text-[9.5px] tracking-[-0.04em] tabular-nums whitespace-nowrap ${ui.textMuted}`}>
-                    최고 {maxAlt.altDeg.toFixed(0)}° ({maxAlt.label})
-                  </span>
-                </div>
-                <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full h-[74px] overflow-visible">
-                  {/* Optimal 30° dashed line */}
-                  <line
-                    x1={0}
-                    y1={optimalY}
-                    x2={svgW}
-                    y2={optimalY}
-                    stroke="currentColor"
-                    strokeOpacity={0.18}
-                    strokeDasharray="3 3"
-                  />
-                  {/* Horizon 0° line */}
-                  <line
-                    x1={0}
-                    y1={horizonY}
-                    x2={svgW}
-                    y2={horizonY}
-                    stroke="currentColor"
-                    strokeOpacity={0.4}
-                  />
-                  {/* Altitude Curve */}
-                  <polyline
-                    fill="none"
-                    stroke={strokeColor}
-                    strokeWidth={1.6}
-                    points={curvePoints}
-                  />
-                  {/* Current observation time dot */}
-                  <circle cx={nowX} cy={nowY} r={3} fill={strokeColor} />
-                </svg>
-                <div
-                  className={`flex justify-between text-[9.5px] font-mono tracking-[-0.05em] tabular-nums ${ui.textMuted}`}
-                >
-                  <span>-12h</span>
-                  <span>0° 지평 · +30°</span>
-                  <span>+12h</span>
-                </div>
-              </div>
-
-              {/* Star-Hopping Guide(s) */}
-              {hopGuides.length > 0 && (
-                <div className={`border p-2 space-y-2 ${ui.border}`} style={{ borderRadius: '6px' }}>
-                  <div className="flex items-center justify-between gap-1">
-                    <span
-                      className={`font-semibold flex items-center gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
-                    >
-                      <Navigation className="w-3 h-3 shrink-0" />
-                      <span>
-                        별 호핑{hopGuides.length > 1 ? ` (${hopGuides.length})` : ''}
-                      </span>
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        onChangeOptics((p) => ({ ...p, showStarHop: !p.showStarHop }))
-                      }
-                      className={`px-1.5 py-0.5 border text-[10px] tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 ${
-                        optics.showStarHop ? ui.buttonActive : ui.buttonIdle
-                      }`}
-                      style={{ borderRadius: '4px' }}
-                    >
-                      {optics.showStarHop ? '표시 중' : '경로 표시'}
-                    </button>
-                  </div>
-
-                  <div className={`divide-y ${ui.divider}`}>
-                    {hopGuides.map((guide, idx) => (
-                      <div
-                        key={guide.fromStar.id}
-                        className={idx > 0 ? 'pt-2 mt-2 space-y-1' : 'space-y-1'}
-                      >
-                        <div className="flex items-center justify-between gap-1">
-                          <div
-                            className={`font-mono text-[10px] tracking-[-0.04em] tabular-nums truncate ${ui.textSecondary}`}
-                          >
-                            {hopGuides.length > 1 ? `${idx + 1}. ` : ''}
-                            <span className="font-semibold">
-                              {guide.fromStar.koName || guide.fromStar.name || guide.fromStar.bayer}
-                            </span>{' '}
-                            ({guide.fromStar.mag.toFixed(1)}m)
-                          </div>
-                          <button
-                            type="button"
-                            onClick={() =>
-                              focusHopRoute(
-                                guide.fromStar.ra,
-                                guide.fromStar.dec,
-                                guide.toRa,
-                                guide.toDec,
-                                guide.distanceDeg
-                              )
-                            }
-                            className={`px-1.5 py-0.5 border text-[9.5px] tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
-                            style={{ borderRadius: '4px' }}
-                          >
-                            보기
-                          </button>
-                        </div>
-                        <div className={`font-mono text-[10px] tracking-[-0.04em] tabular-nums ${ui.textMuted}`}>
-                          이격 {guide.distanceDeg.toFixed(2)}° · PA {guide.paDeg.toFixed(0)}°
-                        </div>
-                        {guide.note && (
-                          <div className={`text-[10px] tracking-[-0.03em] leading-snug break-keep ${ui.textMuted}`}>
-                            {guide.note}
-                          </div>
-                        )}
-                      </div>
-                    ))}
-                  </div>
-
-                  {hopGuides.length > 1 && selected && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onChangeOptics((p) => ({ ...p, showStarHop: true }));
-                        onChangeView((p) => ({
-                          ...p,
-                          ra: ((selected.data.ra / 15) % 24 + 24) % 24,
-                          dec: selected.data.dec,
-                          fsz: 74,
-                        }));
-                      }}
-                      className={`w-full py-1 px-1.5 border text-[10px] tracking-[-0.05em] font-medium transition-colors ${ui.buttonIdle}`}
-                      style={{ borderRadius: '4px' }}
-                    >
-                      두 경로 한눈에 보기
-                    </button>
-                  )}
-                </div>
-              )}
-
-              {/* Observed Status & Observation Logs for Selected Object */}
-              {(() => {
-                const targetMeta = getSelectedObjectMeta(selected);
-                const objectLogs = observationLogStore.logs.filter(
-                  (l) => l.objectId === targetMeta.objectId
-                );
-                const explicitStatus = observationLogStore.observedMap[targetMeta.objectId];
-                const isObserved = explicitStatus
-                  ? explicitStatus.observed
-                  : objectLogs.length > 0 || Boolean(sessionEntry?.observed);
-                const activeEquipSummary = buildActiveEquipmentSummary(equipmentLocker, optics);
-
-                const openNewDetailLog = () => {
-                  setDetailLogDraft({
-                    id: null,
-                    observedAtLocal: toDateTimeLocalValue(obsTimeMs),
-                    location: observer.name.trim(),
-                    equipment: activeEquipSummary,
-                    seeing: '',
-                    rating: 0,
-                    notes: '',
-                  });
-                };
-
-                const openEditDetailLog = (log: ObservationLogEntry) => {
-                  setDetailLogDraft({
-                    id: log.id,
-                    observedAtLocal: toDateTimeLocalValue(log.observedAt),
-                    location: log.location,
-                    equipment: log.equipment,
-                    seeing: log.seeing ?? '',
-                    rating: log.rating ?? 0,
-                    notes: log.notes,
-                  });
-                };
-
-                const handleSaveDetailLog = (e: React.FormEvent) => {
-                  e.preventDefault();
-                  if (!detailLogDraft) return;
-                  const now = Date.now();
-                  const existing = detailLogDraft.id
-                    ? observationLogStore.logs.find((l) => l.id === detailLogDraft.id)
-                    : undefined;
-                  const entry: ObservationLogEntry = {
-                    id: existing?.id ?? `obslog_${now}_${Math.random().toString(36).slice(2, 7)}`,
-                    objectId: targetMeta.objectId,
-                    objectKind: targetMeta.objectKind,
-                    objectName: targetMeta.objectName,
-                    constellation: targetMeta.constellation,
-                    raDeg: targetMeta.raDeg,
-                    decDeg: targetMeta.decDeg,
-                    observedAt: fromDateTimeLocalValue(detailLogDraft.observedAtLocal, obsTimeMs),
-                    location: detailLogDraft.location.trim(),
-                    equipment: detailLogDraft.equipment.trim(),
-                    seeing: detailLogDraft.seeing,
-                    transparency: existing?.transparency ?? '',
-                    rating: detailLogDraft.rating > 0 ? detailLogDraft.rating : undefined,
-                    notes: detailLogDraft.notes.trim(),
-                    createdAt: existing?.createdAt ?? now,
-                    updatedAt: now,
-                  };
-                  onSaveObservationLog(entry);
-                  setDetailLogDraft(null);
-                };
-
-                return (
-                  <div className={`border p-2 space-y-2 ${ui.border}`} style={{ borderRadius: '6px' }}>
-                    {/* Header: Observed Toggle + Add Log Button */}
-                    <div className="flex items-center justify-between gap-1.5">
-                      <span
-                        className={`font-semibold flex items-center gap-1 whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
-                      >
-                        <BookOpen className="w-3 h-3 shrink-0" />
-                        <span>관측 여부 · 기록</span>
-                        {objectLogs.length > 0 && (
-                          <span className={`font-mono text-[9.5px] ${ui.textMuted}`}>
-                            ({objectLogs.length})
-                          </span>
-                        )}
-                      </span>
-                      <button
-                        type="button"
-                        onClick={() => (detailLogDraft ? setDetailLogDraft(null) : openNewDetailLog())}
-                        className={`px-1.5 py-0.5 border text-[9.5px] font-medium flex items-center gap-0.5 whitespace-nowrap shrink-0 transition-colors ${
-                          detailLogDraft ? ui.buttonIdle : ui.buttonActive
-                        }`}
-                        style={{ borderRadius: '4px' }}
-                      >
-                        {detailLogDraft ? (
-                          <>
-                            <X className="w-2.5 h-2.5" />
-                            <span>닫기</span>
-                          </>
-                        ) : (
-                          <>
-                            <Plus className="w-2.5 h-2.5" />
-                            <span>기록 작성</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-
-                    {/* Observed Status Toggle Bar */}
-                    <button
-                      type="button"
-                      onClick={() => onToggleObjectObserved(targetMeta, !isObserved)}
-                      className={`w-full py-1.5 px-2 border text-[10.5px] font-semibold flex items-center justify-between gap-1.5 transition-colors ${
-                        isObserved
-                          ? theme === 'white'
-                            ? 'bg-emerald-50 border-emerald-400 text-emerald-800'
-                            : theme === 'red'
-                            ? 'bg-[#2A0505] border-[#DC2626] text-[#FF6B6B]'
-                            : 'bg-emerald-950/60 border-emerald-500/60 text-emerald-300'
-                          : ui.buttonIdle
-                      }`}
-                      style={{ borderRadius: '5px' }}
-                    >
-                      <span className="flex items-center gap-1.5">
-                        {isObserved ? (
-                          <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                        ) : (
-                          <Circle className="w-3.5 h-3.5 shrink-0 opacity-60" />
-                        )}
-                        <span>{isObserved ? '관측 완료' : '미관측 (클릭하여 완료 표시)'}</span>
-                      </span>
-                      {isObserved && explicitStatus?.updatedAt && (
-                        <span className="font-mono text-[9px] opacity-75">
-                          {formatObservationDateTime(explicitStatus.updatedAt).slice(0, 10)}
-                        </span>
-                      )}
-                    </button>
-
-                    {/* Inline Quick Add / Edit Observation Log Form */}
-                    {detailLogDraft && (
-                      <form
-                        onSubmit={handleSaveDetailLog}
-                        className={`border p-2 space-y-1.5 ${ui.panelMuted} ${ui.border}`}
-                        style={{ borderRadius: '5px' }}
-                      >
-                        <div className="space-y-0.5">
-                          <div className="flex items-center justify-between gap-1">
-                            <label className={`text-[9.5px] ${ui.textMuted}`}>관측 일시</label>
-                            <button
-                              type="button"
-                              onClick={() =>
-                                setDetailLogDraft({
-                                  ...detailLogDraft,
-                                  observedAtLocal: toDateTimeLocalValue(Date.now()),
-                                })
-                              }
-                              className={`text-[9px] underline underline-offset-2 ${ui.accentText}`}
-                            >
-                              현재 시각
-                            </button>
-                          </div>
-                          <input
-                            type="datetime-local"
-                            value={detailLogDraft.observedAtLocal}
-                            onChange={(e) =>
-                              setDetailLogDraft({
-                                ...detailLogDraft,
-                                observedAtLocal: e.target.value,
-                              })
-                            }
-                            className={`w-full px-1.5 py-1 border text-[10px] font-mono ${ui.input}`}
-                            style={{ borderRadius: '4px' }}
-                          />
-                        </div>
-
-                        <div className="space-y-0.5">
-                          <div className="flex items-center justify-between gap-1">
-                            <label className={`text-[9.5px] ${ui.textMuted}`}>관측 장소</label>
-                            {savedSites.length > 0 && (
-                              <select
-                                value=""
-                                onChange={(e) => {
-                                  if (e.target.value) {
-                                    setDetailLogDraft({
-                                      ...detailLogDraft,
-                                      location: e.target.value,
-                                    });
-                                  }
-                                }}
-                                aria-label="저장된 관측지 선택"
-                                className={`max-w-[120px] px-1 py-0.5 border text-[9px] ${ui.input}`}
-                                style={{ borderRadius: '4px' }}
-                              >
-                                <option value="">관측지 선택…</option>
-                                {savedSites.map((site) => (
-                                  <option key={site.id} value={site.name}>
-                                    {site.name}
-                                  </option>
-                                ))}
-                              </select>
-                            )}
-                          </div>
-                          <input
-                            type="text"
-                            value={detailLogDraft.location}
-                            onChange={(e) =>
-                              setDetailLogDraft({ ...detailLogDraft, location: e.target.value })
-                            }
-                            placeholder="예: 강원 화천 조경철천문대"
-                            className={`w-full px-1.5 py-1 border text-[10px] ${ui.input}`}
-                            style={{ borderRadius: '4px' }}
-                          />
-                        </div>
-
-                        <div className="space-y-0.5">
-                          <div className="flex items-center justify-between gap-1">
-                            <label className={`text-[9.5px] ${ui.textMuted}`}>사용 장비</label>
-                            {activeEquipSummary && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  setDetailLogDraft({
-                                    ...detailLogDraft,
-                                    equipment: activeEquipSummary,
-                                  })
-                                }
-                                className={`text-[9px] underline underline-offset-2 ${ui.accentText}`}
-                              >
-                                활성 장비
-                              </button>
-                            )}
-                          </div>
-                          <input
-                            type="text"
-                            value={detailLogDraft.equipment}
-                            onChange={(e) =>
-                              setDetailLogDraft({ ...detailLogDraft, equipment: e.target.value })
-                            }
-                            placeholder="예: 150mm 뉴턴 + 25mm 아이피스"
-                            className={`w-full px-1.5 py-1 border text-[10px] ${ui.input}`}
-                            style={{ borderRadius: '4px' }}
-                          />
-                        </div>
-
-                        <div className="flex items-center justify-between gap-1.5">
-                          <select
-                            value={detailLogDraft.seeing}
-                            onChange={(e) =>
-                              setDetailLogDraft({
-                                ...detailLogDraft,
-                                seeing: e.target.value as ObservationSeeingGrade,
-                              })
-                            }
-                            aria-label="시상 등급"
-                            className={`flex-1 px-1.5 py-1 border text-[9.5px] ${ui.input}`}
-                            style={{ borderRadius: '4px' }}
-                          >
-                            {SEEING_OPTIONS.map((opt) => (
-                              <option key={opt.value || 'none'} value={opt.value}>
-                                시상: {opt.label}
-                              </option>
-                            ))}
-                          </select>
-                          <div className="flex items-center gap-0.5 shrink-0">
-                            {[1, 2, 3, 4, 5].map((n) => (
-                              <button
-                                key={n}
-                                type="button"
-                                onClick={() =>
-                                  setDetailLogDraft({
-                                    ...detailLogDraft,
-                                    rating: detailLogDraft.rating === n ? 0 : n,
-                                  })
-                                }
-                                className="p-0.5"
-                                title={`별점 ${n}점`}
-                              >
-                                <Star
-                                  className={`w-3 h-3 ${
-                                    n <= detailLogDraft.rating
-                                      ? theme === 'red'
-                                        ? 'fill-red-500 text-red-500'
-                                        : 'fill-amber-400 text-amber-400'
-                                      : ui.textMuted
-                                  }`}
-                                />
-                              </button>
-                            ))}
-                          </div>
-                        </div>
-
-                        <textarea
-                          rows={3}
-                          value={detailLogDraft.notes}
-                          onChange={(e) =>
-                            setDetailLogDraft({ ...detailLogDraft, notes: e.target.value })
-                          }
-                          placeholder="관측 소감, 보인 형태, 배율·필터 느낌 등..."
-                          className={`w-full p-1.5 border text-[10px] leading-snug resize-y ${ui.input}`}
-                          style={{ borderRadius: '4px' }}
-                        />
-
-                        <div className="flex items-center justify-end gap-1">
-                          <button
-                            type="button"
-                            onClick={() => setDetailLogDraft(null)}
-                            className={`px-2 py-1 border text-[9.5px] ${ui.buttonIdle}`}
-                            style={{ borderRadius: '4px' }}
-                          >
-                            취소
-                          </button>
-                          <button
-                            type="submit"
-                            className={`px-2 py-1 border text-[9.5px] font-semibold ${ui.buttonActive}`}
-                            style={{ borderRadius: '4px' }}
-                          >
-                            {detailLogDraft.id ? '수정 저장' : '기록 저장'}
-                          </button>
-                        </div>
-                      </form>
-                    )}
-
-                    {/* Saved Logs for this Object */}
-                    {objectLogs.length > 0 ? (
-                      <div className={`divide-y ${ui.divider}`}>
-                        {objectLogs.map((log) => {
-                          const seeingTxt = getSeeingLabel(log.seeing);
-                          return (
-                            <div key={log.id} className="py-1.5 first:pt-0.5 last:pb-0 space-y-1">
-                              <div className="flex items-center justify-between gap-1">
-                                <span
-                                  className={`inline-flex items-center gap-1 font-mono text-[9.5px] tabular-nums ${ui.textSecondary}`}
-                                >
-                                  <Calendar className={`w-2.5 h-2.5 shrink-0 ${ui.textMuted}`} />
-                                  <span>{formatObservationDateTime(log.observedAt)}</span>
-                                </span>
-                                <div className="flex items-center gap-1 shrink-0">
-                                  {seeingTxt && (
-                                    <span className={`text-[9px] font-mono ${ui.accentText}`}>
-                                      {seeingTxt}
-                                    </span>
-                                  )}
-                                  {log.rating && log.rating > 0 ? (
-                                    <span
-                                      className={`text-[9px] ${
-                                        theme === 'red' ? 'text-red-400' : 'text-amber-400'
-                                      }`}
-                                    >
-                                      {'★'.repeat(log.rating)}
-                                    </span>
-                                  ) : null}
-                                  <button
-                                    type="button"
-                                    onClick={() => openEditDetailLog(log)}
-                                    title="기록 수정"
-                                    className={`p-0.5 ${ui.textMuted} hover:opacity-100`}
-                                  >
-                                    <Pencil className="w-2.5 h-2.5" />
-                                  </button>
-                                  <button
-                                    type="button"
-                                    onClick={() => onDeleteObservationLog(log.id)}
-                                    title="기록 삭제"
-                                    className={`p-0.5 ${ui.textMuted} hover:text-rose-400`}
-                                  >
-                                    <Trash2 className="w-2.5 h-2.5" />
-                                  </button>
-                                </div>
-                              </div>
-                              {(log.location || log.equipment) && (
-                                <div className={`space-y-0.5 text-[9.5px] ${ui.textMuted}`}>
-                                  {log.location && (
-                                    <div className="flex items-center gap-1 min-w-0">
-                                      <MapPin className="w-2.5 h-2.5 shrink-0" />
-                                      <span className="truncate">{log.location}</span>
-                                    </div>
-                                  )}
-                                  {log.equipment && (
-                                    <div className="flex items-center gap-1 min-w-0">
-                                      <Wrench className="w-2.5 h-2.5 shrink-0" />
-                                      <span className="truncate">{log.equipment}</span>
-                                    </div>
-                                  )}
-                                </div>
-                              )}
-                              {log.notes && (
-                                <p
-                                  className={`text-[10px] leading-snug whitespace-pre-wrap break-keep ${ui.textPrimary}`}
-                                >
-                                  {log.notes}
-                                </p>
-                              )}
-                            </div>
-                          );
-                        })}
-                      </div>
-                    ) : (
-                      !detailLogDraft && (
-                        <p className={`text-[10px] leading-snug break-keep ${ui.textMuted}`}>
-                          아직 기록이 없습니다. ‘기록 작성’을 눌러 일시·장소·장비·관측 내용을 남겨보세요.
-                        </p>
-                      )
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={() => onTabChange('log')}
-                      className={`w-full py-1 px-1.5 border text-[9.5px] tracking-[-0.04em] font-medium transition-colors ${ui.buttonIdle}`}
-                      style={{ borderRadius: '4px' }}
-                    >
-                      전체 관측기록 탭에서 관리 ({observationLogStore.logs.length}건) →
-                    </button>
-                  </div>
-                );
-              })()}
-            </>
-          ) : (
-            <div className={`py-10 px-1 text-center space-y-2 ${ui.textMuted}`}>
-              <Compass className="w-6 h-6 mx-auto opacity-50" />
-              <div className={`font-medium tracking-[-0.05em] ${ui.textSecondary}`}>
-                선택된 천체가 없습니다
-              </div>
-              <p className="text-[10.5px] tracking-[-0.04em] leading-relaxed break-keep">
-                성도 위의 별·행성·DSO를 클릭하면 좌표, 고도 곡선, 호핑 경로를 확인할 수 있습니다.
-              </p>
-            </div>
-          )
-        ) : activeTab === 'challenge' ? (
+        {activeTab === 'challenge' ? (
           <ChallengePanel
             tracks={challenges}
             theme={theme}
@@ -1975,7 +866,11 @@ export function ObjectInspector({
                         : theme === 'red'
                         ? 'bg-[#090101]'
                         : 'bg-slate-900/55'
-                      : '';
+                      : theme === 'white'
+                      ? 'bg-emerald-50/75 hover:bg-emerald-100/70'
+                      : theme === 'red'
+                      ? 'bg-[#190507] hover:bg-[#22070A]'
+                      : 'bg-emerald-500/10 hover:bg-emerald-500/15';
                     const titleColorClass = isBelowHorizon
                       ? theme === 'white'
                         ? 'text-slate-400'
@@ -2086,9 +981,15 @@ export function ObjectInspector({
                   };
 
                   if (!recommend25Active) {
+                    const tonightListContainerCls =
+                      theme === 'white'
+                        ? 'border-emerald-300/75 divide-emerald-200/80'
+                        : theme === 'red'
+                        ? 'border-[#6E1620] divide-[#4B0E16]'
+                        : 'border-emerald-500/30 divide-emerald-500/20';
                     return (
                       <div
-                        className={`border divide-y overflow-hidden ${ui.border} ${ui.divider}`}
+                        className={`border divide-y overflow-hidden ${tonightListContainerCls}`}
                         style={{ borderRadius: '6px' }}
                       >
                         {resolvedSessionItems.map((row) => renderTonightRow(row, false))}
@@ -2098,22 +999,28 @@ export function ObjectInspector({
 
                   const recCardBorder =
                     theme === 'white'
-                      ? 'border-blue-500/55'
+                      ? 'border-emerald-400/80'
                       : theme === 'red'
                       ? 'border-[#B91C1C]'
-                      : 'border-cyan-500/55';
+                      : 'border-emerald-400/55';
                   const recHeaderCls =
                     theme === 'white'
-                      ? 'bg-blue-50/90 text-blue-700 border-b border-blue-200'
+                      ? 'bg-emerald-100/90 text-emerald-800 border-b border-emerald-300/80'
                       : theme === 'red'
-                      ? 'bg-[#240505] text-[#FF5C5C] border-b border-[#5C1111]'
-                      : 'bg-cyan-950/45 text-cyan-300 border-b border-cyan-500/35';
+                      ? 'bg-[#26060A] text-[#FF5C5C] border-b border-[#6E1620]'
+                      : 'bg-emerald-500/20 text-emerald-300 border-b border-emerald-400/35';
+                  const lowCardBorder =
+                    theme === 'white'
+                      ? 'border-emerald-300/65'
+                      : theme === 'red'
+                      ? 'border-[#5C121A]'
+                      : 'border-emerald-500/25';
                   const lowHeaderCls =
                     theme === 'white'
-                      ? 'bg-slate-50 text-slate-600 border-b border-slate-200'
+                      ? 'bg-emerald-50 text-emerald-700 border-b border-emerald-200/80'
                       : theme === 'red'
-                      ? 'bg-[#150202] text-[#DC2626] border-b border-[#3F0A0A]'
-                      : 'bg-slate-800/40 text-slate-300 border-b border-slate-800/80';
+                      ? 'bg-[#190406] text-[#DC2626] border-b border-[#4B0E16]'
+                      : 'bg-emerald-950/55 text-emerald-200/85 border-b border-emerald-500/25';
                   const belowCardBorder =
                     theme === 'white'
                       ? 'border-slate-200'
@@ -2126,6 +1033,12 @@ export function ObjectInspector({
                       : theme === 'red'
                       ? 'bg-[#0E0101] text-[#7F1D1D] border-b border-[#3F0A0A]'
                       : 'bg-slate-900/85 text-slate-500 border-b border-slate-800/70';
+                  const emeraldDividerCls =
+                    theme === 'white'
+                      ? 'divide-emerald-200/80'
+                      : theme === 'red'
+                      ? 'divide-[#4B0E16]'
+                      : 'divide-emerald-500/20';
 
                   return (
                     <div className="space-y-2">
@@ -2161,7 +1074,7 @@ export function ObjectInspector({
                             </button>
                           </div>
                         ) : (
-                          <div className={`divide-y ${ui.divider}`}>
+                          <div className={`divide-y ${emeraldDividerCls}`}>
                             {groupedTonightItems.above25.map((row) => renderTonightRow(row, true))}
                           </div>
                         )}
@@ -2170,7 +1083,7 @@ export function ObjectInspector({
                       {/* Section 2: Low-altitude risen targets (0° ~ 25°) */}
                       {groupedTonightItems.lowAlt.length > 0 && (
                         <div
-                          className={`border overflow-hidden ${ui.border}`}
+                          className={`border overflow-hidden ${lowCardBorder}`}
                           style={{ borderRadius: '6px' }}
                         >
                           <div
@@ -2181,7 +1094,7 @@ export function ObjectInspector({
                               {groupedTonightItems.lowAlt.length}개
                             </span>
                           </div>
-                          <div className={`divide-y ${ui.divider}`}>
+                          <div className={`divide-y ${emeraldDividerCls}`}>
                             {groupedTonightItems.lowAlt.map((row) => renderTonightRow(row, false))}
                           </div>
                         </div>
@@ -2299,14 +1212,18 @@ export function ObjectInspector({
                     return (
                       <div
                         key={list.id}
-                        className={`border transition-colors ${
+                        className={`border transition-colors overflow-hidden ${
                           isTonight
                             ? theme === 'white'
-                              ? 'border-blue-500/70 bg-blue-50/40'
+                              ? 'border-emerald-500/80 bg-emerald-100/90'
                               : theme === 'red'
-                              ? 'border-red-500/70 bg-red-950/30'
-                              : 'border-cyan-500/60 bg-cyan-950/20'
-                            : ui.border
+                              ? 'border-red-500/80 bg-[#2C080C]'
+                              : 'border-emerald-400/65 bg-emerald-500/20'
+                            : theme === 'white'
+                            ? 'border-emerald-300/70 bg-emerald-50/75 hover:bg-emerald-100/55'
+                            : theme === 'red'
+                            ? 'border-[#6E1620] bg-[#1A0507] hover:bg-[#23070A]'
+                            : 'border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15'
                         }`}
                         style={{ borderRadius: '6px' }}
                       >
@@ -2522,7 +1439,11 @@ export function ObjectInspector({
                                       : theme === 'red'
                                       ? 'bg-[#090101]'
                                       : 'bg-slate-900/55'
-                                    : '';
+                                    : theme === 'white'
+                                    ? 'bg-white/65 hover:bg-emerald-50/90'
+                                    : theme === 'red'
+                                    ? 'bg-[#120305] hover:bg-[#1C0508]'
+                                    : 'bg-emerald-950/35 hover:bg-emerald-900/35';
                                   const titleColorClass = isBelowHorizon
                                     ? theme === 'white'
                                       ? 'text-slate-400'

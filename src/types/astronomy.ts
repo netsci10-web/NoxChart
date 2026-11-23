@@ -43,6 +43,11 @@ export interface DeepSkyObject {
   con: string; // Constellation IAU abbreviation
 }
 
+export interface CaldwellEntry extends DeepSkyObject {
+  caldwellNumber: number; // 1..109
+  caldwellId: string; // C1..C109
+}
+
 export interface NebulaContour {
   id: string;
   lv: 1 | 2 | 3; // Multi-level brightness contour (1=outer faint, 2=mid, 3=bright core)
@@ -176,6 +181,8 @@ export const DEFAULT_SENSOR_EXPORT_CAPTION: SensorExportCaptionConfig = {
   customNote: '',
 };
 
+export type OpticsLabelDirection = 'n' | 'ne' | 'e' | 'se' | 's' | 'sw' | 'w' | 'nw';
+
 export interface OpticsSettings {
   showCrosshair: boolean; // 중앙 십자선
   showTelrad: boolean; // 0.5°, 2°, 4° concentric circles
@@ -190,6 +197,10 @@ export interface OpticsSettings {
   telescopeFocalLengthMm: number; // 망원경 초점거리 (mm)
   eyepieceFocalLengthMm: number; // 아이피스 초점거리 (mm)
   eyepieceAfovDeg: number; // 아이피스 겉보기 시야각 (AFOV, °)
+  reticleLineWidth?: number; // 아이피스·파인더 시야연동 선 두께 (0.5..6.0 px)
+  reticleOpacity?: number; // 아이피스·파인더 시야연동 선 투명도 (0.1..1.0)
+  showReticleLabel?: boolean; // 연동 제목 표시 여부 (예: 파인더(7°), 아이피스(1.7°))
+  reticleLabelDirection?: OpticsLabelDirection; // 연동 제목 8방향 위치
   showSensorBox: boolean;
   sensorWidthDeg: number;
   sensorHeightDeg: number;
@@ -487,6 +498,10 @@ export interface AsterismObject {
   memo?: string;
   /** Legacy optional recommended eyepiece tag */
   eyepieceTag?: string;
+  /** Optional linked optical title rendered on circle rim (e.g. "파인더(7°)", "아이피스(1.7°)") */
+  linkedTitle?: string;
+  /** 8-direction rim placement for linkedTitle */
+  linkedTitleDirection?: OpticsLabelDirection;
   /** Legacy upright label anchor */
   labelAnchor: AsterismLabelAnchor;
   createdAt: number;
