@@ -3614,11 +3614,21 @@ export default function App() {
 
   const handleToggleAsterismGroupVisible = useCallback((asterismId: string) => {
     setAsterismStore((prev) => {
+      const target = prev.asterisms.find((g) => g.id === asterismId);
+      if (!target) return prev;
+      const nextAsterisms = prev.asterisms.map((g) =>
+        g.id === asterismId ? { ...g, visible: !g.visible } : g
+      );
+      const anySiblingVisible = nextAsterisms.some(
+        (g) => g.layerId === target.layerId && g.visible
+      );
+      const nextLayers = prev.layers.map((l) =>
+        l.id === target.layerId ? { ...l, visible: anySiblingVisible } : l
+      );
       const next: AsterismStoreState = {
         ...prev,
-        asterisms: prev.asterisms.map((g) =>
-          g.id === asterismId ? { ...g, visible: !g.visible } : g
-        ),
+        layers: nextLayers,
+        asterisms: nextAsterisms,
       };
       asterismStoreRef.current = next;
       return next;
@@ -4031,10 +4041,21 @@ export default function App() {
 
   const handleToggleAsterismLayerVisible = useCallback((layerId: string) => {
     setAsterismStore((prev) => {
+      const targetLayer = prev.layers.find((l) => l.id === layerId);
+      if (!targetLayer) return prev;
+      const layerAsterisms = prev.asterisms.filter((g) => g.layerId === layerId);
+      const allGroupVisible =
+        layerAsterisms.length > 0
+          ? targetLayer.visible && layerAsterisms.every((g) => g.visible)
+          : targetLayer.visible;
+      const nextVisible = !allGroupVisible;
       const next: AsterismStoreState = {
         ...prev,
         layers: prev.layers.map((l) =>
-          l.id === layerId ? { ...l, visible: !l.visible } : l
+          l.id === layerId ? { ...l, visible: nextVisible } : l
+        ),
+        asterisms: prev.asterisms.map((g) =>
+          g.layerId === layerId ? { ...g, visible: nextVisible } : g
         ),
       };
       asterismStoreRef.current = next;
@@ -4047,6 +4068,7 @@ export default function App() {
       const next: AsterismStoreState = {
         ...prev,
         layers: prev.layers.map((l) => ({ ...l, visible })),
+        asterisms: prev.asterisms.map((g) => ({ ...g, visible })),
       };
       asterismStoreRef.current = next;
       return next;

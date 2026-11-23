@@ -1,4 +1,4 @@
-import React, { useMemo, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   BookmarkPlus,
   ChevronDown,
@@ -195,6 +195,27 @@ const HIPS_SURVEY_OPTIONS: { id: HipsSurveyId; label: string }[] = [
   { id: 'allwise', label: 'AllWISE' },
 ];
 
+const SIDEBAR_OPEN_SECTIONS_STORAGE_KEY = 'noxchart_sidebar_open_sections_v1';
+
+function loadSavedOpenSections(): Record<string, boolean> {
+  try {
+    const raw = localStorage.getItem(SIDEBAR_OPEN_SECTIONS_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as unknown;
+      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+        const res: Record<string, boolean> = {};
+        for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+          if (typeof v === 'boolean') res[k] = v;
+        }
+        return res;
+      }
+    }
+  } catch {
+    // Ignore storage parse failure
+  }
+  return {};
+}
+
 export function ControlSidebar({
   view,
   theme,
@@ -246,16 +267,24 @@ export function ControlSidebar({
   const [quickSiteNote, setQuickSiteNote] = useState('');
   const [siteStatusMsg, setSiteStatusMsg] = useState<string | null>(null);
   const [layerStatusMsg, setLayerStatusMsg] = useState<string | null>(null);
-  const [collapsedSections, setCollapsedSections] = useState<Record<string, boolean>>({});
+  const [openSections, setOpenSections] = useState<Record<string, boolean>>(loadSavedOpenSections);
   const siteFileInputRef = useRef<HTMLInputElement>(null);
   const layerFileInputRef = useRef<HTMLInputElement>(null);
   const ui = getUiTheme(theme);
 
-  const isSectionOpen = (id: string) => !collapsedSections[id];
+  useEffect(() => {
+    try {
+      localStorage.setItem(SIDEBAR_OPEN_SECTIONS_STORAGE_KEY, JSON.stringify(openSections));
+    } catch {
+      // Ignore storage write failure
+    }
+  }, [openSections]);
+
+  const isSectionOpen = (id: string) => Boolean(openSections[id]);
   const toggleSection = (id: string) =>
-    setCollapsedSections((prev) => ({ ...prev, [id]: !prev[id] }));
+    setOpenSections((prev) => ({ ...prev, [id]: !prev[id] }));
   const openSection = (id: string) =>
-    setCollapsedSections((prev) => (prev[id] ? { ...prev, [id]: false } : prev));
+    setOpenSections((prev) => (prev[id] ? prev : { ...prev, [id]: true }));
 
   const showSiteNotice = (msg: string) => {
     setSiteStatusMsg(msg);
@@ -3417,6 +3446,8 @@ export function ControlSidebar({
               <EquipmentLockerPanel
                 theme={theme}
                 locker={equipmentLocker}
+                isOpen={isSectionOpen('optics_equipment')}
+                onToggleOpen={() => toggleSection('optics_equipment')}
                 onAddOrUpdateItem={onAddOrUpdateEquipment}
                 onDeleteItem={onDeleteEquipment}
                 onToggleActiveItem={onToggleActiveEquipment}

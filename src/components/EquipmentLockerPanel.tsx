@@ -35,6 +35,8 @@ import { getUiTheme } from '../utils/themeClasses';
 interface EquipmentLockerPanelProps {
   theme: ThemeMode;
   locker: EquipmentLockerState;
+  isOpen?: boolean;
+  onToggleOpen?: () => void;
   onAddOrUpdateItem: (item: EquipmentItem) => void;
   onDeleteItem: (id: string) => void | Promise<boolean>;
   onToggleActiveItem: (category: EquipmentCategory, id: string) => void;
@@ -243,6 +245,8 @@ function formatItemSpec(item: EquipmentItem): string {
 export function EquipmentLockerPanel({
   theme,
   locker,
+  isOpen,
+  onToggleOpen,
   onAddOrUpdateItem,
   onDeleteItem,
   onToggleActiveItem,
@@ -250,7 +254,15 @@ export function EquipmentLockerPanel({
 }: EquipmentLockerPanelProps) {
   const ui = getUiTheme(theme);
   const [activeTab, setActiveTab] = useState<EquipmentCategory>('telescope');
-  const [panelOpen, setPanelOpen] = useState(true);
+  const [internalOpen, setInternalOpen] = useState(false);
+  const panelOpen = isOpen !== undefined ? isOpen : internalOpen;
+  const handleTogglePanelOpen = () => {
+    if (onToggleOpen) {
+      onToggleOpen();
+    } else {
+      setInternalOpen((o) => !o);
+    }
+  };
   const [formOpen, setFormOpen] = useState(false);
   const [registerMode, setRegisterMode] = useState<'preset' | 'custom'>('preset');
   const [cameraPresetFilter, setCameraPresetFilter] = useState<'all' | 'smart' | 'standard'>('all');
@@ -512,7 +524,7 @@ export function EquipmentLockerPanel({
       <div className="flex items-center justify-between gap-1">
         <button
           type="button"
-          onClick={() => setPanelOpen((o) => !o)}
+          onClick={handleTogglePanelOpen}
           aria-expanded={panelOpen}
           className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
         >

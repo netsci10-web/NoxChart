@@ -181,8 +181,41 @@ export function ChallengePanel({
   const [expandedCpId, setExpandedCpId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ChallengeTrack | null>(null);
-  const [settingsOpen, setSettingsOpen] = useState(true);
-  const [tourListExpanded, setTourListExpanded] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem('noxchart_challenge_collapse_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (typeof parsed.settingsOpen === 'boolean') return parsed.settingsOpen;
+      }
+    } catch {
+      // Ignore storage parse failure
+    }
+    return false;
+  });
+  const [tourListExpanded, setTourListExpanded] = useState<boolean>(() => {
+    try {
+      const raw = localStorage.getItem('noxchart_challenge_collapse_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw) as Record<string, unknown>;
+        if (typeof parsed.tourListExpanded === 'boolean') return parsed.tourListExpanded;
+      }
+    } catch {
+      // Ignore storage parse failure
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'noxchart_challenge_collapse_v1',
+        JSON.stringify({ settingsOpen, tourListExpanded })
+      );
+    } catch {
+      // Ignore storage write failure
+    }
+  }, [settingsOpen, tourListExpanded]);
   const [excludedTourStopIds, setExcludedTourStopIds] = useState<Set<string>>(() => new Set());
 
   const selectedTonightStops = useMemo(

@@ -329,7 +329,24 @@ export function ObjectInspector({
   const [newListName, setNewListName] = useState('');
   const [renamingListId, setRenamingListId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
-  const [expandedListIds, setExpandedListIds] = useState<Record<string, boolean>>({});
+  const [expandedListIds, setExpandedListIds] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem('noxchart_observing_lists_collapse_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          const res: Record<string, boolean> = {};
+          for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
+            if (typeof v === 'boolean') res[k] = v;
+          }
+          return res;
+        }
+      }
+    } catch {
+      // Ignore storage parse failure
+    }
+    return {};
+  });
   const [detailTargetListId, setDetailTargetListId] = useState<string>('__tonight__');
   const [recommend25Active, setRecommend25Active] = useState(false);
   const [detailLogDraft, setDetailLogDraft] = useState<{
@@ -341,6 +358,14 @@ export function ObjectInspector({
     rating: number;
     notes: string;
   } | null>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('noxchart_observing_lists_collapse_v1', JSON.stringify(expandedListIds));
+    } catch {
+      // Ignore storage write failure
+    }
+  }, [expandedListIds]);
 
   useEffect(() => {
     setDetailLogDraft(null);

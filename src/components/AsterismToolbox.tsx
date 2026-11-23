@@ -1043,9 +1043,9 @@ export function AsterismToolbox({
                       <div className="grid grid-cols-3 gap-1">
                         {(
                           [
+                            ['solid', '실선'],
                             ['dashed', '점선'],
                             ['dashdot', '일점쇄선'],
-                            ['solid', '실선'],
                           ] as [AsterismLineStyle, string][]
                         ).map(([st, lbl]) => (
                           <button
@@ -1386,8 +1386,25 @@ export function AsterismToolbox({
                   )}
 
                   {/* Tool-specific & Default Drawing Style Settings */}
-                  <div className={`pt-2.5 border-t space-y-2 ${ui.divider}`}>
-                    <div className={`text-[10px] font-semibold ${ui.textSecondary}`}>
+                  <div
+                    className={`p-2.5 border space-y-2 ${
+                      theme === 'white'
+                        ? 'bg-sky-50/90 border-sky-200'
+                        : theme === 'red'
+                        ? 'bg-[#1D0404] border-[#5A1414]'
+                        : 'bg-[#0B2030]/90 border-[#1C4866]'
+                    }`}
+                    style={{ borderRadius: '6px' }}
+                  >
+                    <div
+                      className={`text-[10.5px] font-semibold ${
+                        theme === 'white'
+                          ? 'text-sky-900'
+                          : theme === 'red'
+                          ? 'text-[#FCA5A5]'
+                          : 'text-cyan-300'
+                      }`}
+                    >
                       새 도형 기본 작도 속성
                     </div>
 
@@ -1493,9 +1510,9 @@ export function AsterismToolbox({
                     <div className="grid grid-cols-3 gap-1">
                       {(
                         [
+                          ['solid', '실선'],
                           ['dashed', '점선'],
                           ['dashdot', '일점쇄선'],
-                          ['solid', '실선'],
                         ] as [AsterismLineStyle, string][]
                       ).map(([st, lbl]) => (
                         <button
@@ -1605,12 +1622,13 @@ export function AsterismToolbox({
                         className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
                       />
                     </div>
+                  </div>
 
-                    {/* Magnetic Snap Settings */}
-                    <div className={`pt-2 border-t space-y-1.5 ${ui.divider}`}>
-                      <div className={`text-[10px] font-semibold ${ui.textSecondary}`}>
-                        별 자석 스냅 설정
-                      </div>
+                  {/* Magnetic Snap Settings */}
+                  <div className={`pt-2 border-t space-y-1.5 ${ui.divider}`}>
+                    <div className={`text-[10px] font-semibold ${ui.textSecondary}`}>
+                      별 자석 스냅 설정
+                    </div>
                       <label className="flex items-center justify-between cursor-pointer text-[10px]">
                         <span className={ui.textMuted}>항성·DSO 자동 스냅</span>
                         <input
@@ -1662,7 +1680,6 @@ export function AsterismToolbox({
                         </div>
                       </div>
                     </div>
-                  </div>
                 </div>
               )}
             </div>

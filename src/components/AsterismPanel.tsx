@@ -99,11 +99,61 @@ export function AsterismPanel({
   const [renameLayerDraft, setRenameLayerDraft] = useState('');
   const [renamingAsterismId, setRenamingAsterismId] = useState<string | null>(null);
   const [renameAsterismDraft, setRenameAsterismDraft] = useState('');
-  const [collapsedLayers, setCollapsedLayers] = useState<Record<string, boolean>>({});
-  const [collapsedAsterisms, setCollapsedAsterisms] = useState<Record<string, boolean>>({});
-  const [expandedShapeIds, setExpandedShapeIds] = useState<Record<string, boolean>>({});
+  const [openLayers, setOpenLayers] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem('noxchart_asterism_collapse_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw) as { openLayers?: Record<string, boolean> };
+        if (parsed.openLayers && typeof parsed.openLayers === 'object') {
+          return parsed.openLayers;
+        }
+      }
+    } catch {
+      // Ignore storage parse failure
+    }
+    return {};
+  });
+  const [openAsterisms, setOpenAsterisms] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem('noxchart_asterism_collapse_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw) as { openAsterisms?: Record<string, boolean> };
+        if (parsed.openAsterisms && typeof parsed.openAsterisms === 'object') {
+          return parsed.openAsterisms;
+        }
+      }
+    } catch {
+      // Ignore storage parse failure
+    }
+    return {};
+  });
+  const [expandedShapeIds, setExpandedShapeIds] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem('noxchart_asterism_collapse_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw) as { expandedShapeIds?: Record<string, boolean> };
+        if (parsed.expandedShapeIds && typeof parsed.expandedShapeIds === 'object') {
+          return parsed.expandedShapeIds;
+        }
+      }
+    } catch {
+      // Ignore storage parse failure
+    }
+    return {};
+  });
   const [notice, setNotice] = useState<string | null>(null);
   const importInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'noxchart_asterism_collapse_v1',
+        JSON.stringify({ openLayers, openAsterisms, expandedShapeIds })
+      );
+    } catch {
+      // Ignore storage write failure
+    }
+  }, [openLayers, openAsterisms, expandedShapeIds]);
 
   useEffect(() => {
     if (!notice) return;
@@ -111,10 +161,12 @@ export function AsterismPanel({
     return () => window.clearTimeout(t);
   }, [notice]);
 
-  const visibleLayerCount = store.layers.filter((l) => l.visible).length;
   const allLayersVisible =
-    store.layers.length > 0 && visibleLayerCount === store.layers.length;
-  const anyLayerVisible = visibleLayerCount > 0;
+    store.layers.length > 0 &&
+    store.layers.every((l) => l.visible) &&
+    store.asterisms.every((g) => g.visible);
+  const anyLayerVisible =
+    store.layers.some((l) => l.visible) || store.asterisms.some((g) => g.visible);
 
   const handleCreateLayerSubmit = () => {
     const trimmed = newLayerName.trim();
@@ -254,16 +306,16 @@ export function AsterismPanel({
       {/* Hierarchy Section: 그룹 > 성군 > 도형 요소들 */}
       <div className="space-y-1.5">
         <div className="flex items-center justify-between gap-1">
-          <span className={`text-[10.5px] font-semibold ${ui.textSecondary}`}>
-            그룹 · 성군 · 도형 ({store.asterisms.length}성군 / {store.objects.length}도형)
+          <span className={`text-[10.5px] font-semibold whitespace-nowrap ${ui.textSecondary}`}>
+            성군({store.asterisms.length})
           </span>
-          <div className="flex items-center gap-1">
+          <div className="flex items-center gap-1 shrink-0">
             <button
               type="button"
               onClick={() => onSetAllLayersVisible(true)}
               disabled={allLayersVisible}
               title="모든 그룹 표시"
-              className={`px-1.5 py-0.5 border text-[9.5px] ${
+              className={`px-1.5 py-0.5 border text-[9.5px] whitespace-nowrap shrink-0 ${
                 allLayersVisible ? `${ui.buttonIdle} opacity-40 cursor-not-allowed` : ui.buttonIdle
               }`}
               style={{ borderRadius: '4px' }}
@@ -275,7 +327,7 @@ export function AsterismPanel({
               onClick={() => onSetAllLayersVisible(false)}
               disabled={!anyLayerVisible}
               title="모든 그룹 숨기기"
-              className={`px-1.5 py-0.5 border text-[9.5px] ${
+              className={`px-1.5 py-0.5 border text-[9.5px] whitespace-nowrap shrink-0 ${
                 !anyLayerVisible ? `${ui.buttonIdle} opacity-40 cursor-not-allowed` : ui.buttonIdle
               }`}
               style={{ borderRadius: '4px' }}
@@ -286,7 +338,7 @@ export function AsterismPanel({
               type="button"
               onClick={() => setShowAddLayer((v) => !v)}
               title="새 그룹 추가"
-              className={`p-1 border ${showAddLayer ? ui.buttonActive : ui.buttonIdle}`}
+              className={`p-1 border shrink-0 ${showAddLayer ? ui.buttonActive : ui.buttonIdle}`}
               style={{ borderRadius: '4px' }}
             >
               <FolderPlus className="w-3 h-3" />
@@ -326,7 +378,32 @@ export function AsterismPanel({
             const layerAsterisms = store.asterisms.filter((g) => g.layerId === layer.id);
             const isActiveLayer = store.activeLayerId === layer.id;
             const isRenamingLayer = renamingLayerId === layer.id;
-            const isLayerCollapsed = Boolean(collapsedLayers[layer.id]);
+            const isLayerCollapsed = !openLayers[layer.id];
+            const visibleAsterismCount = layerAsterisms.filter((g) => g.visible).length;
+            const groupVisState: 'all' | 'partial' | 'none' =
+              layerAsterisms.length === 0
+                ? layer.visible
+                  ? 'all'
+                  : 'none'
+                : !layer.visible || visibleAsterismCount === 0
+                ? 'none'
+                : visibleAsterismCount === layerAsterisms.length
+                ? 'all'
+                : 'partial';
+            const groupEyeColorCls =
+              groupVisState === 'all'
+                ? theme === 'white'
+                  ? 'text-sky-600'
+                  : theme === 'red'
+                  ? 'text-[#FF4D4D]'
+                  : 'text-cyan-400'
+                : groupVisState === 'partial'
+                ? theme === 'white'
+                  ? 'text-sky-300'
+                  : theme === 'red'
+                  ? 'text-[#FCA5A5]/45'
+                  : 'text-cyan-400/40'
+                : ui.textMuted;
 
             return (
               <div
@@ -341,7 +418,7 @@ export function AsterismPanel({
                   <button
                     type="button"
                     onClick={() =>
-                      setCollapsedLayers((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }))
+                      setOpenLayers((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }))
                     }
                     className={`p-0.5 shrink-0 ${ui.textMuted}`}
                     aria-label="그룹 펼치기/접기"
@@ -356,13 +433,22 @@ export function AsterismPanel({
                   <button
                     type="button"
                     onClick={() => onToggleLayerVisible(layer.id)}
-                    title={layer.visible ? '그룹 숨기기' : '그룹 표시'}
-                    className={`p-0.5 shrink-0 ${layer.visible ? ui.accentText : ui.textMuted}`}
+                    title={
+                      groupVisState === 'all'
+                        ? '그룹 전체 숨기기'
+                        : groupVisState === 'partial'
+                        ? '일부 성군 표시 중 · 클릭하여 그룹 전체 표시'
+                        : '그룹 전체 표시'
+                    }
+                    className={`p-0.5 shrink-0 transition-colors ${groupEyeColorCls}`}
                   >
-                    {layer.visible ? (
-                      <Eye className="w-3.5 h-3.5" />
-                    ) : (
+                    {groupVisState === 'none' ? (
                       <EyeOff className="w-3.5 h-3.5 opacity-50" />
+                    ) : (
+                      <Eye
+                        className="w-3.5 h-3.5"
+                        strokeWidth={groupVisState === 'all' ? 2.4 : 1.8}
+                      />
                     )}
                   </button>
 
@@ -424,7 +510,7 @@ export function AsterismPanel({
                     type="button"
                     onClick={() => {
                       onCreateAsterismGroup(undefined, layer.id);
-                      setCollapsedLayers((prev) => ({ ...prev, [layer.id]: false }));
+                      setOpenLayers((prev) => ({ ...prev, [layer.id]: true }));
                     }}
                     title="이 그룹에 새 성군 추가"
                     className={`p-0.5 ${ui.textMuted} hover:opacity-100 shrink-0`}
@@ -462,7 +548,7 @@ export function AsterismPanel({
                     {layerAsterisms.map((grp) => {
                       const shapes = store.objects.filter((o) => o.asterismId === grp.id);
                       const isActiveGrp = store.activeAsterismId === grp.id;
-                      const isGrpCollapsed = Boolean(collapsedAsterisms[grp.id]);
+                      const isGrpCollapsed = !openAsterisms[grp.id];
                       const isRenamingGrp = renamingAsterismId === grp.id;
 
                       return (
@@ -478,7 +564,7 @@ export function AsterismPanel({
                             <button
                               type="button"
                               onClick={() =>
-                                setCollapsedAsterisms((prev) => ({
+                                setOpenAsterisms((prev) => ({
                                   ...prev,
                                   [grp.id]: !prev[grp.id],
                                 }))
