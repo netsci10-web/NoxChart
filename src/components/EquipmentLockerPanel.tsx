@@ -44,6 +44,7 @@ interface EquipmentLockerPanelProps {
 const CATEGORY_TABS: { id: EquipmentCategory; label: string }[] = [
   { id: 'telescope', label: '경통' },
   { id: 'eyepiece', label: '아이피스' },
+  { id: 'finder', label: '파인더' },
   { id: 'barlow', label: '바로우' },
   { id: 'filter', label: '필터' },
   { id: 'camera', label: '카메라' },
@@ -57,6 +58,8 @@ interface FormDraft {
   focalLengthMm: string;
   opticalType: TelescopeOpticalType;
   afovDeg: string;
+  magnification: string;
+  fovDeg: string;
   factor: string;
   filterType: string;
   sensorWidthMm: string;
@@ -71,10 +74,12 @@ function createEmptyDraft(category: EquipmentCategory): FormDraft {
     id: null,
     name: '',
     note: '',
-    apertureMm: category === 'telescope' ? '102' : '',
+    apertureMm: category === 'telescope' ? '102' : category === 'finder' ? '50' : '',
     focalLengthMm: category === 'telescope' ? '714' : category === 'eyepiece' ? '25' : '',
     opticalType: '굴절',
     afovDeg: category === 'eyepiece' ? '68' : '',
+    magnification: category === 'finder' ? '7' : '',
+    fovDeg: category === 'finder' ? '7.0' : '',
     factor: category === 'barlow' ? '2.0' : '',
     filterType: category === 'filter' ? 'UHC' : '',
     sensorWidthMm: category === 'camera' ? '11.3' : '',
@@ -94,6 +99,8 @@ function itemToDraft(item: EquipmentItem): FormDraft {
     focalLengthMm: item.focalLengthMm !== undefined ? String(item.focalLengthMm) : '',
     opticalType: normalizeTelescopeOpticalType(item.opticalType),
     afovDeg: item.afovDeg !== undefined ? String(item.afovDeg) : '',
+    magnification: item.magnification !== undefined ? String(item.magnification) : '',
+    fovDeg: item.fovDeg !== undefined ? String(item.fovDeg) : '',
     factor: item.factor !== undefined ? String(item.factor) : '',
     filterType: item.filterType ?? '',
     sensorWidthMm: item.sensorWidthMm !== undefined ? String(item.sensorWidthMm) : '',
@@ -113,6 +120,8 @@ function presetToDraft(preset: EquipmentPreset): FormDraft {
     focalLengthMm: preset.focalLengthMm !== undefined ? String(preset.focalLengthMm) : '',
     opticalType: preset.opticalType ?? '굴절',
     afovDeg: preset.afovDeg !== undefined ? String(preset.afovDeg) : '',
+    magnification: preset.magnification !== undefined ? String(preset.magnification) : '',
+    fovDeg: preset.fovDeg !== undefined ? String(preset.fovDeg) : '',
     factor: preset.factor !== undefined ? String(preset.factor) : '',
     filterType: preset.filterType ?? '',
     sensorWidthMm: preset.sensorWidthMm !== undefined ? String(preset.sensorWidthMm) : '',
@@ -137,6 +146,18 @@ function formatPresetSpec(preset: EquipmentPreset): string {
     }
     case 'eyepiece':
       return `${preset.focalLengthMm ?? ''}mm · ${preset.afovDeg ?? ''}°`;
+    case 'finder': {
+      const parts: string[] = [];
+      if (preset.magnification && preset.apertureMm) {
+        parts.push(`${preset.magnification}×${preset.apertureMm}`);
+      } else if (preset.magnification) {
+        parts.push(`${preset.magnification}×`);
+      } else if (preset.apertureMm) {
+        parts.push(`D${preset.apertureMm}mm`);
+      }
+      if (preset.fovDeg) parts.push(`${preset.fovDeg.toFixed(1)}°`);
+      return parts.join(' · ') || '파인더';
+    }
     case 'barlow':
       return preset.factor
         ? `${preset.factor}× (${preset.factor < 1 ? '리듀서' : '바로우'})`
@@ -182,6 +203,18 @@ function formatItemSpec(item: EquipmentItem): string {
       if (item.focalLengthMm) parts.push(`${item.focalLengthMm}mm`);
       if (item.afovDeg) parts.push(`${item.afovDeg}°`);
       return parts.join(' · ') || '아이피스';
+    }
+    case 'finder': {
+      const parts: string[] = [];
+      if (item.magnification && item.apertureMm) {
+        parts.push(`${item.magnification}×${item.apertureMm}`);
+      } else if (item.magnification) {
+        parts.push(`${item.magnification}×`);
+      } else if (item.apertureMm) {
+        parts.push(`D${item.apertureMm}mm`);
+      }
+      if (item.fovDeg) parts.push(`${item.fovDeg.toFixed(1)}°`);
+      return parts.join(' · ') || '파인더';
     }
     case 'barlow': {
       if (item.factor) {
@@ -277,6 +310,7 @@ export function EquipmentLockerPanel({
     const byId = new Map(locker.items.map((it) => [it.id, it]));
     const telescope = locker.activeIds.telescope ? byId.get(locker.activeIds.telescope) : undefined;
     const eyepiece = locker.activeIds.eyepiece ? byId.get(locker.activeIds.eyepiece) : undefined;
+    const finder = locker.activeIds.finder ? byId.get(locker.activeIds.finder) : undefined;
     const barlow = locker.activeIds.barlow ? byId.get(locker.activeIds.barlow) : undefined;
     const filter = locker.activeIds.filter ? byId.get(locker.activeIds.filter) : undefined;
     const camera = locker.activeIds.camera ? byId.get(locker.activeIds.camera) : undefined;
@@ -299,7 +333,20 @@ export function EquipmentLockerPanel({
         ? 2 * Math.atan(camera.sensorHeightMm / (2 * camEffFl)) * RAD2DEG
         : null;
 
-    return { telescope, eyepiece, barlow, filter, camera, factor, effFl, mag, tfov, camW, camH };
+    return {
+      telescope,
+      eyepiece,
+      finder,
+      barlow,
+      filter,
+      camera,
+      factor,
+      effFl,
+      mag,
+      tfov,
+      camW,
+      camH,
+    };
   }, [locker]);
 
   const handleTabSwitch = (nextTab: EquipmentCategory) => {
@@ -343,6 +390,8 @@ export function EquipmentLockerPanel({
       focalLengthMm: selectedPreset.focalLengthMm,
       opticalType: selectedPreset.opticalType,
       afovDeg: selectedPreset.afovDeg,
+      magnification: selectedPreset.magnification,
+      fovDeg: selectedPreset.fovDeg,
       factor: selectedPreset.factor,
       filterType: selectedPreset.filterType,
       sensorWidthMm: selectedPreset.sensorWidthMm,
@@ -386,6 +435,10 @@ export function EquipmentLockerPanel({
     } else if (activeTab === 'eyepiece') {
       item.focalLengthMm = parsePos(draft.focalLengthMm);
       item.afovDeg = parsePos(draft.afovDeg);
+    } else if (activeTab === 'finder') {
+      item.magnification = parsePos(draft.magnification);
+      item.apertureMm = parsePos(draft.apertureMm);
+      item.fovDeg = parsePos(draft.fovDeg) ?? 7.0;
     } else if (activeTab === 'barlow') {
       item.factor = parsePos(draft.factor) ?? 2.0;
     } else if (activeTab === 'filter') {
@@ -447,6 +500,7 @@ export function EquipmentLockerPanel({
   const hasAnyActive = Boolean(
     activeRig.telescope ||
       activeRig.eyepiece ||
+      activeRig.finder ||
       activeRig.barlow ||
       activeRig.filter ||
       activeRig.camera
@@ -511,8 +565,8 @@ export function EquipmentLockerPanel({
         </div>
       )}
 
-      {/* 5 Equipment Category Tabs */}
-      <div className="grid grid-cols-5 gap-0.5">
+      {/* 6 Equipment Category Tabs */}
+      <div className="grid grid-cols-3 gap-1">
         {CATEGORY_TABS.map((cat) => {
           const isCurrent = activeTab === cat.id;
           const hasSelected = Boolean(locker.activeIds[cat.id]);
@@ -521,7 +575,7 @@ export function EquipmentLockerPanel({
               key={cat.id}
               type="button"
               onClick={() => handleTabSwitch(cat.id)}
-              className={`relative py-1 px-0.5 border text-[9.5px] tracking-[-0.06em] font-medium whitespace-nowrap transition-colors ${
+              className={`relative py-1 px-1 border text-[9.5px] tracking-[-0.06em] font-medium whitespace-nowrap transition-colors ${
                 isCurrent ? ui.buttonActive : ui.buttonIdle
               }`}
               style={{ borderRadius: '4px' }}
@@ -562,17 +616,23 @@ export function EquipmentLockerPanel({
               activeRig.telescope?.name,
               activeRig.barlow?.name,
               activeRig.eyepiece?.name,
+              activeRig.finder?.name,
               activeRig.camera?.name,
               activeRig.filter?.name,
             ]
               .filter(Boolean)
               .join(' + ')}
           </div>
-          {(activeRig.mag || activeRig.camW) && (
+          {(activeRig.mag || activeRig.camW || activeRig.finder?.fovDeg) && (
             <div className={`flex flex-wrap items-center gap-x-2 gap-y-0.5 font-mono tabular-nums ${ui.textMuted}`}>
               {activeRig.mag && activeRig.tfov && (
                 <span>
                   안시 {activeRig.mag.toFixed(0)}× · {activeRig.tfov.toFixed(2)}°
+                </span>
+              )}
+              {activeRig.finder?.fovDeg && (
+                <span>
+                  파인더 {activeRig.finder.fovDeg.toFixed(1)}°
                 </span>
               )}
               {activeRig.camW && activeRig.camH && (
@@ -829,7 +889,11 @@ export function EquipmentLockerPanel({
             <form onSubmit={handleSaveForm} className="space-y-1.5">
               <input
                 type="text"
-                placeholder="장비명 (예: 102mm F7 ED)"
+                placeholder={
+                  activeTab === 'finder'
+                    ? '장비명 (예: 9×50 RACI 파인더)'
+                    : '장비명 (예: 102mm F7 ED)'
+                }
                 value={draft.name}
                 onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
                 className={`w-full px-2 py-1 border text-[10.5px] ${ui.input}`}
@@ -912,6 +976,50 @@ export function EquipmentLockerPanel({
                       value={draft.afovDeg}
                       onChange={(e) => setDraft((d) => ({ ...d, afovDeg: e.target.value }))}
                       className={`w-full px-1.5 py-1 border font-mono text-[10.5px] ${ui.input}`}
+                      style={{ borderRadius: '4px' }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {activeTab === 'finder' && (
+                <div className="grid grid-cols-3 gap-1">
+                  <div>
+                    <label className={`block text-[9.5px] mb-0.5 ${ui.textMuted}`}>배율 (×)</label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={30}
+                      step={0.5}
+                      value={draft.magnification}
+                      onChange={(e) => setDraft((d) => ({ ...d, magnification: e.target.value }))}
+                      className={`w-full px-1 py-1 border font-mono text-[10px] ${ui.input}`}
+                      style={{ borderRadius: '4px' }}
+                    />
+                  </div>
+                  <div>
+                    <label className={`block text-[9.5px] mb-0.5 ${ui.textMuted}`}>구경 (mm)</label>
+                    <input
+                      type="number"
+                      min={15}
+                      max={150}
+                      step={1}
+                      value={draft.apertureMm}
+                      onChange={(e) => setDraft((d) => ({ ...d, apertureMm: e.target.value }))}
+                      className={`w-full px-1 py-1 border font-mono text-[10px] ${ui.input}`}
+                      style={{ borderRadius: '4px' }}
+                    />
+                  </div>
+                  <div>
+                    <label className={`block text-[9.5px] mb-0.5 ${ui.textMuted}`}>시야각 (°)</label>
+                    <input
+                      type="number"
+                      min={0.5}
+                      max={25}
+                      step={0.1}
+                      value={draft.fovDeg}
+                      onChange={(e) => setDraft((d) => ({ ...d, fovDeg: e.target.value }))}
+                      className={`w-full px-1 py-1 border font-mono text-[10px] ${ui.input}`}
                       style={{ borderRadius: '4px' }}
                     />
                   </div>

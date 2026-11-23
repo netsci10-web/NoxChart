@@ -3,7 +3,6 @@ import {
   Crosshair,
   FlipHorizontal2,
   FlipVertical2,
-  Globe,
   MapPin,
   Minus,
   Plus,
@@ -14,10 +13,12 @@ import { CatalogSnapshot, GAIA_LIVE_MAX_FSZ } from '../data/catalogLoader';
 import { DSO_CATALOG } from '../data/dso';
 import {
   AsterismDraftState,
+  AsterismGroup,
   AsterismObject,
   AsterismSnapPreview,
   AsterismStoreState,
   AsterismTool,
+  AsterismToolboxPopover,
   AsterismVertex,
   ChallengeTrack,
   ChartViewState,
@@ -107,17 +108,22 @@ interface StarChartCanvasProps {
   asterismMode: boolean;
   asterismStore: AsterismStoreState;
   asterismTool: AsterismTool;
+  asterismPopover: AsterismToolboxPopover;
   asterismSelectedId: string | null;
   asterismDraft: AsterismDraftState | null;
   asterismCanUndo: boolean;
   asterismCanRedo: boolean;
   onChangeAsterismTool: (tool: AsterismTool) => void;
+  onChangeAsterismPopover: (next: AsterismToolboxPopover) => void;
+  onOpenAsterismShapeProps: (asterismId: string, objectId: string) => void;
   onSelectAsterism: (id: string | null) => void;
   onAddAsterismDraftPoint: (vertex: AsterismVertex) => void;
   onFinishAsterismDraft: () => void;
   onUndoAsterismDraftPoint: () => void;
   onCancelAsterismDraft: () => void;
   onCreateAsterismLabel: (vertex: AsterismVertex) => void;
+  onCreateAsterismCircle: (center: AsterismVertex, radiusDeg: number) => void;
+  onStartNewAsterismFromStar: (vertex: AsterismVertex) => void;
   onMoveAsterismVertex: (objectId: string, vertexIndex: number, vertex: AsterismVertex) => void;
   onInsertAsterismVertex: (objectId: string, segmentIndex: number, vertex: AsterismVertex) => void;
   onDeleteAsterismVertex: (objectId: string, vertexIndex: number) => void;
@@ -133,12 +139,19 @@ interface StarChartCanvasProps {
   onCreateAsterismLayer: (name: string) => void;
   onRenameAsterismLayer: (layerId: string, name: string) => void;
   onDeleteAsterismLayer: (layerId: string) => void;
+  onSetActiveAsterism: (asterismId: string | null) => void;
+  onCreateAsterismGroup: (name?: string) => string;
+  onUpdateAsterismGroup: (asterismId: string, patch: Partial<AsterismGroup>) => void;
+  onDeleteAsterismGroup: (asterismId: string) => void;
+  onToggleAsterismGroupVisible: (asterismId: string) => void;
+  onSaveAsterismGroupView: (asterismId: string) => void;
+  onFocusAsterismGroup: (grp: AsterismGroup) => void;
   onLoadAsterismPresets: () => number;
   onImportAsterismBundle: (
     layers: AsterismStoreState['layers'],
+    asterisms: AsterismGroup[],
     objects: AsterismObject[]
   ) => { addedCount: number };
-  onFocusAsterismObject: (obj: AsterismObject) => void;
   onChangeOptics: (updater: (prev: OpticsSettings) => OpticsSettings) => void;
 }
 
@@ -416,17 +429,22 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       asterismMode,
       asterismStore,
       asterismTool,
+      asterismPopover,
       asterismSelectedId,
       asterismDraft,
       asterismCanUndo,
       asterismCanRedo,
       onChangeAsterismTool,
+      onChangeAsterismPopover,
+      onOpenAsterismShapeProps,
       onSelectAsterism,
       onAddAsterismDraftPoint,
       onFinishAsterismDraft,
       onUndoAsterismDraftPoint,
       onCancelAsterismDraft,
       onCreateAsterismLabel,
+      onCreateAsterismCircle,
+      onStartNewAsterismFromStar,
       onMoveAsterismVertex,
       onInsertAsterismVertex,
       onDeleteAsterismVertex,
@@ -442,9 +460,15 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       onCreateAsterismLayer,
       onRenameAsterismLayer,
       onDeleteAsterismLayer,
+      onSetActiveAsterism,
+      onCreateAsterismGroup,
+      onUpdateAsterismGroup,
+      onDeleteAsterismGroup,
+      onToggleAsterismGroupVisible,
+      onSaveAsterismGroupView,
+      onFocusAsterismGroup,
       onLoadAsterismPresets,
       onImportAsterismBundle,
-      onFocusAsterismObject,
       onChangeOptics,
     },
     ref
@@ -1219,6 +1243,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           {
             store: asterismStore,
             drawingActive: asterismMode,
+            activeTool: asterismTool,
             selectedObjectId: asterismSelectedId,
             draft: asterismDraft,
             hoverSnap: asterismHoverSnap,
@@ -1253,6 +1278,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       planetTexRev,
       asterismStore,
       asterismMode,
+      asterismTool,
       asterismSelectedId,
       asterismDraft,
       asterismHoverSnap,
@@ -1622,6 +1648,15 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         );
         setHoveredTarget(null);
         return;
+      } else if (
+        asterismMode &&
+        !challengePickMode &&
+        asterismTool === 'select' &&
+        asterismStore.activeAsterismId === null
+      ) {
+        // Show subtle snap preview when hovering a star to hint that clicking starts a new asterism
+        const snap = computeSnapAtPoint(x, y);
+        setAsterismHoverSnap(snap && snap.snapped ? snap : null);
       } else if (asterismHoverSnap !== null) {
         setAsterismHoverSnap(null);
       }
@@ -1714,6 +1749,14 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
               onSelectAsterism(hitAst.objectId);
               return;
             }
+            // If no asterism is currently selected and user clicks a star, auto-create a new asterism!
+            if (asterismStore.activeAsterismId === null) {
+              const snap = computeSnapAtPoint(clickX, clickY);
+              if (snap && snap.snapped) {
+                onStartNewAsterismFromStar(snapToVertex(snap));
+                return;
+              }
+            }
             onSelectAsterism(null);
             // Fall through to allow normal star/DSO/planet selection when no asterism was clicked
           } else {
@@ -1723,6 +1766,14 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
             if (asterismTool === 'label') {
               onCreateAsterismLabel(snapToVertex(snap));
+            } else if (
+              asterismTool === 'circle' &&
+              (asterismStore.settings.circleLinkEyepiece || asterismStore.settings.circleLinkFinder)
+            ) {
+              const linkedRadiusDeg = asterismStore.settings.circleLinkEyepiece
+                ? Math.max(0.02, optics.eyepieceFovDeg / 2)
+                : Math.max(0.1, (optics.finderFovDeg ?? 7.0) / 2);
+              onCreateAsterismCircle(snapToVertex(snap), linkedRadiusDeg);
             } else {
               onAddAsterismDraftPoint(snapToVertex(snap));
             }
@@ -1790,7 +1841,45 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         return;
       }
       const rect = e.currentTarget.getBoundingClientRect();
-      const hit = findHitTarget(e.clientX - rect.left, e.clientY - rect.top, 8);
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+
+      // Double-click on a drawn shape or text element in Select mode -> open Properties popover
+      const tryHitAsterismShape = () => {
+        if (asterismStore.objects.length === 0) return null;
+        const eff = getEffectiveTransformAtPoint(x, y, view);
+        const proj = createProjectionParams(
+          eff.view,
+          size.width,
+          size.height,
+          lstDeg,
+          observer.lat,
+          eff.rotationDeg
+        );
+        const hitAst = hitTestAsterisms(
+          x,
+          y,
+          asterismStore,
+          asterismSelectedId,
+          view.fsz,
+          {
+            project: (raDeg, decDeg, margin = 200) =>
+              projectStereographic(raDeg, decDeg, proj, margin),
+          }
+        );
+        if (!hitAst) return null;
+        return asterismStore.objects.find((o) => o.id === hitAst.objectId) ?? null;
+      };
+
+      if (asterismMode && asterismTool === 'select') {
+        const hitObj = tryHitAsterismShape();
+        if (hitObj) {
+          onOpenAsterismShapeProps(hitObj.asterismId, hitObj.id);
+          return;
+        }
+      }
+
+      const hit = findHitTarget(x, y, 8);
       let targetItem: SelectedItem | null = hit ? hit.item : null;
 
       if (!targetItem && lastClickedTargetRef.current) {
@@ -1803,7 +1892,15 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         }
       }
 
-      if (!targetItem) return;
+      if (!targetItem) {
+        if (!asterismMode) {
+          const hitObj = tryHitAsterismShape();
+          if (hitObj) {
+            onOpenAsterismShapeProps(hitObj.asterismId, hitObj.id);
+          }
+        }
+        return;
+      }
       lastClickedTargetRef.current = null;
       onSelect(targetItem, { hideSelectionMark: true });
       smoothCenterOn(targetItem.data.ra, targetItem.data.dec);
@@ -2131,18 +2228,6 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           </button>
           <button
             type="button"
-            onClick={() => onChangeView((p) => ({ ...p, fsz: 180 }))}
-            title="180° 전천 평사 도법 뷰"
-            className={`h-7 px-2 border text-xs font-mono font-medium transition-colors whitespace-nowrap shrink-0 flex items-center gap-1 ${
-              Math.abs(view.fsz - 180) < 1 ? ui.buttonActive : ui.buttonIdle
-            }`}
-            style={{ borderRadius: '4px' }}
-          >
-            <Globe className="w-3.5 h-3.5" />
-            <span>180°</span>
-          </button>
-          <button
-            type="button"
             onClick={() => onChangeView((p) => ({ ...p, flipH: !p.flipH }))}
             title={
               optics.showEyepiece
@@ -2184,6 +2269,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             optics={optics}
             store={asterismStore}
             activeTool={asterismTool}
+            popover={asterismPopover}
+            onChangePopover={onChangeAsterismPopover}
             selectedObjectId={asterismSelectedId}
             draft={asterismDraft}
             canUndo={asterismCanUndo}
@@ -2204,9 +2291,15 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             onCreateLayer={onCreateAsterismLayer}
             onRenameLayer={onRenameAsterismLayer}
             onDeleteLayer={onDeleteAsterismLayer}
+            onSetActiveAsterism={onSetActiveAsterism}
+            onCreateAsterismGroup={onCreateAsterismGroup}
+            onUpdateAsterismGroup={onUpdateAsterismGroup}
+            onDeleteAsterismGroup={onDeleteAsterismGroup}
+            onToggleAsterismGroupVisible={onToggleAsterismGroupVisible}
+            onSaveAsterismGroupView={onSaveAsterismGroupView}
+            onFocusAsterismGroup={onFocusAsterismGroup}
             onLoadPresets={onLoadAsterismPresets}
             onImportBundle={onImportAsterismBundle}
-            onFocusObject={onFocusAsterismObject}
             onChangeOptics={onChangeOptics}
             onChangeView={onChangeView}
           />

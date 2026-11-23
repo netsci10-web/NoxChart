@@ -10,6 +10,7 @@ import {
   AsterismDraftState,
   AsterismSnapPreview,
   AsterismStoreState,
+  AsterismTool,
   ChallengeCheckpoint,
   ChallengeTrack,
   ChartViewState,
@@ -61,6 +62,7 @@ import {
 export interface AsterismRenderContext {
   store: AsterismStoreState;
   drawingActive: boolean;
+  activeTool?: AsterismTool;
   selectedObjectId: string | null;
   draft: AsterismDraftState | null;
   hoverSnap: AsterismSnapPreview | null;
@@ -1009,7 +1011,9 @@ function drawOpticalReticles(
   }
 
   if (optics.showFinder7x50) {
-    const finderR = stereoRadiusPx(7.0);
+    const finderFov = Math.max(0.5, Math.min(30, optics.finderFovDeg ?? 7.0));
+    const finderLabel = optics.finderLabel?.trim() || '7×50 파인더';
+    const finderR = stereoRadiusPx(finderFov);
     if (finderR >= 4 && finderR < Math.max(width, height) * 1.6) {
       ctx.save();
       const finderColor =
@@ -1032,7 +1036,7 @@ function drawOpticalReticles(
       if (finderR > 14 && finderR < Math.min(width, height) * 0.5) {
         ctx.fillStyle = finderColor;
         ctx.font = '500 10px "IBM Plex Mono", monospace';
-        ctx.fillText('7×50 파인더 (7.0°)', cx + 6, cy - finderR - 5);
+        ctx.fillText(`${finderLabel} (${finderFov.toFixed(1)}°)`, cx + 6, cy - finderR - 5);
       }
       ctx.restore();
     }
@@ -3962,6 +3966,9 @@ function renderStarChartPass(
       },
       store: asterismCtx.store,
       drawingActive: asterismCtx.drawingActive,
+      activeTool: asterismCtx.activeTool,
+      eyepieceFovDeg: optics.eyepieceFovDeg,
+      finderFovDeg: optics.finderFovDeg ?? 7.0,
       selectedObjectId: asterismCtx.selectedObjectId,
       draft: asterismCtx.draft,
       hoverSnap: asterismCtx.hoverSnap,

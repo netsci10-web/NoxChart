@@ -96,7 +96,7 @@ interface ChallengePanelProps {
   // Guided Auto-Tour ("오늘의 투어" & Challenge Track Auto-Tour)
   tourState: GuidedTourState;
   tonightTourStops: TourStop[];
-  onStartTonightTour: (startIndex?: number) => void;
+  onStartTonightTour: (startIndex?: number, selectedStopIds?: string[]) => void;
   onStartChallengeTour: (track: ChallengeTrack, startIndex?: number) => void;
   onToggleTourPlay: () => void;
   onStopTour: () => void;
@@ -182,7 +182,26 @@ export function ChallengePanel({
   const [notice, setNotice] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ChallengeTrack | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(true);
-  const [tourListExpanded, setTourListExpanded] = useState(false);
+  const [tourListExpanded, setTourListExpanded] = useState(true);
+  const [excludedTourStopIds, setExcludedTourStopIds] = useState<Set<string>>(() => new Set());
+
+  const selectedTonightStops = useMemo(
+    () => tonightTourStops.filter((s) => !excludedTourStopIds.has(s.id)),
+    [tonightTourStops, excludedTourStopIds]
+  );
+
+  const toggleTonightStopSelection = (stopId: string) => {
+    setExcludedTourStopIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(stopId)) next.delete(stopId);
+      else next.add(stopId);
+      return next;
+    });
+  };
+
+  const selectAllTonightStops = () => setExcludedTourStopIds(new Set());
+  const clearAllTonightStops = () =>
+    setExcludedTourStopIds(new Set(tonightTourStops.map((s) => s.id)));
 
   useEffect(() => {
     if (!deleteTarget) return;
@@ -1661,13 +1680,20 @@ export function ChallengePanel({
           ) : (
             <button
               type="button"
-              disabled={tonightTourStops.length === 0}
-              onClick={() => onStartTonightTour(0)}
+              disabled={selectedTonightStops.length === 0}
+              onClick={() =>
+                onStartTonightTour(
+                  0,
+                  selectedTonightStops.map((s) => s.id)
+                )
+              }
               className={`w-full py-1.5 px-2 border text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 ${ui.buttonActive}`}
               style={{ borderRadius: '5px' }}
             >
               <Play className="w-3.5 h-3.5 shrink-0" />
-              <span>오늘의 투어 시작 ({tonightTourStops.length}개 대상)</span>
+              <span>
+                오늘의 투어 시작 ({selectedTonightStops.length}/{tonightTourStops.length}개 선택)
+              </span>
             </button>
           )}
         </div>
@@ -1675,72 +1701,142 @@ export function ChallengePanel({
         {/* Compact Preview Strip when collapsed */}
         {!tourListExpanded && tonightTourStops.length > 0 && (
           <div className={`text-[9px] font-mono truncate ${ui.textMuted}`}>
-            {tonightTourStops
-              .slice(0, 6)
-              .map((s) => (s.kind === 'planet' ? s.title.split(' (')[0] : s.code))
-              .join(' → ')}
-            {tonightTourStops.length > 6 ? ' …' : ''}
+            {selectedTonightStops.length > 0
+              ? selectedTonightStops
+                  .slice(0, 6)
+                  .map((s) => (s.kind === 'planet' ? s.title.split(' (')[0] : s.code))
+                  .join(' → ') + (selectedTonightStops.length > 6 ? ' …' : '')
+              : '선택된 투어 대상이 없습니다.'}
           </div>
         )}
 
-        {/* Expandable Tonight's Stop List */}
+        {/* Expandable Selectable Tonight's Stop List */}
         {tourListExpanded && tonightTourStops.length > 0 && (
-          <div
-            className={`border divide-y max-h-[210px] overflow-y-auto astro-scroll ${ui.border} ${ui.divider}`}
-            style={{ borderRadius: '5px' }}
-          >
-            {tonightTourStops.map((stop, idx) => {
-              const isCurrent = isTonightTourActive && tourState.currentIndex === idx;
-              return (
+          <div className="space-y-1">
+            <div className="flex items-center justify-between gap-1 text-[9.5px]">
+              <span className={`font-medium ${ui.textSecondary}`}>
+                투어 대상 선택 ({selectedTonightStops.length}/{tonightTourStops.length})
+              </span>
+              <div className="flex items-center gap-1">
                 <button
-                  key={stop.id}
                   type="button"
-                  onClick={() =>
-                    isTonightTourActive ? onJumpTourStop(idx) : onStartTonightTour(idx)
-                  }
-                  className={`w-full text-left px-2 py-1.5 flex items-center justify-between gap-1.5 transition-colors ${
-                    isCurrent
-                      ? theme === 'white'
-                        ? 'bg-blue-100/90'
-                        : theme === 'red'
-                        ? 'bg-[#2C0606]'
-                        : 'bg-cyan-500/20'
-                      : theme === 'white'
-                      ? 'hover:bg-slate-100/80'
-                      : theme === 'red'
-                      ? 'hover:bg-[#1E0404]'
-                      : 'hover:bg-slate-800/50'
-                  }`}
+                  onClick={selectAllTonightStops}
+                  disabled={selectedTonightStops.length === tonightTourStops.length}
+                  className={`px-1.5 py-0.5 border text-[9px] disabled:opacity-40 ${ui.buttonIdle}`}
+                  style={{ borderRadius: '3px' }}
                 >
-                  <div className="min-w-0 flex-1">
-                    <div className="flex items-center gap-1 min-w-0">
-                      <span
-                        className={`text-[9px] font-mono font-bold shrink-0 ${
-                          isCurrent ? ui.accentText : ui.textMuted
-                        }`}
-                      >
-                        {String(idx + 1).padStart(2, '0')}
-                      </span>
-                      <span className={`text-[9.5px] font-mono font-semibold shrink-0 ${ui.accentText}`}>
-                        {stop.code}
-                      </span>
-                      <span className={`text-[10px] font-medium truncate ${ui.textPrimary}`}>
-                        {stop.title}
-                      </span>
-                    </div>
-                    <div className={`text-[8.5px] font-mono tabular-nums truncate ${ui.textMuted}`}>
-                      고도 {stop.altDeg.toFixed(0)}°({stop.compass}) · 자동 화각{' '}
-                      {formatFovLabel(stop.recommendedFovDeg)}
-                    </div>
-                  </div>
-                  <Play
-                    className={`w-2.5 h-2.5 shrink-0 ${
-                      isCurrent ? ui.accentText : `${ui.textMuted} opacity-60`
-                    }`}
-                  />
+                  전체 선택
                 </button>
-              );
-            })}
+                <button
+                  type="button"
+                  onClick={clearAllTonightStops}
+                  disabled={selectedTonightStops.length === 0}
+                  className={`px-1.5 py-0.5 border text-[9px] disabled:opacity-40 ${ui.buttonIdle}`}
+                  style={{ borderRadius: '3px' }}
+                >
+                  전체 해제
+                </button>
+              </div>
+            </div>
+            <div
+              className={`border divide-y max-h-[210px] overflow-y-auto astro-scroll ${ui.border} ${ui.divider}`}
+              style={{ borderRadius: '5px' }}
+            >
+              {tonightTourStops.map((stop, idx) => {
+                const isChecked = !excludedTourStopIds.has(stop.id);
+                const activeStopIdx = isTonightTourActive
+                  ? tourState.stops.findIndex((s) => s.id === stop.id)
+                  : -1;
+                const isCurrent =
+                  isTonightTourActive &&
+                  activeStopIdx >= 0 &&
+                  tourState.currentIndex === activeStopIdx;
+                return (
+                  <div
+                    key={stop.id}
+                    className={`px-2 py-1.5 flex items-center justify-between gap-1.5 transition-colors ${
+                      isCurrent
+                        ? theme === 'white'
+                          ? 'bg-blue-100/90'
+                          : theme === 'red'
+                          ? 'bg-[#2C0606]'
+                          : 'bg-cyan-500/20'
+                        : theme === 'white'
+                        ? 'hover:bg-slate-100/80'
+                        : theme === 'red'
+                        ? 'hover:bg-[#1E0404]'
+                        : 'hover:bg-slate-800/50'
+                    }`}
+                  >
+                    <label className="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isChecked}
+                        onChange={() => toggleTonightStopSelection(stop.id)}
+                        className="w-3.5 h-3.5 shrink-0 cursor-pointer accent-cyan-400"
+                        aria-label={`${stop.title} 투어 포함`}
+                      />
+                      <div className={`min-w-0 flex-1 ${isChecked ? '' : 'opacity-45'}`}>
+                        <div className="flex items-center gap-1 min-w-0">
+                          <span
+                            className={`text-[9px] font-mono font-bold shrink-0 ${
+                              isCurrent ? ui.accentText : ui.textMuted
+                            }`}
+                          >
+                            {String(idx + 1).padStart(2, '0')}
+                          </span>
+                          <span
+                            className={`text-[9.5px] font-mono font-semibold shrink-0 ${ui.accentText}`}
+                          >
+                            {stop.code}
+                          </span>
+                          <span className={`text-[10px] font-medium truncate ${ui.textPrimary}`}>
+                            {stop.title}
+                          </span>
+                        </div>
+                        <div
+                          className={`text-[8.5px] font-mono tabular-nums truncate ${ui.textMuted}`}
+                        >
+                          고도 {stop.altDeg.toFixed(0)}°({stop.compass}) · 자동 화각{' '}
+                          {formatFovLabel(stop.recommendedFovDeg)}
+                        </div>
+                      </div>
+                    </label>
+                    <button
+                      type="button"
+                      title={`${stop.title} 위치로 바로 이동 / 투어 시작`}
+                      onClick={() => {
+                        if (isTonightTourActive && activeStopIdx >= 0) {
+                          onJumpTourStop(activeStopIdx);
+                        } else {
+                          const targetIds = isChecked
+                            ? selectedTonightStops.map((s) => s.id)
+                            : [...selectedTonightStops.map((s) => s.id), stop.id];
+                          if (!isChecked) {
+                            setExcludedTourStopIds((prev) => {
+                              const next = new Set(prev);
+                              next.delete(stop.id);
+                              return next;
+                            });
+                          }
+                          const orderedIds = tonightTourStops
+                            .filter((s) => targetIds.includes(s.id))
+                            .map((s) => s.id);
+                          const startIdx = Math.max(0, orderedIds.indexOf(stop.id));
+                          onStartTonightTour(startIdx, orderedIds);
+                        }
+                      }}
+                      className={`p-1 border shrink-0 transition-colors ${
+                        isCurrent ? ui.buttonActive : ui.buttonIdle
+                      }`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      <Play className="w-2.5 h-2.5 shrink-0" />
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
           </div>
         )}
       </div>

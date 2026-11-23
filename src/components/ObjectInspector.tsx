@@ -32,6 +32,7 @@ import {
 import { CALDWELL_CATALOG } from '../data/caldwell';
 import { CatalogSnapshot } from '../data/catalogLoader';
 import {
+  AsterismGroup,
   AsterismLayer,
   AsterismObject,
   AsterismStoreState,
@@ -78,6 +79,7 @@ import {
   SEEING_OPTIONS,
   toDateTimeLocalValue,
 } from '../utils/observationLogStorage';
+import { BuiltInAsterismPreset } from '../utils/asterismStorage';
 import { GuidedTourState, TourStop } from '../utils/tonightTour';
 import { getUiTheme } from '../utils/themeClasses';
 import { AsterismPanel } from './AsterismPanel';
@@ -157,20 +159,18 @@ interface ObjectInspectorProps {
   // Guided Auto-Tour ("오늘의 투어" & Challenge Track Auto-Tour)
   tourState: GuidedTourState;
   tonightTourStops: TourStop[];
-  onStartTonightTour: (startIndex?: number) => void;
+  onStartTonightTour: (startIndex?: number, selectedStopIds?: string[]) => void;
   onStartChallengeTour: (track: ChallengeTrack, startIndex?: number) => void;
   onToggleTourPlay: () => void;
   onStopTour: () => void;
   onJumpTourStop: (index: number) => void;
   onChangeTourDwellSec: (sec: number) => void;
-  // Custom Asterism Layers & Presets
+  // Custom Asterism Layers, Groups & Presets
   asterismStore: AsterismStoreState;
   asterismMode: boolean;
   asterismSelectedId: string | null;
   onToggleAsterismMode: () => void;
   onSelectAsterism: (id: string | null) => void;
-  onFocusAsterismObject: (obj: AsterismObject) => void;
-  onUpdateAsterismObject: (id: string, patch: Partial<AsterismObject>) => void;
   onDeleteAsterismObject: (id: string) => void;
   onSetAsterismActiveLayer: (layerId: string) => void;
   onToggleAsterismLayerVisible: (layerId: string) => void;
@@ -178,11 +178,20 @@ interface ObjectInspectorProps {
   onCreateAsterismLayer: (name: string) => void;
   onRenameAsterismLayer: (layerId: string, name: string) => void;
   onDeleteAsterismLayer: (layerId: string) => void;
+  onSetActiveAsterism: (asterismId: string | null) => void;
+  onOpenAsterismLayers: (asterismId: string) => void;
+  onOpenAsterismShapeProps: (asterismId: string, objectId: string) => void;
+  onCreateAsterismGroup: (name?: string, layerId?: string) => string;
+  onUpdateAsterismGroup: (asterismId: string, patch: Partial<AsterismGroup>) => void;
+  onDeleteAsterismGroup: (asterismId: string) => void;
+  onToggleAsterismGroupVisible: (asterismId: string) => void;
+  onFocusAsterismGroup: (grp: AsterismGroup) => void;
   onLoadAsterismPresets: () => number;
-  onToggleAsterismPreset: (preset: AsterismObject) => boolean;
-  onFocusAsterismPreset: (preset: AsterismObject) => void;
+  onToggleAsterismPreset: (preset: BuiltInAsterismPreset) => boolean;
+  onFocusAsterismPreset: (preset: BuiltInAsterismPreset) => void;
   onImportAsterismBundle: (
     layers: AsterismLayer[],
+    asterisms: AsterismGroup[],
     objects: AsterismObject[]
   ) => { addedCount: number };
   // Observation Logbook & Observed Status
@@ -284,8 +293,6 @@ export function ObjectInspector({
   asterismSelectedId,
   onToggleAsterismMode,
   onSelectAsterism,
-  onFocusAsterismObject,
-  onUpdateAsterismObject,
   onDeleteAsterismObject,
   onSetAsterismActiveLayer,
   onToggleAsterismLayerVisible,
@@ -293,6 +300,14 @@ export function ObjectInspector({
   onCreateAsterismLayer,
   onRenameAsterismLayer,
   onDeleteAsterismLayer,
+  onSetActiveAsterism,
+  onOpenAsterismLayers,
+  onOpenAsterismShapeProps,
+  onCreateAsterismGroup,
+  onUpdateAsterismGroup,
+  onDeleteAsterismGroup,
+  onToggleAsterismGroupVisible,
+  onFocusAsterismGroup,
   onLoadAsterismPresets,
   onToggleAsterismPreset,
   onFocusAsterismPreset,
@@ -659,16 +674,16 @@ export function ObjectInspector({
           <button
             type="button"
             onClick={() => onTabChange('asterism')}
-            title="성군 작도 레이어 및 대표 성군 프리셋 설정"
+            title="성군 작도 그룹 · 성군 · 도형 및 대표 성군 프리셋 관리"
             className={`px-1.5 py-1 text-[9.5px] tracking-[-0.06em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
               activeTab === 'asterism' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
-            <span>작도</span>
-            {asterismStore.objects.length > 0 && (
+            <span>성군작도</span>
+            {asterismStore.asterisms.length > 0 && (
               <span className="font-mono text-[8.5px] tabular-nums opacity-80">
-                {asterismStore.objects.length}
+                {asterismStore.asterisms.length}
               </span>
             )}
           </button>
@@ -1674,8 +1689,6 @@ export function ObjectInspector({
             selectedObjectId={asterismSelectedId}
             onToggleAsterismMode={onToggleAsterismMode}
             onSelectObject={onSelectAsterism}
-            onFocusObject={onFocusAsterismObject}
-            onUpdateObject={onUpdateAsterismObject}
             onDeleteObject={onDeleteAsterismObject}
             onSetActiveLayer={onSetAsterismActiveLayer}
             onToggleLayerVisible={onToggleAsterismLayerVisible}
@@ -1683,9 +1696,14 @@ export function ObjectInspector({
             onCreateLayer={onCreateAsterismLayer}
             onRenameLayer={onRenameAsterismLayer}
             onDeleteLayer={onDeleteAsterismLayer}
-            onLoadAllPresets={onLoadAsterismPresets}
-            onTogglePreset={onToggleAsterismPreset}
-            onFocusPreset={onFocusAsterismPreset}
+            onSetActiveAsterism={onSetActiveAsterism}
+            onOpenAsterismLayers={onOpenAsterismLayers}
+            onOpenShapeProperties={onOpenAsterismShapeProps}
+            onCreateAsterismGroup={onCreateAsterismGroup}
+            onUpdateAsterismGroup={onUpdateAsterismGroup}
+            onDeleteAsterismGroup={onDeleteAsterismGroup}
+            onToggleAsterismGroupVisible={onToggleAsterismGroupVisible}
+            onFocusAsterismGroup={onFocusAsterismGroup}
             onImportBundle={onImportAsterismBundle}
           />
         ) : activeTab === 'log' ? (

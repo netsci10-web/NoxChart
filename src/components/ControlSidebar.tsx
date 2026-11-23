@@ -3077,176 +3077,8 @@ export function ControlSidebar({
 
         {tab === 'optics' && (
           <>
-            {/* My Equipment Locker (내 장비함 · .skylist 통합) */}
-            <EquipmentLockerPanel
-              theme={theme}
-              locker={equipmentLocker}
-              onAddOrUpdateItem={onAddOrUpdateEquipment}
-              onDeleteItem={onDeleteEquipment}
-              onToggleActiveItem={onToggleActiveEquipment}
-              onImportLocker={onImportEquipmentLocker}
-            />
-
-            {/* Mirror / Reflector Flip */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
-              <button
-                type="button"
-                onClick={() => toggleSection('optics_flip')}
-                aria-expanded={isSectionOpen('optics_flip')}
-                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
-              >
-                <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
-                  <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('optics_flip') ? '' : '-rotate-90'
-                    }`}
-                  />
-                  <span>광학계 상 반전 (Flip)</span>
-                </span>
-                <span
-                  className={`font-mono text-[9.5px] tracking-[-0.05em] whitespace-nowrap shrink-0 ${
-                    optics.showEyepiece ? ui.accentText : ui.textMuted
-                  }`}
-                >
-                  {(() => {
-                    const activeScope = equipmentLocker.activeIds.telescope
-                      ? equipmentLocker.items.find(
-                          (it) =>
-                            it.id === equipmentLocker.activeIds.telescope &&
-                            it.category === 'telescope'
-                        )
-                      : null;
-                    const isReflector =
-                      activeScope !== null &&
-                      activeScope !== undefined &&
-                      normalizeTelescopeOpticalType(activeScope.opticalType) === '반사';
-                    if (optics.showEyepiece && isReflector && view.flipH && view.flipV) {
-                      return '반사 도립 자동';
-                    }
-                    return optics.showEyepiece ? '아이피스 내부만' : '전체 성도';
-                  })()}
-                </span>
-              </button>
-              {isSectionOpen('optics_flip') && (
-              <div className="space-y-2">
-              <div className="grid grid-cols-2 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => onChangeView((p) => ({ ...p, flipH: !p.flipH }))}
-                  className={`py-1.5 px-1 border text-[10.5px] tracking-[-0.06em] font-medium whitespace-nowrap shrink-0 ${
-                    view.flipH ? ui.buttonActive : ui.buttonIdle
-                  }`}
-                  style={{ borderRadius: '5px' }}
-                >
-                  좌우 반전 (미러)
-                </button>
-                <button
-                  type="button"
-                  onClick={() => onChangeView((p) => ({ ...p, flipV: !p.flipV }))}
-                  className={`py-1.5 px-1 border text-[10.5px] tracking-[-0.06em] font-medium whitespace-nowrap shrink-0 ${
-                    view.flipV ? ui.buttonActive : ui.buttonIdle
-                  }`}
-                  style={{ borderRadius: '5px' }}
-                >
-                  상하 반전 (반사)
-                </button>
-              </div>
-
-              {/* Eyepiece Field Rotation Slider (active in Telescope Eyepiece mode) */}
-              <div
-                className={`pt-1 space-y-1 transition-opacity ${
-                  optics.showEyepiece ? '' : 'opacity-50'
-                }`}
-              >
-                <div className="flex items-center justify-between gap-1 text-[10px]">
-                  <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-                    아이피스 시야 회전
-                  </span>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    {optics.showEyepiece ? (
-                      <>
-                        {optics.eyepieceRotationDeg !== 0 && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onChangeOptics((p) => ({ ...p, eyepieceRotationDeg: 0 }))
-                            }
-                            className={`text-[9.5px] tracking-[-0.05em] opacity-80 hover:opacity-100 ${ui.accentText}`}
-                          >
-                            0° 초기화
-                          </button>
-                        )}
-                        <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
-                          {Math.round(optics.eyepieceRotationDeg)}°
-                        </span>
-                      </>
-                    ) : (
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onChangeOptics((p) => ({ ...p, showEyepiece: true }))
-                        }
-                        className={`text-[9.5px] tracking-[-0.05em] underline underline-offset-2 ${ui.accentText}`}
-                      >
-                        아이피스 켜기
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <input
-                  type="range"
-                  min={0}
-                  max={360}
-                  step={1}
-                  disabled={!optics.showEyepiece}
-                  value={optics.eyepieceRotationDeg}
-                  onChange={(e) =>
-                    onChangeOptics((p) => ({
-                      ...p,
-                      eyepieceRotationDeg: Number(e.target.value),
-                    }))
-                  }
-                  aria-label="아이피스 시야 회전 각도"
-                  className={`w-full h-1.5 ${
-                    theme === 'red' ? 'accent-red-600' : 'accent-amber-500'
-                  } ${optics.showEyepiece ? 'cursor-pointer' : 'cursor-not-allowed'}`}
-                />
-                <div className="grid grid-cols-4 gap-1">
-                  {[0, 90, 180, 270].map((deg) => (
-                    <button
-                      key={deg}
-                      type="button"
-                      disabled={!optics.showEyepiece}
-                      onClick={() =>
-                        onChangeOptics((p) => ({ ...p, eyepieceRotationDeg: deg }))
-                      }
-                      className={`py-0.5 border text-[9.5px] font-mono tabular-nums font-medium transition-colors ${
-                        optics.showEyepiece &&
-                        Math.round(((optics.eyepieceRotationDeg % 360) + 360) % 360) === deg
-                          ? theme === 'red'
-                            ? 'bg-[#7F1D1D] border-[#DC2626] text-[#FF5252]'
-                            : 'bg-amber-500 border-amber-400 text-slate-950'
-                          : ui.buttonIdle
-                      } ${optics.showEyepiece ? '' : 'cursor-not-allowed'}`}
-                      style={{ borderRadius: '4px' }}
-                    >
-                      {deg}°
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <p className={`text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
-                {optics.showEyepiece
-                  ? '망원경 아이피스가 켜져 있어 원 내부의 성도·HiPS 사진만 반전·회전됩니다. 반사 경통 선택 시 상하+좌우 반전(도립상)이 자동 적용됩니다.'
-                  : '아이피스를 켜면 원 내부만 반전·회전되고, 반사 경통이 선택된 경우 상하+좌우 반전(도립상)이 자동으로 반영됩니다.'}
-              </p>
-              </div>
-              )}
-            </div>
-
             {/* Multi-select FOV Rings (시야 링 - 중복 표시 가능) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+            <div className="space-y-2">
               <div className="flex items-center justify-between gap-1">
                 <button
                   type="button"
@@ -3270,6 +3102,7 @@ export function ControlSidebar({
                       showTelrad: false,
                       showFinder7x50: false,
                       showEyepiece: false,
+                      showSensorBox: false,
                     }))
                   }
                   className={`text-[10px] tracking-[-0.05em] whitespace-nowrap transition-opacity hover:opacity-100 opacity-75 ${ui.textMuted}`}
@@ -3347,38 +3180,76 @@ export function ControlSidebar({
                   />
                 </label>
 
-                {/* 3. 7×50 파인더 (7.0°) */}
-                <label
-                  className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md cursor-pointer transition-colors border ${
-                    optics.showFinder7x50
-                      ? theme === 'white'
-                        ? 'bg-sky-50 border-sky-200'
-                        : theme === 'red'
-                        ? 'bg-[#1D0505] border-[#5A1212]'
-                        : 'bg-[#0C2130] border-[#1A4B64]'
-                      : 'border-transparent hover:bg-white/5'
-                  }`}
-                >
-                  <span className="flex items-center gap-1.5 min-w-0">
-                    <span
-                      className={`w-3 h-3 rounded-full border-2 shrink-0 inline-block ${
-                        theme === 'red' ? 'border-[#EF4444]' : 'border-cyan-400'
+                {/* 3. 내 파인더 (미등록 시 7×50 파인더 7.0° 기본 표시 · 여러 개면 기본 1개 선택) */}
+                {(() => {
+                  const myFinders = equipmentLocker.items.filter((it) => it.category === 'finder');
+                  const activeFinder =
+                    myFinders.length > 0
+                      ? myFinders.find((f) => f.id === equipmentLocker.activeIds.finder) ??
+                        myFinders[0]
+                      : null;
+                  const finderFov =
+                    activeFinder?.fovDeg && activeFinder.fovDeg > 0 ? activeFinder.fovDeg : 7.0;
+                  const finderTitle = activeFinder ? activeFinder.name : '7×50 파인더';
+
+                  return (
+                    <div
+                      className={`rounded-md transition-colors border ${
+                        optics.showFinder7x50
+                          ? theme === 'white'
+                            ? 'bg-sky-50 border-sky-200'
+                            : theme === 'red'
+                            ? 'bg-[#1D0505] border-[#5A1212]'
+                            : 'bg-[#0C2130] border-[#1A4B64]'
+                          : 'border-transparent hover:bg-white/5'
                       }`}
-                      aria-hidden="true"
-                    />
-                    <span className={`truncate tracking-[-0.05em] ${ui.textSecondary}`}>
-                      7×50 파인더 (7.0°)
-                    </span>
-                  </span>
-                  <input
-                    type="checkbox"
-                    checked={optics.showFinder7x50}
-                    onChange={(e) =>
-                      onChangeOptics((p) => ({ ...p, showFinder7x50: e.target.checked }))
-                    }
-                    className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
-                  />
-                </label>
+                    >
+                      <label className="flex items-center justify-between gap-1.5 px-2 py-1.5 cursor-pointer">
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            className={`w-3 h-3 rounded-full border-2 shrink-0 inline-block ${
+                              theme === 'red' ? 'border-[#EF4444]' : 'border-cyan-400'
+                            }`}
+                            aria-hidden="true"
+                          />
+                          <span className={`truncate tracking-[-0.05em] ${ui.textSecondary}`}>
+                            {finderTitle} ({finderFov.toFixed(1)}°)
+                          </span>
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={optics.showFinder7x50}
+                          onChange={(e) =>
+                            onChangeOptics((p) => ({
+                              ...p,
+                              showFinder7x50: e.target.checked,
+                              finderFovDeg: finderFov,
+                              finderLabel: finderTitle,
+                            }))
+                          }
+                          className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                        />
+                      </label>
+                      {myFinders.length > 1 && activeFinder && (
+                        <div className="px-2 pb-1.5">
+                          <select
+                            aria-label="기본 파인더 선택"
+                            value={activeFinder.id}
+                            onChange={(e) => onSelectActiveEquipment('finder', e.target.value)}
+                            className={`w-full px-1.5 py-1 border text-[10px] tracking-[-0.04em] ${ui.input}`}
+                            style={{ borderRadius: '4px' }}
+                          >
+                            {myFinders.map((f) => (
+                              <option key={f.id} value={f.id}>
+                                {f.name} ({(f.fovDeg ?? 7.0).toFixed(1)}°)
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {/* 4. 망원경 아이피스 */}
                 <label
@@ -3412,6 +3283,41 @@ export function ControlSidebar({
                     className="w-3.5 h-3.5 shrink-0 accent-amber-500"
                   />
                 </label>
+
+                {/* 5. 촬영 센서 화각 프레임 */}
+                <label
+                  className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md cursor-pointer transition-colors border ${
+                    optics.showSensorBox
+                      ? theme === 'white'
+                        ? 'bg-emerald-50 border-emerald-300'
+                        : theme === 'red'
+                        ? 'bg-[#1D0505] border-[#5A1212]'
+                        : 'bg-[#092320] border-[#155E54]'
+                      : 'border-transparent hover:bg-white/5'
+                  }`}
+                >
+                  <span className="flex items-center gap-1.5 min-w-0">
+                    <span
+                      className={`w-3 h-2.5 rounded-[2px] border-2 shrink-0 inline-block ${
+                        theme === 'red' ? 'border-[#EF4444]' : 'border-emerald-400'
+                      }`}
+                      aria-hidden="true"
+                    />
+                    <span className={`truncate tracking-[-0.05em] ${ui.textSecondary}`}>
+                      촬영 센서 화각 프레임 ({optics.sensorWidthDeg.toFixed(2)}°×
+                      {optics.sensorHeightDeg.toFixed(2)}°)
+                    </span>
+                  </span>
+                  <input
+                    type="checkbox"
+                    checked={optics.showSensorBox}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      onChangeOptics((p) => ({ ...p, showSensorBox: checked }));
+                    }}
+                    className="w-3.5 h-3.5 shrink-0 accent-emerald-500"
+                  />
+                </label>
               </div>
 
               {/* Star Hopping Path Toggle */}
@@ -3432,508 +3338,102 @@ export function ControlSidebar({
               )}
             </div>
 
-            {/* Eyepiece TFOV Settings (내 장비 조합 / 시야각 직접 입력 / 수치 계산) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2.5`}>
+            {/* Mirror / Reflector Flip */}
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
               <button
                 type="button"
-                onClick={() => toggleSection('optics_eyepiece')}
-                aria-expanded={isSectionOpen('optics_eyepiece')}
-                className="w-full flex items-center justify-between gap-1.5 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                onClick={() => toggleSection('optics_flip')}
+                aria-expanded={isSectionOpen('optics_flip')}
+                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
               >
-                <span className="flex items-center gap-1 min-w-0">
+                <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
                   <ChevronDown
                     className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('optics_eyepiece') ? '' : '-rotate-90'
+                      isSectionOpen('optics_flip') ? '' : '-rotate-90'
                     }`}
                   />
-                  <SlidersHorizontal
-                    className={`w-3.5 h-3.5 shrink-0 ${
-                      theme === 'red' ? 'text-[#FF5555]' : 'text-amber-400'
-                    }`}
-                  />
-                  <span
-                    className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${
-                      theme === 'white'
-                        ? 'text-amber-700'
-                        : theme === 'red'
-                        ? 'text-[#FF6666]'
-                        : 'text-amber-400'
-                    }`}
-                  >
-                    아이피스 시야각 설정
-                  </span>
+                  <span>광학계 상 반전 (Flip)</span>
                 </span>
-                <span className={`font-mono text-[9.5px] tabular-nums shrink-0 ${ui.textMuted}`}>
-                  {optics.eyepieceFovDeg.toFixed(2)}°
+                <span
+                  className={`font-mono text-[9.5px] tracking-[-0.05em] whitespace-nowrap shrink-0 ${
+                    optics.showEyepiece ? ui.accentText : ui.textMuted
+                  }`}
+                >
+                  {(() => {
+                    const activeScope = equipmentLocker.activeIds.telescope
+                      ? equipmentLocker.items.find(
+                          (it) =>
+                            it.id === equipmentLocker.activeIds.telescope &&
+                            it.category === 'telescope'
+                        )
+                      : null;
+                    const isReflector =
+                      activeScope !== null &&
+                      activeScope !== undefined &&
+                      normalizeTelescopeOpticalType(activeScope.opticalType) === '반사';
+                    if (optics.showEyepiece && isReflector && view.flipH && view.flipV) {
+                      return '반사 도립 자동';
+                    }
+                    return optics.showEyepiece ? '아이피스 내부만' : '전체 성도';
+                  })()}
                 </span>
               </button>
-
-              {isSectionOpen('optics_eyepiece') && (
-              <div className="space-y-2.5">
-
-              {/* 3-Mode Segmented Switcher */}
-              <div
-                className={`grid grid-cols-3 gap-0.5 p-0.5 rounded-md border ${
-                  theme === 'white'
-                    ? 'bg-slate-100 border-slate-300'
-                    : theme === 'red'
-                    ? 'bg-[#120101] border-[#420C0C]'
-                    : 'bg-[#0B1220] border-[#25334D]'
-                }`}
-              >
+              {isSectionOpen('optics_flip') && (
+              <div className="space-y-2">
+              <div className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
-                  onClick={() =>
-                    onChangeOptics((p) => ({ ...p, eyepieceInputMode: 'equipment' }))
-                  }
-                  className={`py-1 px-0.5 rounded text-[9.5px] font-semibold tracking-[-0.06em] whitespace-nowrap transition-colors ${
-                    optics.eyepieceInputMode === 'equipment'
-                      ? theme === 'red'
-                        ? 'bg-[#7F1D1D] text-[#FF5252]'
-                        : 'bg-amber-500 text-slate-950'
-                      : `${ui.textMuted} hover:opacity-100`
+                  onClick={() => onChangeView((p) => ({ ...p, flipH: !p.flipH }))}
+                  className={`py-1.5 px-1 border text-[10.5px] tracking-[-0.06em] font-medium whitespace-nowrap shrink-0 ${
+                    view.flipH ? ui.buttonActive : ui.buttonIdle
                   }`}
+                  style={{ borderRadius: '5px' }}
                 >
-                  내 장비 조합
+                  좌우 반전 (미러)
                 </button>
                 <button
                   type="button"
-                  onClick={() =>
-                    onChangeOptics((p) => ({ ...p, eyepieceInputMode: 'direct' }))
-                  }
-                  className={`py-1 px-0.5 rounded text-[9.5px] font-semibold tracking-[-0.06em] whitespace-nowrap transition-colors ${
-                    optics.eyepieceInputMode === 'direct'
-                      ? theme === 'red'
-                        ? 'bg-[#7F1D1D] text-[#FF5252]'
-                        : 'bg-amber-500 text-slate-950'
-                      : `${ui.textMuted} hover:opacity-100`
+                  onClick={() => onChangeView((p) => ({ ...p, flipV: !p.flipV }))}
+                  className={`py-1.5 px-1 border text-[10.5px] tracking-[-0.06em] font-medium whitespace-nowrap shrink-0 ${
+                    view.flipV ? ui.buttonActive : ui.buttonIdle
                   }`}
+                  style={{ borderRadius: '5px' }}
                 >
-                  직접 입력
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onChangeOptics((p) => {
-                      const mag =
-                        p.eyepieceFocalLengthMm > 0
-                          ? p.telescopeFocalLengthMm / p.eyepieceFocalLengthMm
-                          : 40;
-                      const tfov = Math.max(0.05, Math.min(20, p.eyepieceAfovDeg / mag));
-                      return {
-                        ...p,
-                        eyepieceInputMode: 'calc',
-                        eyepieceFovDeg: Number(tfov.toFixed(2)),
-                      };
-                    })
-                  }
-                  className={`py-1 px-0.5 rounded text-[9.5px] font-semibold tracking-[-0.06em] whitespace-nowrap transition-colors ${
-                    optics.eyepieceInputMode === 'calc'
-                      ? theme === 'red'
-                        ? 'bg-[#7F1D1D] text-[#FF5252]'
-                        : 'bg-amber-500 text-slate-950'
-                      : `${ui.textMuted} hover:opacity-100`
-                  }`}
-                >
-                  수치 계산
+                  상하 반전 (반사)
                 </button>
               </div>
 
-              {optics.eyepieceInputMode === 'equipment' ? (
-                (() => {
-                  const scopes = equipmentLocker.items.filter(
-                    (it) => it.category === 'telescope'
-                  );
-                  const eyepieces = equipmentLocker.items.filter(
-                    (it) => it.category === 'eyepiece'
-                  );
-                  const barlows = equipmentLocker.items.filter(
-                    (it) => it.category === 'barlow'
-                  );
-                  const activeScope = scopes.find(
-                    (s) => s.id === equipmentLocker.activeIds.telescope
-                  );
-                  const activeEp = eyepieces.find(
-                    (ep) => ep.id === equipmentLocker.activeIds.eyepiece
-                  );
-                  const activeBarlow = barlows.find(
-                    (b) => b.id === equipmentLocker.activeIds.barlow
-                  );
-                  const factor =
-                    activeBarlow?.factor && activeBarlow.factor > 0
-                      ? activeBarlow.factor
-                      : 1;
-                  const effFl = activeScope?.focalLengthMm
-                    ? activeScope.focalLengthMm * factor
-                    : null;
-                  const mag =
-                    effFl && activeEp?.focalLengthMm && activeEp.focalLengthMm > 0
-                      ? effFl / activeEp.focalLengthMm
-                      : null;
-                  const tfov = mag && activeEp?.afovDeg ? activeEp.afovDeg / mag : null;
-                  const exitPupil =
-                    mag && activeScope?.apertureMm ? activeScope.apertureMm / mag : null;
-
-                  return (
-                    <div className="space-y-2">
-                      <div>
-                        <label
-                          className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
-                        >
-                          경통 선택
-                        </label>
-                        <select
-                          value={equipmentLocker.activeIds.telescope ?? ''}
-                          onChange={(e) =>
-                            onSelectActiveEquipment('telescope', e.target.value || null)
-                          }
-                          className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
-                          style={{ borderRadius: '5px' }}
-                        >
-                          <option value="">경통 선택 안함</option>
-                          {scopes.map((sc) => (
-                            <option key={sc.id} value={sc.id}>
-                              {sc.name}
-                              {sc.focalLengthMm ? ` (${sc.focalLengthMm}mm)` : ''}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label
-                          className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
-                        >
-                          아이피스 선택
-                        </label>
-                        <select
-                          value={equipmentLocker.activeIds.eyepiece ?? ''}
-                          onChange={(e) =>
-                            onSelectActiveEquipment('eyepiece', e.target.value || null)
-                          }
-                          className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
-                          style={{ borderRadius: '5px' }}
-                        >
-                          <option value="">아이피스 선택 안함</option>
-                          {eyepieces.map((ep) => (
-                            <option key={ep.id} value={ep.id}>
-                              {ep.name}
-                              {ep.focalLengthMm && ep.afovDeg
-                                ? ` (${ep.focalLengthMm}mm · ${ep.afovDeg}°)`
-                                : ''}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      <div>
-                        <label
-                          className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
-                        >
-                          바로우 / 리듀서
-                        </label>
-                        <select
-                          value={equipmentLocker.activeIds.barlow ?? ''}
-                          onChange={(e) =>
-                            onSelectActiveEquipment('barlow', e.target.value || null)
-                          }
-                          className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
-                          style={{ borderRadius: '5px' }}
-                        >
-                          <option value="">사용 안함 (1×)</option>
-                          {barlows.map((b) => (
-                            <option key={b.id} value={b.id}>
-                              {b.name}
-                              {b.factor ? ` (${b.factor}×)` : ''}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {effFl && mag && tfov ? (
-                        <div
-                          className={`rounded-md border px-2.5 py-2 space-y-1 text-[10.5px] ${
-                            theme === 'white'
-                              ? 'bg-amber-50 border-amber-300'
-                              : theme === 'red'
-                              ? 'bg-[#1D0404] border-[#5A1212]'
-                              : 'bg-[#1D160B] border-[#6B4514]'
-                          }`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className={ui.textMuted}>유효 초점거리 :</span>
-                            <span className={`font-mono font-semibold tabular-nums ${ui.textPrimary}`}>
-                              {Math.round(effFl)}mm{factor !== 1 ? ` (${factor}×)` : ''}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className={ui.textMuted}>배율 / 사출동공 :</span>
-                            <span
-                              className={`font-mono font-bold tabular-nums ${
-                                theme === 'white'
-                                  ? 'text-amber-700'
-                                  : theme === 'red'
-                                  ? 'text-[#FF3B3B]'
-                                  : 'text-amber-400'
-                              }`}
-                            >
-                              {mag.toFixed(1)}×
-                              {exitPupil ? ` · ${exitPupil.toFixed(1)}mm` : ''}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className={ui.textMuted}>실시야각 (TFOV) :</span>
-                            <span
-                              className={`font-mono font-bold tabular-nums ${
-                                theme === 'white'
-                                  ? 'text-amber-700'
-                                  : theme === 'red'
-                                  ? 'text-[#FF3B3B]'
-                                  : 'text-amber-400'
-                              }`}
-                            >
-                              {tfov.toFixed(2)}°
-                            </span>
-                          </div>
-                        </div>
-                      ) : (
-                        <div
-                          className={`px-2 py-2 border rounded text-[10px] leading-snug ${cardIdleCls} ${ui.textMuted}`}
-                        >
-                          {scopes.length === 0 || eyepieces.length === 0
-                            ? '위 내 장비함에서 경통과 아이피스를 먼저 등록해 주세요.'
-                            : '경통과 아이피스를 선택하면 시야각이 자동으로 계산·표시됩니다.'}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()
-              ) : optics.eyepieceInputMode === 'direct' ? (
-                <div className="space-y-2">
-                  <div>
-                    <label className={`block mb-1 text-[10.5px] tracking-[-0.05em] ${ui.textMuted}`}>
-                      아이피스 실시야각 직접 입력 (TFOV, °)
-                    </label>
-                    <input
-                      type="number"
-                      min={0.05}
-                      max={20}
-                      step={0.05}
-                      value={optics.eyepieceFovDeg}
-                      onChange={(e) => {
-                        const v = parseFloat(e.target.value);
-                        if (!Number.isFinite(v)) return;
-                        onChangeOptics((p) => ({
-                          ...p,
-                          showEyepiece: true,
-                          eyepieceFovDeg: Math.max(0.05, Math.min(20, v)),
-                          eyepieceLabel: '망원경 아이피스',
-                        }));
-                      }}
-                      className={`w-full px-2 py-1.5 border text-xs font-mono tabular-nums ${ui.input}`}
-                      style={{ borderRadius: '5px' }}
-                    />
-                  </div>
-                  <input
-                    type="range"
-                    min={0.1}
-                    max={8.0}
-                    step={0.05}
-                    value={Math.min(8.0, optics.eyepieceFovDeg)}
-                    onChange={(e) =>
-                      onChangeOptics((p) => ({
-                        ...p,
-                        showEyepiece: true,
-                        eyepieceFovDeg: Number(e.target.value),
-                        eyepieceLabel: '망원경 아이피스',
-                      }))
-                    }
-                    className="w-full accent-amber-500"
-                  />
-                </div>
-              ) : (
-                <div className="space-y-2">
-                  <div>
-                    <label className={`block mb-1 text-[10.5px] tracking-[-0.05em] ${ui.textMuted}`}>
-                      망원경 초점거리 (mm)
-                    </label>
-                    <input
-                      type="number"
-                      min={50}
-                      max={10000}
-                      step={10}
-                      value={optics.telescopeFocalLengthMm}
-                      onChange={(e) => {
-                        const fl = parseFloat(e.target.value);
-                        if (!Number.isFinite(fl) || fl <= 0) return;
-                        onChangeOptics((p) => {
-                          const mag = fl / Math.max(1, p.eyepieceFocalLengthMm);
-                          const tfov = Math.max(0.05, Math.min(20, p.eyepieceAfovDeg / mag));
-                          return {
-                            ...p,
-                            showEyepiece: true,
-                            telescopeFocalLengthMm: fl,
-                            eyepieceFovDeg: Number(tfov.toFixed(2)),
-                          };
-                        });
-                      }}
-                      className={`w-full px-2 py-1.5 border text-xs font-mono tabular-nums ${ui.input}`}
-                      style={{ borderRadius: '5px' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className={`block mb-1 text-[10.5px] tracking-[-0.05em] ${ui.textMuted}`}>
-                      아이피스 초점거리 (mm)
-                    </label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={100}
-                      step={0.1}
-                      value={optics.eyepieceFocalLengthMm}
-                      onChange={(e) => {
-                        const epFl = parseFloat(e.target.value);
-                        if (!Number.isFinite(epFl) || epFl <= 0) return;
-                        onChangeOptics((p) => {
-                          const mag = p.telescopeFocalLengthMm / epFl;
-                          const tfov = Math.max(0.05, Math.min(20, p.eyepieceAfovDeg / mag));
-                          return {
-                            ...p,
-                            showEyepiece: true,
-                            eyepieceFocalLengthMm: epFl,
-                            eyepieceFovDeg: Number(tfov.toFixed(2)),
-                          };
-                        });
-                      }}
-                      className={`w-full px-2 py-1.5 border text-xs font-mono tabular-nums ${ui.input}`}
-                      style={{ borderRadius: '5px' }}
-                    />
-                  </div>
-
-                  <div>
-                    <label className={`block mb-1 text-[10.5px] tracking-[-0.05em] ${ui.textMuted}`}>
-                      아이피스 겉보기 시야각 (AFOV, °)
-                    </label>
-                    <input
-                      type="number"
-                      min={20}
-                      max={120}
-                      step={1}
-                      value={optics.eyepieceAfovDeg}
-                      onChange={(e) => {
-                        const afov = parseFloat(e.target.value);
-                        if (!Number.isFinite(afov) || afov <= 0) return;
-                        onChangeOptics((p) => {
-                          const mag =
-                            p.telescopeFocalLengthMm / Math.max(1, p.eyepieceFocalLengthMm);
-                          const tfov = Math.max(0.05, Math.min(20, afov / mag));
-                          return {
-                            ...p,
-                            showEyepiece: true,
-                            eyepieceAfovDeg: afov,
-                            eyepieceFovDeg: Number(tfov.toFixed(2)),
-                          };
-                        });
-                      }}
-                      className={`w-full px-2 py-1.5 border text-xs font-mono tabular-nums ${ui.input}`}
-                      style={{ borderRadius: '5px' }}
-                    />
-                    <div className="grid grid-cols-4 gap-1 mt-1.5">
-                      {AFOV_PRESETS.map((preset) => (
-                        <button
-                          key={preset}
-                          type="button"
-                          onClick={() =>
-                            onChangeOptics((p) => {
-                              const mag =
-                                p.telescopeFocalLengthMm /
-                                Math.max(1, p.eyepieceFocalLengthMm);
-                              const tfov = Math.max(0.05, Math.min(20, preset / mag));
-                              return {
-                                ...p,
-                                showEyepiece: true,
-                                eyepieceAfovDeg: preset,
-                                eyepieceFovDeg: Number(tfov.toFixed(2)),
-                              };
-                            })
-                          }
-                          className={`py-1 border text-[10.5px] font-mono tabular-nums font-semibold rounded transition-colors ${
-                            Math.abs(optics.eyepieceAfovDeg - preset) < 0.5
-                              ? theme === 'red'
-                                ? 'bg-[#7F1D1D] border-[#DC2626] text-[#FF5252]'
-                                : 'bg-amber-500 border-amber-400 text-slate-950'
-                              : ui.buttonIdle
-                          }`}
-                        >
-                          {preset}°
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-
-                  {/* Magnification & TFOV Result Box */}
-                  {(() => {
-                    const mag =
-                      optics.eyepieceFocalLengthMm > 0
-                        ? optics.telescopeFocalLengthMm / optics.eyepieceFocalLengthMm
-                        : 0;
-                    const tfov = mag > 0 ? optics.eyepieceAfovDeg / mag : 0;
-                    return (
-                      <div
-                        className={`rounded-md border px-2.5 py-2 space-y-1 text-[11px] ${
-                          theme === 'white'
-                            ? 'bg-amber-50 border-amber-300'
-                            : theme === 'red'
-                            ? 'bg-[#1D0404] border-[#5A1212]'
-                            : 'bg-[#1D160B] border-[#6B4514]'
-                        }`}
-                      >
-                        <div className="flex items-center justify-between">
-                          <span className={ui.textMuted}>배율 :</span>
-                          <span
-                            className={`font-mono font-bold tabular-nums ${
-                              theme === 'white'
-                                ? 'text-amber-700'
-                                : theme === 'red'
-                                ? 'text-[#FF3B3B]'
-                                : 'text-amber-400'
-                            }`}
-                          >
-                            {mag.toFixed(1)}×
-                          </span>
-                        </div>
-                        <div className="flex items-center justify-between">
-                          <span className={ui.textMuted}>실시야각 (TFOV) :</span>
-                          <span
-                            className={`font-mono font-bold tabular-nums ${
-                              theme === 'white'
-                                ? 'text-amber-700'
-                                : theme === 'red'
-                                ? 'text-[#FF3B3B]'
-                                : 'text-amber-400'
-                            }`}
-                          >
-                            {tfov.toFixed(2)}°
-                          </span>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </div>
-              )}
+              <p className={`text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
+                {optics.showEyepiece
+                  ? '망원경 아이피스가 켜져 있어 원 내부의 성도·HiPS 사진만 반전됩니다. 반사 경통 선택 시 상하+좌우 반전(도립상)이 자동 적용됩니다.'
+                  : '아이피스를 켜면 원 내부만 반전되고, 반사 경통이 선택된 경우 상하+좌우 반전(도립상)이 자동으로 반영됩니다.'}
+              </p>
               </div>
               )}
             </div>
 
+            {/* My Equipment Locker (내 장비함 · .skylist 통합) */}
+            <div className={`pt-3 border-t ${ui.divider}`}>
+              <EquipmentLockerPanel
+                theme={theme}
+                locker={equipmentLocker}
+                onAddOrUpdateItem={onAddOrUpdateEquipment}
+                onDeleteItem={onDeleteEquipment}
+                onToggleActiveItem={onToggleActiveEquipment}
+                onImportLocker={onImportEquipmentLocker}
+              />
+            </div>
+
             {/* Astrophotography Sensor Frame (내 장비 조합 + 스마트망원경 바로 적용) */}
             <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
-              <div className="flex items-center justify-between gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => toggleSection('optics_sensor')}
-                  aria-expanded={isSectionOpen('optics_sensor')}
-                  className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+              <button
+                type="button"
+                onClick={() => toggleSection('optics_sensor')}
+                aria-expanded={isSectionOpen('optics_sensor')}
+                className="w-full flex items-center justify-between gap-1.5 text-left hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                <span
+                  className={`flex items-center gap-1 min-w-0 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
                 >
                   <ChevronDown
                     className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
@@ -3941,19 +3441,11 @@ export function ControlSidebar({
                     }`}
                   />
                   <span>촬영 센서 화각 프레임</span>
-                </button>
-                <input
-                  type="checkbox"
-                  checked={optics.showSensorBox}
-                  onChange={(e) => {
-                    const checked = e.target.checked;
-                    onChangeOptics((p) => ({ ...p, showSensorBox: checked }));
-                    if (checked) openSection('optics_sensor');
-                  }}
-                  aria-label="촬영 센서 화각 프레임 표시"
-                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
-                />
-              </div>
+                </span>
+                <span className={`font-mono text-[9.5px] tabular-nums shrink-0 ${ui.textMuted}`}>
+                  {optics.sensorWidthDeg.toFixed(2)}°×{optics.sensorHeightDeg.toFixed(2)}°
+                </span>
+              </button>
 
               {isSectionOpen('optics_sensor') && (
               <div className="space-y-2">
@@ -4640,6 +4132,500 @@ export function ControlSidebar({
                 </div>
               );
             })()}
+
+            {/* Eyepiece TFOV Settings (내 장비 조합 / 시야각 직접 입력 / 수치 계산) */}
+            <div className={`pt-3 border-t ${ui.divider} space-y-2.5`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('optics_eyepiece')}
+                aria-expanded={isSectionOpen('optics_eyepiece')}
+                className="w-full flex items-center justify-between gap-1.5 text-left hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                <span className="flex items-center gap-1 min-w-0">
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('optics_eyepiece') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <SlidersHorizontal
+                    className={`w-3.5 h-3.5 shrink-0 ${
+                      theme === 'red' ? 'text-[#FF5555]' : 'text-amber-400'
+                    }`}
+                  />
+                  <span
+                    className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${
+                      theme === 'white'
+                        ? 'text-amber-700'
+                        : theme === 'red'
+                        ? 'text-[#FF6666]'
+                        : 'text-amber-400'
+                    }`}
+                  >
+                    아이피스 시야각 설정
+                  </span>
+                </span>
+                <span className={`font-mono text-[9.5px] tabular-nums shrink-0 ${ui.textMuted}`}>
+                  {optics.eyepieceFovDeg.toFixed(2)}°
+                </span>
+              </button>
+
+              {isSectionOpen('optics_eyepiece') && (
+              <div className="space-y-2.5">
+
+              {/* 3-Mode Segmented Switcher */}
+              <div
+                className={`grid grid-cols-3 gap-0.5 p-0.5 rounded-md border ${
+                  theme === 'white'
+                    ? 'bg-slate-100 border-slate-300'
+                    : theme === 'red'
+                    ? 'bg-[#120101] border-[#420C0C]'
+                    : 'bg-[#0B1220] border-[#25334D]'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeOptics((p) => ({ ...p, eyepieceInputMode: 'equipment' }))
+                  }
+                  className={`py-1 px-0.5 rounded text-[9.5px] font-semibold tracking-[-0.06em] whitespace-nowrap transition-colors ${
+                    optics.eyepieceInputMode === 'equipment'
+                      ? theme === 'red'
+                        ? 'bg-[#7F1D1D] text-[#FF5252]'
+                        : 'bg-amber-500 text-slate-950'
+                      : `${ui.textMuted} hover:opacity-100`
+                  }`}
+                >
+                  내 장비 조합
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeOptics((p) => ({ ...p, eyepieceInputMode: 'direct' }))
+                  }
+                  className={`py-1 px-0.5 rounded text-[9.5px] font-semibold tracking-[-0.06em] whitespace-nowrap transition-colors ${
+                    optics.eyepieceInputMode === 'direct'
+                      ? theme === 'red'
+                        ? 'bg-[#7F1D1D] text-[#FF5252]'
+                        : 'bg-amber-500 text-slate-950'
+                      : `${ui.textMuted} hover:opacity-100`
+                  }`}
+                >
+                  직접 입력
+                </button>
+                <button
+                  type="button"
+                  onClick={() =>
+                    onChangeOptics((p) => {
+                      const mag =
+                        p.eyepieceFocalLengthMm > 0
+                          ? p.telescopeFocalLengthMm / p.eyepieceFocalLengthMm
+                          : 40;
+                      const tfov = Math.max(0.05, Math.min(20, p.eyepieceAfovDeg / mag));
+                      return {
+                        ...p,
+                        eyepieceInputMode: 'calc',
+                        eyepieceFovDeg: Number(tfov.toFixed(2)),
+                      };
+                    })
+                  }
+                  className={`py-1 px-0.5 rounded text-[9.5px] font-semibold tracking-[-0.06em] whitespace-nowrap transition-colors ${
+                    optics.eyepieceInputMode === 'calc'
+                      ? theme === 'red'
+                        ? 'bg-[#7F1D1D] text-[#FF5252]'
+                        : 'bg-amber-500 text-slate-950'
+                      : `${ui.textMuted} hover:opacity-100`
+                  }`}
+                >
+                  수치 계산
+                </button>
+              </div>
+
+              {optics.eyepieceInputMode === 'equipment' ? (
+                (() => {
+                  const scopes = equipmentLocker.items.filter(
+                    (it) => it.category === 'telescope'
+                  );
+                  const eyepieces = equipmentLocker.items.filter(
+                    (it) => it.category === 'eyepiece'
+                  );
+                  const barlows = equipmentLocker.items.filter(
+                    (it) => it.category === 'barlow'
+                  );
+                  const activeScope = scopes.find(
+                    (s) => s.id === equipmentLocker.activeIds.telescope
+                  );
+                  const activeEp = eyepieces.find(
+                    (ep) => ep.id === equipmentLocker.activeIds.eyepiece
+                  );
+                  const activeBarlow = barlows.find(
+                    (b) => b.id === equipmentLocker.activeIds.barlow
+                  );
+                  const factor =
+                    activeBarlow?.factor && activeBarlow.factor > 0
+                      ? activeBarlow.factor
+                      : 1;
+                  const effFl = activeScope?.focalLengthMm
+                    ? activeScope.focalLengthMm * factor
+                    : null;
+                  const mag =
+                    effFl && activeEp?.focalLengthMm && activeEp.focalLengthMm > 0
+                      ? effFl / activeEp.focalLengthMm
+                      : null;
+                  const tfov = mag && activeEp?.afovDeg ? activeEp.afovDeg / mag : null;
+                  const exitPupil =
+                    mag && activeScope?.apertureMm ? activeScope.apertureMm / mag : null;
+
+                  return (
+                    <div className="space-y-2">
+                      <div>
+                        <label
+                          className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
+                        >
+                          경통 선택
+                        </label>
+                        <select
+                          value={equipmentLocker.activeIds.telescope ?? ''}
+                          onChange={(e) =>
+                            onSelectActiveEquipment('telescope', e.target.value || null)
+                          }
+                          className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
+                          style={{ borderRadius: '5px' }}
+                        >
+                          <option value="">경통 선택 안함</option>
+                          {scopes.map((sc) => (
+                            <option key={sc.id} value={sc.id}>
+                              {sc.name}
+                              {sc.focalLengthMm ? ` (${sc.focalLengthMm}mm)` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label
+                          className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
+                        >
+                          아이피스 선택
+                        </label>
+                        <select
+                          value={equipmentLocker.activeIds.eyepiece ?? ''}
+                          onChange={(e) =>
+                            onSelectActiveEquipment('eyepiece', e.target.value || null)
+                          }
+                          className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
+                          style={{ borderRadius: '5px' }}
+                        >
+                          <option value="">아이피스 선택 안함</option>
+                          {eyepieces.map((ep) => (
+                            <option key={ep.id} value={ep.id}>
+                              {ep.name}
+                              {ep.focalLengthMm && ep.afovDeg
+                                ? ` (${ep.focalLengthMm}mm · ${ep.afovDeg}°)`
+                                : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <label
+                          className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
+                        >
+                          바로우 / 리듀서
+                        </label>
+                        <select
+                          value={equipmentLocker.activeIds.barlow ?? ''}
+                          onChange={(e) =>
+                            onSelectActiveEquipment('barlow', e.target.value || null)
+                          }
+                          className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
+                          style={{ borderRadius: '5px' }}
+                        >
+                          <option value="">사용 안함 (1×)</option>
+                          {barlows.map((b) => (
+                            <option key={b.id} value={b.id}>
+                              {b.name}
+                              {b.factor ? ` (${b.factor}×)` : ''}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {effFl && mag && tfov ? (
+                        <div
+                          className={`rounded-md border px-2.5 py-2 space-y-1 text-[10.5px] ${
+                            theme === 'white'
+                              ? 'bg-amber-50 border-amber-300'
+                              : theme === 'red'
+                              ? 'bg-[#1D0404] border-[#5A1212]'
+                              : 'bg-[#1D160B] border-[#6B4514]'
+                          }`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className={ui.textMuted}>유효 초점거리 :</span>
+                            <span className={`font-mono font-semibold tabular-nums ${ui.textPrimary}`}>
+                              {Math.round(effFl)}mm{factor !== 1 ? ` (${factor}×)` : ''}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className={ui.textMuted}>배율 / 사출동공 :</span>
+                            <span
+                              className={`font-mono font-bold tabular-nums ${
+                                theme === 'white'
+                                  ? 'text-amber-700'
+                                  : theme === 'red'
+                                  ? 'text-[#FF3B3B]'
+                                  : 'text-amber-400'
+                              }`}
+                            >
+                              {mag.toFixed(1)}×
+                              {exitPupil ? ` · ${exitPupil.toFixed(1)}mm` : ''}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className={ui.textMuted}>실시야각 (TFOV) :</span>
+                            <span
+                              className={`font-mono font-bold tabular-nums ${
+                                theme === 'white'
+                                  ? 'text-amber-700'
+                                  : theme === 'red'
+                                  ? 'text-[#FF3B3B]'
+                                  : 'text-amber-400'
+                              }`}
+                            >
+                              {tfov.toFixed(2)}°
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <div
+                          className={`px-2 py-2 border rounded text-[10px] leading-snug ${cardIdleCls} ${ui.textMuted}`}
+                        >
+                          {scopes.length === 0 || eyepieces.length === 0
+                            ? '위 내 장비함에서 경통과 아이피스를 먼저 등록해 주세요.'
+                            : '경통과 아이피스를 선택하면 시야각이 자동으로 계산·표시됩니다.'}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()
+              ) : optics.eyepieceInputMode === 'direct' ? (
+                <div className="space-y-2">
+                  <div>
+                    <label className={`block mb-1 text-[10.5px] tracking-[-0.05em] ${ui.textMuted}`}>
+                      아이피스 실시야각 직접 입력 (TFOV, °)
+                    </label>
+                    <input
+                      type="number"
+                      min={0.05}
+                      max={20}
+                      step={0.05}
+                      value={optics.eyepieceFovDeg}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value);
+                        if (!Number.isFinite(v)) return;
+                        onChangeOptics((p) => ({
+                          ...p,
+                          showEyepiece: true,
+                          eyepieceFovDeg: Math.max(0.05, Math.min(20, v)),
+                          eyepieceLabel: '망원경 아이피스',
+                        }));
+                      }}
+                      className={`w-full px-2 py-1.5 border text-xs font-mono tabular-nums ${ui.input}`}
+                      style={{ borderRadius: '5px' }}
+                    />
+                  </div>
+                  <input
+                    type="range"
+                    min={0.1}
+                    max={8.0}
+                    step={0.05}
+                    value={Math.min(8.0, optics.eyepieceFovDeg)}
+                    onChange={(e) =>
+                      onChangeOptics((p) => ({
+                        ...p,
+                        showEyepiece: true,
+                        eyepieceFovDeg: Number(e.target.value),
+                        eyepieceLabel: '망원경 아이피스',
+                      }))
+                    }
+                    className="w-full accent-amber-500"
+                  />
+                </div>
+              ) : (
+                <div className="space-y-2">
+                  <div>
+                    <label className={`block mb-1 text-[10.5px] tracking-[-0.05em] ${ui.textMuted}`}>
+                      망원경 초점거리 (mm)
+                    </label>
+                    <input
+                      type="number"
+                      min={50}
+                      max={10000}
+                      step={10}
+                      value={optics.telescopeFocalLengthMm}
+                      onChange={(e) => {
+                        const fl = parseFloat(e.target.value);
+                        if (!Number.isFinite(fl) || fl <= 0) return;
+                        onChangeOptics((p) => {
+                          const mag = fl / Math.max(1, p.eyepieceFocalLengthMm);
+                          const tfov = Math.max(0.05, Math.min(20, p.eyepieceAfovDeg / mag));
+                          return {
+                            ...p,
+                            showEyepiece: true,
+                            telescopeFocalLengthMm: fl,
+                            eyepieceFovDeg: Number(tfov.toFixed(2)),
+                          };
+                        });
+                      }}
+                      className={`w-full px-2 py-1.5 border text-xs font-mono tabular-nums ${ui.input}`}
+                      style={{ borderRadius: '5px' }}
+                    />
+                  </div>
+
+                  <div>
+                    <label className={`block mb-1 text-[10.5px] tracking-[-0.05em] ${ui.textMuted}`}>
+                      아이피스 초점거리 (mm)
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      step={0.1}
+                      value={optics.eyepieceFocalLengthMm}
+                      onChange={(e) => {
+                        const epFl = parseFloat(e.target.value);
+                        if (!Number.isFinite(epFl) || epFl <= 0) return;
+                        onChangeOptics((p) => {
+                          const mag = p.telescopeFocalLengthMm / epFl;
+                          const tfov = Math.max(0.05, Math.min(20, p.eyepieceAfovDeg / mag));
+                          return {
+                            ...p,
+                            showEyepiece: true,
+                            eyepieceFocalLengthMm: epFl,
+                            eyepieceFovDeg: Number(tfov.toFixed(2)),
+                          };
+                        });
+                      }}
+                      className={`w-full px-2 py-1.5 border text-xs font-mono tabular-nums ${ui.input}`}
+                      style={{ borderRadius: '5px' }}
+                    />
+                  </div>
+
+                  <div>
+                    <label className={`block mb-1 text-[10.5px] tracking-[-0.05em] ${ui.textMuted}`}>
+                      아이피스 겉보기 시야각 (AFOV, °)
+                    </label>
+                    <input
+                      type="number"
+                      min={20}
+                      max={120}
+                      step={1}
+                      value={optics.eyepieceAfovDeg}
+                      onChange={(e) => {
+                        const afov = parseFloat(e.target.value);
+                        if (!Number.isFinite(afov) || afov <= 0) return;
+                        onChangeOptics((p) => {
+                          const mag =
+                            p.telescopeFocalLengthMm / Math.max(1, p.eyepieceFocalLengthMm);
+                          const tfov = Math.max(0.05, Math.min(20, afov / mag));
+                          return {
+                            ...p,
+                            showEyepiece: true,
+                            eyepieceAfovDeg: afov,
+                            eyepieceFovDeg: Number(tfov.toFixed(2)),
+                          };
+                        });
+                      }}
+                      className={`w-full px-2 py-1.5 border text-xs font-mono tabular-nums ${ui.input}`}
+                      style={{ borderRadius: '5px' }}
+                    />
+                    <div className="grid grid-cols-4 gap-1 mt-1.5">
+                      {AFOV_PRESETS.map((preset) => (
+                        <button
+                          key={preset}
+                          type="button"
+                          onClick={() =>
+                            onChangeOptics((p) => {
+                              const mag =
+                                p.telescopeFocalLengthMm /
+                                Math.max(1, p.eyepieceFocalLengthMm);
+                              const tfov = Math.max(0.05, Math.min(20, preset / mag));
+                              return {
+                                ...p,
+                                showEyepiece: true,
+                                eyepieceAfovDeg: preset,
+                                eyepieceFovDeg: Number(tfov.toFixed(2)),
+                              };
+                            })
+                          }
+                          className={`py-1 border text-[10.5px] font-mono tabular-nums font-semibold rounded transition-colors ${
+                            Math.abs(optics.eyepieceAfovDeg - preset) < 0.5
+                              ? theme === 'red'
+                                ? 'bg-[#7F1D1D] border-[#DC2626] text-[#FF5252]'
+                                : 'bg-amber-500 border-amber-400 text-slate-950'
+                              : ui.buttonIdle
+                          }`}
+                        >
+                          {preset}°
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Magnification & TFOV Result Box */}
+                  {(() => {
+                    const mag =
+                      optics.eyepieceFocalLengthMm > 0
+                        ? optics.telescopeFocalLengthMm / optics.eyepieceFocalLengthMm
+                        : 0;
+                    const tfov = mag > 0 ? optics.eyepieceAfovDeg / mag : 0;
+                    return (
+                      <div
+                        className={`rounded-md border px-2.5 py-2 space-y-1 text-[11px] ${
+                          theme === 'white'
+                            ? 'bg-amber-50 border-amber-300'
+                            : theme === 'red'
+                            ? 'bg-[#1D0404] border-[#5A1212]'
+                            : 'bg-[#1D160B] border-[#6B4514]'
+                        }`}
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className={ui.textMuted}>배율 :</span>
+                          <span
+                            className={`font-mono font-bold tabular-nums ${
+                              theme === 'white'
+                                ? 'text-amber-700'
+                                : theme === 'red'
+                                ? 'text-[#FF3B3B]'
+                                : 'text-amber-400'
+                            }`}
+                          >
+                            {mag.toFixed(1)}×
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className={ui.textMuted}>실시야각 (TFOV) :</span>
+                          <span
+                            className={`font-mono font-bold tabular-nums ${
+                              theme === 'white'
+                                ? 'text-amber-700'
+                                : theme === 'red'
+                                ? 'text-[#FF3B3B]'
+                                : 'text-amber-400'
+                            }`}
+                          >
+                            {tfov.toFixed(2)}°
+                          </span>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </div>
+              )}
+              </div>
+              )}
+            </div>
           </>
         )}
 

@@ -33,6 +33,7 @@ export interface SkylistResolveResult {
 const VALID_EQUIPMENT_CATEGORIES: EquipmentCategory[] = [
   'telescope',
   'eyepiece',
+  'finder',
   'barlow',
   'filter',
   'camera',
@@ -609,6 +610,12 @@ export function exportEquipmentToSkylist(locker: EquipmentLockerState): string {
     if (item.afovDeg !== undefined && Number.isFinite(item.afovDeg)) {
       lines.push(`\tAfovDeg=${item.afovDeg}`);
     }
+    if (item.magnification !== undefined && Number.isFinite(item.magnification)) {
+      lines.push(`\tMagnification=${item.magnification}`);
+    }
+    if (item.fovDeg !== undefined && Number.isFinite(item.fovDeg)) {
+      lines.push(`\tFovDeg=${item.fovDeg}`);
+    }
     if (item.factor !== undefined && Number.isFinite(item.factor)) {
       lines.push(`\tFactor=${item.factor}`);
     }
@@ -686,6 +693,8 @@ export function parseEquipmentFromSkylist(text: string): EquipmentLockerState {
           focalLengthMm: current.focalLengthMm,
           opticalType: current.opticalType,
           afovDeg: current.afovDeg,
+          magnification: current.magnification,
+          fovDeg: current.fovDeg,
           factor: current.factor,
           filterType: current.filterType,
           sensorWidthMm: current.sensorWidthMm,
@@ -733,6 +742,12 @@ export function parseEquipmentFromSkylist(text: string): EquipmentLockerState {
         case 'afovdeg':
           if (Number.isFinite(num) && num > 0) current.afovDeg = num;
           break;
+        case 'magnification':
+          if (Number.isFinite(num) && num > 0) current.magnification = num;
+          break;
+        case 'fovdeg':
+          if (Number.isFinite(num) && num > 0) current.fovDeg = num;
+          break;
         case 'factor':
           if (Number.isFinite(num) && num > 0) current.factor = num;
           break;
@@ -764,6 +779,8 @@ export function parseEquipmentFromSkylist(text: string): EquipmentLockerState {
         scope: 'telescope',
         telescope: 'telescope',
         eyepiece: 'eyepiece',
+        finder: 'finder',
+        finderscope: 'finder',
         barlow: 'barlow',
         reducer: 'barlow',
         filter: 'filter',

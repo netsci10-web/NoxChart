@@ -179,7 +179,9 @@ export const DEFAULT_SENSOR_EXPORT_CAPTION: SensorExportCaptionConfig = {
 export interface OpticsSettings {
   showCrosshair: boolean; // 중앙 십자선
   showTelrad: boolean; // 0.5°, 2°, 4° concentric circles
-  showFinder7x50: boolean; // 7×50 파인더 (7.0°)
+  showFinder7x50: boolean; // 파인더 시야 링 (기본 7×50 파인더 7.0° 또는 내 장비 파인더)
+  finderFovDeg?: number; // 활성 파인더 실 시야각 (°)
+  finderLabel?: string; // 활성 파인더 이름
   showEyepiece: boolean;
   eyepieceFovDeg: number; // Custom or calculated circular TFOV in degrees
   eyepieceRotationDeg: number; // Clockwise rotation angle (0..360°) inside telescope eyepiece circle
@@ -318,7 +320,7 @@ export interface StarHopGuide {
   note?: string;
 }
 
-export type EquipmentCategory = 'telescope' | 'eyepiece' | 'barlow' | 'filter' | 'camera';
+export type EquipmentCategory = 'telescope' | 'eyepiece' | 'finder' | 'barlow' | 'filter' | 'camera';
 
 export interface EquipmentItem {
   id: string;
@@ -329,6 +331,8 @@ export interface EquipmentItem {
   focalLengthMm?: number;
   opticalType?: string;
   afovDeg?: number;
+  magnification?: number;
+  fovDeg?: number;
   factor?: number;
   filterType?: string;
   sensorWidthMm?: number;
@@ -404,7 +408,8 @@ export interface ChallengeTrack {
   createdAt: number;
 }
 
-export type AsterismTool = 'select' | 'polyline' | 'polygon' | 'arrow' | 'label';
+export type AsterismTool = 'select' | 'polyline' | 'polygon' | 'circle' | 'arrow' | 'label';
+export type AsterismToolboxPopover = 'none' | 'props' | 'layers' | 'optics';
 export type AsterismLineStyle = 'dashed' | 'dashdot' | 'solid';
 export type AsterismLabelAnchor = 'top' | 'bottom' | 'left' | 'right';
 
@@ -421,31 +426,68 @@ export interface AsterismVertex {
   mag?: number;
 }
 
+export interface AsterismSavedView {
+  /** Saved chart center RA in degrees (0..360) */
+  raDeg: number;
+  /** Saved chart center Dec in degrees (-90..+90) */
+  decDeg: number;
+  /** Saved chart field of view in degrees */
+  fsz: number;
+}
+
+/**
+ * Asterism entity (성군) — belongs to a Layer/Group (AsterismLayer),
+ * and owns multiple child shape elements (AsterismObject[]).
+ */
+export interface AsterismGroup {
+  id: string;
+  layerId: string;
+  name: string;
+  visible: boolean;
+  /** Optional multiline observation memo for this asterism */
+  memo?: string;
+  /** Optional recommended eyepiece / magnification note */
+  eyepieceTag?: string;
+  /** Scale-dependent FOV LOD visibility window [minFovDeg, maxFovDeg] ("표시 시야각") */
+  visibleFovRange: [number, number];
+  /** Optional saved chart center & FOV applied via "위치·시야 적용" */
+  savedView?: AsterismSavedView;
+  createdAt: number;
+}
+
 export interface AsterismObject {
   id: string;
   layerId: string;
-  type: 'polyline' | 'polygon' | 'arrow' | 'label';
+  /** Parent AsterismGroup ID (성군 > 도형요소 계층) */
+  asterismId: string;
+  type: 'polyline' | 'polygon' | 'circle' | 'arrow' | 'label';
   vertices: AsterismVertex[];
-  /** Smooth Catmull-Rom spline rendering for polylines */
+  /** Angular radius in degrees for 'circle' shapes */
+  radiusDeg?: number;
+  /** Polyline mode: false = 선(직선 연결), true = 원호(부드러운 곡선) */
   smooth?: boolean;
   /** Line style: dashed | dashdot | solid */
   lineStyle: AsterismLineStyle;
   color: string;
-  lineWidth: number; // 0.5..4.0 px
-  opacity: number; // 0.1..1.0
-  /** Polygon fill opacity (default 0.08) */
+  lineWidth: number; // 0.5..10.0 px
+  opacity: number; // 0.1..1.0 (stroke opacity)
+  /** Dedicated opacity for 'label' text elements (0.1..1.0) */
+  textOpacity?: number;
+  /** Dedicated font size in px for 'label' text elements (8..32 px) */
+  textSize?: number;
+  /** Polygon / Circle interior fill opacity (0..0.5) */
   fillAlpha?: number;
   /** Optional extension multiplier for direction vector (e.g. 2.5 = extend 2.5x beyond AB) */
   extensionFactor?: number;
-  /** Scale-dependent FOV LOD visibility window [minFovDeg, maxFovDeg] */
+  /** Legacy/fallback FOV range (rendering inherits parent AsterismGroup.visibleFovRange) */
   visibleFovRange: [number, number];
-  /** Primary asterism title / label */
+  /** Shape display name in manager (NOT rendered on star chart canvas) */
   label: string;
-  /** Optional observation memo */
+  /** Multiline text content for 'label' shapes (rendered on canvas) */
   memo?: string;
-  /** Optional recommended eyepiece / magnification tag (e.g. "30mm 82° · 50×") */
+  /** Legacy optional recommended eyepiece tag */
   eyepieceTag?: string;
-  /** Upright label anchor offset direction */
+  /** Legacy upright label anchor */
   labelAnchor: AsterismLabelAnchor;
   createdAt: number;
 }
@@ -465,9 +507,14 @@ export interface AsterismSettings {
   defaultLineStyle: AsterismLineStyle;
   defaultSmooth: boolean;
   defaultColor: string;
-  defaultLineWidth: number;
-  defaultOpacity: number;
-  defaultFillAlpha: number;
+  defaultLineWidth: number; // 0.5..10.0 px
+  defaultOpacity: number; // 0.1..1.0
+  defaultTextOpacity: number; // 0.1..1.0
+  defaultTextSize: number; // 8..32 px
+  defaultFillAlpha: number; // 0..0.45
+  defaultCircleFillEnabled: boolean;
+  circleLinkEyepiece: boolean;
+  circleLinkFinder: boolean;
   defaultExtensionFactor: number;
   defaultVisibleFovRange: [number, number];
   defaultLabelAnchor: AsterismLabelAnchor;
@@ -476,6 +523,8 @@ export interface AsterismSettings {
 export interface AsterismStoreState {
   layers: AsterismLayer[];
   activeLayerId: string;
+  asterisms: AsterismGroup[];
+  activeAsterismId: string | null;
   objects: AsterismObject[];
   settings: AsterismSettings;
 }
@@ -492,7 +541,7 @@ export interface AsterismSnapPreview {
 }
 
 export interface AsterismDraftState {
-  type: 'polyline' | 'polygon' | 'arrow';
+  type: 'polyline' | 'polygon' | 'circle' | 'arrow';
   vertices: AsterismVertex[];
 }
 

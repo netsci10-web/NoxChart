@@ -49,10 +49,12 @@ import {
 } from './data/catalogLoader';
 import {
   AsterismDraftState,
+  AsterismGroup,
   AsterismLayer,
   AsterismObject,
   AsterismStoreState,
   AsterismTool,
+  AsterismToolboxPopover,
   AsterismVertex,
   ChallengeCheckpoint,
   ChallengeTrack,
@@ -93,13 +95,17 @@ import {
   syncUrlState,
 } from './utils/astronomy';
 import {
-  createBuiltInPresetAsterisms,
+  BuiltInAsterismPreset,
+  createBuiltInPresetAsterismBundles,
   decodeAsterismsFromUrlParam,
   DEFAULT_ASTERISM_LAYERS,
+  getNextAsterismGroupName,
+  getNextShapeName,
   loadAsterismStateFromLocal,
   makeAsterismId,
   saveAsterismStateToLocal,
 } from './utils/asterismStorage';
+import { destinationPointSpherical, getCircleRadiusDeg } from './utils/asterismRenderer';
 import { CHALLENGES_STORAGE_KEY, mergeChallengeTracks } from './utils/challengeStorage';
 import {
   formatObservationDateTime,
@@ -295,6 +301,8 @@ const DEFAULT_OPTICS: OpticsSettings = {
   showCrosshair: false,
   showTelrad: false,
   showFinder7x50: false,
+  finderFovDeg: 7.0,
+  finderLabel: '7×50 파인더',
   showEyepiece: false,
   eyepieceFovDeg: 1.7,
   eyepieceRotationDeg: 0,
@@ -377,6 +385,11 @@ function loadSavedOpticsSettings(): OpticsSettings {
           showCrosshair: boolOr('showCrosshair', DEFAULT_OPTICS.showCrosshair),
           showTelrad: boolOr('showTelrad', DEFAULT_OPTICS.showTelrad),
           showFinder7x50: boolOr('showFinder7x50', DEFAULT_OPTICS.showFinder7x50),
+          finderFovDeg: numOr('finderFovDeg', DEFAULT_OPTICS.finderFovDeg ?? 7.0, 0.5, 25),
+          finderLabel:
+            typeof parsed.finderLabel === 'string' && parsed.finderLabel.trim()
+              ? parsed.finderLabel
+              : DEFAULT_OPTICS.finderLabel,
           showEyepiece: boolOr('showEyepiece', DEFAULT_OPTICS.showEyepiece),
           eyepieceFovDeg: numOr('eyepieceFovDeg', DEFAULT_OPTICS.eyepieceFovDeg, 0.05, 20),
           eyepieceRotationDeg: numOr('eyepieceRotationDeg', DEFAULT_OPTICS.eyepieceRotationDeg, 0, 360),
@@ -650,13 +663,21 @@ export default function App() {
       const astParam = new URLSearchParams(window.location.search).get('ast');
       if (astParam) {
         const decoded = decodeAsterismsFromUrlParam(astParam, base.activeLayerId);
-        if (decoded && decoded.objects.length > 0) {
+        if (decoded && (decoded.asterisms.length > 0 || decoded.objects.length > 0)) {
           const existingLayerIds = new Set(base.layers.map((l) => l.id));
           const mergedLayers = [...base.layers];
           for (const l of decoded.layers) {
             if (!existingLayerIds.has(l.id)) {
               mergedLayers.push({ ...l, visible: true });
               existingLayerIds.add(l.id);
+            }
+          }
+          const existingGrpIds = new Set(base.asterisms.map((g) => g.id));
+          const mergedAsterisms = [...base.asterisms];
+          for (const g of decoded.asterisms) {
+            if (!existingGrpIds.has(g.id)) {
+              mergedAsterisms.push(g);
+              existingGrpIds.add(g.id);
             }
           }
           const existingObjIds = new Set(base.objects.map((o) => o.id));
@@ -667,7 +688,12 @@ export default function App() {
               existingObjIds.add(o.id);
             }
           }
-          return { ...base, layers: mergedLayers, objects: mergedObjects };
+          return {
+            ...base,
+            layers: mergedLayers,
+            asterisms: mergedAsterisms,
+            objects: mergedObjects,
+          };
         }
       }
     } catch {
@@ -677,21 +703,21 @@ export default function App() {
   });
   const [asterismMode, setAsterismMode] = useState(false);
   const [asterismTool, setAsterismTool] = useState<AsterismTool>('select');
+  const [asterismPopover, setAsterismPopover] = useState<AsterismToolboxPopover>('none');
   const [asterismSelectedId, setAsterismSelectedId] = useState<string | null>(null);
   const [asterismDraft, setAsterismDraft] = useState<AsterismDraftState | null>(null);
-  const [asterismPast, setAsterismPast] = useState<
-    { layers: AsterismLayer[]; activeLayerId: string; objects: AsterismObject[] }[]
-  >([]);
-  const [asterismFuture, setAsterismFuture] = useState<
-    { layers: AsterismLayer[]; activeLayerId: string; objects: AsterismObject[] }[]
-  >([]);
-  const asterismStoreRef = useRef<AsterismStoreState>(asterismStore);
-  asterismStoreRef.current = asterismStore;
-  const asterismDragSnapRef = useRef<{
+  type AsterismHistorySnap = {
     layers: AsterismLayer[];
     activeLayerId: string;
+    asterisms: AsterismGroup[];
+    activeAsterismId: string | null;
     objects: AsterismObject[];
-  } | null>(null);
+  };
+  const [asterismPast, setAsterismPast] = useState<AsterismHistorySnap[]>([]);
+  const [asterismFuture, setAsterismFuture] = useState<AsterismHistorySnap[]>([]);
+  const asterismStoreRef = useRef<AsterismStoreState>(asterismStore);
+  asterismStoreRef.current = asterismStore;
+  const asterismDragSnapRef = useRef<AsterismHistorySnap | null>(null);
 
   useEffect(() => {
     saveAsterismStateToLocal(asterismStore);
@@ -1918,6 +1944,10 @@ export default function App() {
       const eyepiece = nextLocker.activeIds.eyepiece
         ? byId.get(nextLocker.activeIds.eyepiece)
         : undefined;
+      const finders = nextLocker.items.filter((it) => it.category === 'finder');
+      const activeFinder =
+        (nextLocker.activeIds.finder ? byId.get(nextLocker.activeIds.finder) : undefined) ??
+        finders[0];
       const barlow = nextLocker.activeIds.barlow
         ? byId.get(nextLocker.activeIds.barlow)
         : undefined;
@@ -1970,6 +2000,11 @@ export default function App() {
             ? true
             : prev.showEyepiece;
 
+        const shouldShowFinder =
+          triggeredCat === 'finder'
+            ? Boolean(nextLocker.activeIds.finder)
+            : prev.showFinder7x50;
+
         const shouldShowSensor =
           triggeredCat === 'camera'
             ? Boolean(camera)
@@ -1981,6 +2016,10 @@ export default function App() {
           eyepiece?.name || prev.eyepieceLabel,
           barlow?.factor && barlow.factor !== 1 ? `${barlow.factor}×` : '',
         ].filter(Boolean);
+
+        const nextFinderFovDeg =
+          activeFinder?.fovDeg && activeFinder.fovDeg > 0 ? activeFinder.fovDeg : 7.0;
+        const nextFinderLabel = activeFinder?.name?.trim() || '7×50 파인더';
 
         const canRotateSensor = camera ? isSmartTelescopeRotatable(camera) : true;
         const sensorEquipLabel = camera
@@ -2000,6 +2039,9 @@ export default function App() {
           eyepieceFovDeg: Number(tfov.toFixed(2)),
           eyepieceLabel: eyepiece ? labelParts.join(' · ') : prev.eyepieceLabel,
           showEyepiece: shouldShowEyepiece,
+          finderFovDeg: nextFinderFovDeg,
+          finderLabel: nextFinderLabel,
+          showFinder7x50: shouldShowFinder,
           sensorWidthDeg: sensorW,
           sensorHeightDeg: sensorH,
           sensorEquipmentLabel: sensorEquipLabel,
@@ -2081,6 +2123,24 @@ export default function App() {
     optics.sensorRotationDeg,
   ]);
 
+  // Keep finder FOV ring synced with active/default finder in equipmentLocker (fallback: 7×50 7.0°)
+  useEffect(() => {
+    const finders = equipmentLocker.items.filter((it) => it.category === 'finder');
+    const resolved =
+      (equipmentLocker.activeIds.finder
+        ? finders.find((f) => f.id === equipmentLocker.activeIds.finder)
+        : undefined) ?? finders[0];
+    const nextFov = resolved?.fovDeg && resolved.fovDeg > 0 ? resolved.fovDeg : 7.0;
+    const nextLabel = resolved?.name?.trim() || '7×50 파인더';
+    if (optics.finderFovDeg !== nextFov || optics.finderLabel !== nextLabel) {
+      setOptics((prev) => ({
+        ...prev,
+        finderFovDeg: nextFov,
+        finderLabel: nextLabel,
+      }));
+    }
+  }, [equipmentLocker, optics.finderFovDeg, optics.finderLabel]);
+
   const handleAddOrUpdateEquipment = useCallback(
     (item: EquipmentItem) => {
       setEquipmentLocker((prev) => {
@@ -2088,9 +2148,13 @@ export default function App() {
         const items = exists
           ? prev.items.map((it) => (it.id === item.id ? item : it))
           : [...prev.items, item];
+        const activeIds =
+          !exists && item.category === 'finder' && !prev.activeIds.finder
+            ? { ...prev.activeIds, finder: item.id }
+            : prev.activeIds;
         const next: EquipmentLockerState = {
           items,
-          activeIds: prev.activeIds,
+          activeIds,
         };
         if (prev.activeIds[item.category] === item.id) {
           applyEquipmentToOptics(next, item.category);
@@ -2957,10 +3021,14 @@ export default function App() {
   );
 
   const handleStartTonightTour = useCallback(
-    (startIndex = 0) => {
+    (startIndex = 0, selectedStopIds?: string[]) => {
       const freshStops = buildTonightTourStops(observer, getCatalogSnapshot(), 10);
-      if (freshStops.length === 0) return;
-      navigateTourToStop(freshStops, startIndex, true, {
+      const filteredStops =
+        selectedStopIds && selectedStopIds.length > 0
+          ? freshStops.filter((s) => selectedStopIds.includes(s.id))
+          : freshStops;
+      if (filteredStops.length === 0) return;
+      navigateTourToStop(filteredStops, startIndex, true, {
         title: '오늘의 투어',
         trackId: null,
       });
@@ -3263,12 +3331,10 @@ export default function App() {
   }, [challenges, challengeDraft]);
 
   // ---------------------------------------------------------------------------
-  // Custom Asterism & Star Chain Drawing Handlers (Undo/Redo + Vector CRUD)
+  // Custom Asterism & Star Chain Drawing Handlers (Group > Asterism > Shape)
   // ---------------------------------------------------------------------------
   const commitAsterismMutation = useCallback(
-    (
-      mutator: (prev: AsterismStoreState) => AsterismStoreState
-    ) => {
+    (mutator: (prev: AsterismStoreState) => AsterismStoreState) => {
       const prev = asterismStoreRef.current;
       const next = mutator(prev);
       if (next === prev) return;
@@ -3277,6 +3343,8 @@ export default function App() {
         {
           layers: prev.layers,
           activeLayerId: prev.activeLayerId,
+          asterisms: prev.asterisms,
+          activeAsterismId: prev.activeAsterismId,
           objects: prev.objects,
         },
       ]);
@@ -3296,6 +3364,8 @@ export default function App() {
         {
           layers: cur.layers,
           activeLayerId: cur.activeLayerId,
+          asterisms: cur.asterisms,
+          activeAsterismId: cur.activeAsterismId,
           objects: cur.objects,
         },
         ...fut.slice(0, 49),
@@ -3304,6 +3374,8 @@ export default function App() {
         ...cur,
         layers: prevSnap.layers,
         activeLayerId: prevSnap.activeLayerId,
+        asterisms: prevSnap.asterisms,
+        activeAsterismId: prevSnap.activeAsterismId,
         objects: prevSnap.objects,
       };
       asterismStoreRef.current = restored;
@@ -3323,6 +3395,8 @@ export default function App() {
         {
           layers: cur.layers,
           activeLayerId: cur.activeLayerId,
+          asterisms: cur.asterisms,
+          activeAsterismId: cur.activeAsterismId,
           objects: cur.objects,
         },
       ]);
@@ -3330,6 +3404,8 @@ export default function App() {
         ...cur,
         layers: nextSnap.layers,
         activeLayerId: nextSnap.activeLayerId,
+        asterisms: nextSnap.asterisms,
+        activeAsterismId: nextSnap.activeAsterismId,
         objects: nextSnap.objects,
       };
       asterismStoreRef.current = restored;
@@ -3338,6 +3414,39 @@ export default function App() {
       return fut.slice(1);
     });
   }, []);
+
+  const ensureWorkingAsterism = (
+    prev: AsterismStoreState
+  ): { state: AsterismStoreState; asterism: AsterismGroup } => {
+    if (prev.activeAsterismId) {
+      const found = prev.asterisms.find((g) => g.id === prev.activeAsterismId);
+      if (found) {
+        return { state: prev, asterism: found };
+      }
+    }
+    const newGrp: AsterismGroup = {
+      id: makeAsterismId('grp'),
+      layerId: prev.activeLayerId,
+      name: getNextAsterismGroupName(prev.asterisms),
+      visible: true,
+      visibleFovRange: [
+        prev.settings.defaultVisibleFovRange[0],
+        prev.settings.defaultVisibleFovRange[1],
+      ],
+      createdAt: Date.now(),
+    };
+    return {
+      state: {
+        ...prev,
+        layers: prev.layers.map((l) =>
+          l.id === prev.activeLayerId ? { ...l, visible: true } : l
+        ),
+        asterisms: [...prev.asterisms, newGrp],
+        activeAsterismId: newGrp.id,
+      },
+      asterism: newGrp,
+    };
+  };
 
   const handleChangeAsterismTool = useCallback((tool: AsterismTool) => {
     setAsterismDraft(null);
@@ -3348,12 +3457,253 @@ export default function App() {
     setAsterismDraft(null);
     setAsterismSelectedId(null);
     setAsterismTool('select');
+    setAsterismPopover('none');
     setAsterismMode(false);
   }, []);
 
+  const handleSelectAsterism = useCallback((id: string | null) => {
+    setAsterismSelectedId(id);
+    if (id) {
+      const obj = asterismStoreRef.current.objects.find((o) => o.id === id);
+      if (obj && obj.asterismId && asterismStoreRef.current.activeAsterismId !== obj.asterismId) {
+        setAsterismStore((prev) => {
+          const next = { ...prev, activeAsterismId: obj.asterismId };
+          asterismStoreRef.current = next;
+          return next;
+        });
+      }
+    }
+  }, []);
+
+  const handleSetActiveAsterism = useCallback((asterismId: string | null) => {
+    setAsterismStore((prev) => {
+      if (asterismId !== null && !prev.asterisms.some((g) => g.id === asterismId)) return prev;
+      const grp = asterismId ? prev.asterisms.find((g) => g.id === asterismId) : null;
+      const next: AsterismStoreState = {
+        ...prev,
+        activeAsterismId: asterismId,
+        activeLayerId: grp ? grp.layerId : prev.activeLayerId,
+      };
+      asterismStoreRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleOpenAsterismLayers = useCallback(
+    (asterismId: string) => {
+      handleSetActiveAsterism(asterismId);
+      setAsterismSelectedId(null);
+      setAsterismDraft(null);
+      setAsterismTool('select');
+      setAsterismMode(true);
+      setAsterismPopover('layers');
+    },
+    [handleSetActiveAsterism]
+  );
+
+  const handleOpenAsterismShapeProps = useCallback(
+    (asterismId: string, objectId: string) => {
+      handleSetActiveAsterism(asterismId);
+      setAsterismSelectedId(objectId);
+      setAsterismDraft(null);
+      setAsterismTool('select');
+      setAsterismMode(true);
+      setAsterismPopover('props');
+    },
+    [handleSetActiveAsterism]
+  );
+
+  const handleCreateAsterismGroup = useCallback(
+    (name?: string, layerId?: string): string => {
+      const cur = asterismStoreRef.current;
+      const resolvedLayerId =
+        layerId && cur.layers.some((l) => l.id === layerId) ? layerId : cur.activeLayerId;
+      const newGrp: AsterismGroup = {
+        id: makeAsterismId('grp'),
+        layerId: resolvedLayerId,
+        name: name?.trim() || getNextAsterismGroupName(cur.asterisms),
+        visible: true,
+        visibleFovRange: [
+          cur.settings.defaultVisibleFovRange[0],
+          cur.settings.defaultVisibleFovRange[1],
+        ],
+        createdAt: Date.now(),
+      };
+      commitAsterismMutation((prev) => ({
+        ...prev,
+        layers: prev.layers.map((l) =>
+          l.id === resolvedLayerId ? { ...l, visible: true } : l
+        ),
+        activeLayerId: resolvedLayerId,
+        asterisms: [...prev.asterisms, newGrp],
+        activeAsterismId: newGrp.id,
+      }));
+      setAsterismSelectedId(null);
+      setAsterismDraft(null);
+      return newGrp.id;
+    },
+    [commitAsterismMutation]
+  );
+
+  const handleStartNewAsterismFromStar = useCallback(
+    (vertex: AsterismVertex) => {
+      handleCreateAsterismGroup();
+      setAsterismTool('polyline');
+      setAsterismDraft({ type: 'polyline', vertices: [vertex] });
+    },
+    [handleCreateAsterismGroup]
+  );
+
+  const handleUpdateAsterismGroup = useCallback(
+    (asterismId: string, patch: Partial<AsterismGroup>) => {
+      commitAsterismMutation((prev) => {
+        const nextAsterisms = prev.asterisms.map((g) =>
+          g.id === asterismId ? { ...g, ...patch } : g
+        );
+        const nextObjects =
+          patch.layerId !== undefined
+            ? prev.objects.map((o) =>
+                o.asterismId === asterismId ? { ...o, layerId: patch.layerId! } : o
+              )
+            : prev.objects;
+        return {
+          ...prev,
+          asterisms: nextAsterisms,
+          objects: nextObjects,
+        };
+      });
+    },
+    [commitAsterismMutation]
+  );
+
+  const handleDeleteAsterismGroup = useCallback(
+    async (asterismId: string): Promise<boolean> => {
+      const cur = asterismStoreRef.current;
+      const target = cur.asterisms.find((g) => g.id === asterismId);
+      if (!target) return false;
+      const childCount = cur.objects.filter((o) => o.asterismId === asterismId).length;
+      const ok = await requestConfirm({
+        title: '성군 삭제 확인',
+        message: `‘${target.name}’ 성군을 삭제하시겠습니까?`,
+        detail:
+          childCount > 0
+            ? `이 성군에 포함된 도형 요소 ${childCount}개도 함께 삭제됩니다.`
+            : undefined,
+        confirmLabel: '삭제',
+      });
+      if (!ok) return false;
+      commitAsterismMutation((prev) => {
+        const remainingAsterisms = prev.asterisms.filter((g) => g.id !== asterismId);
+        const remainingObjects = prev.objects.filter((o) => o.asterismId !== asterismId);
+        return {
+          ...prev,
+          asterisms: remainingAsterisms,
+          activeAsterismId: prev.activeAsterismId === asterismId ? null : prev.activeAsterismId,
+          objects: remainingObjects,
+        };
+      });
+      setAsterismSelectedId((sel) => {
+        if (!sel) return null;
+        const stillExists = asterismStoreRef.current.objects.some((o) => o.id === sel);
+        return stillExists ? sel : null;
+      });
+      return true;
+    },
+    [commitAsterismMutation, requestConfirm]
+  );
+
+  const handleToggleAsterismGroupVisible = useCallback((asterismId: string) => {
+    setAsterismStore((prev) => {
+      const next: AsterismStoreState = {
+        ...prev,
+        asterisms: prev.asterisms.map((g) =>
+          g.id === asterismId ? { ...g, visible: !g.visible } : g
+        ),
+      };
+      asterismStoreRef.current = next;
+      return next;
+    });
+  }, []);
+
+  const handleSaveAsterismGroupView = useCallback(
+    (asterismId: string) => {
+      const v = viewRef.current;
+      const savedView = {
+        raDeg: (((v.ra * 15) % 360) + 360) % 360,
+        decDeg: Math.max(-90, Math.min(90, v.dec)),
+        fsz: Math.max(0.05, Math.min(180, v.fsz)),
+      };
+      handleUpdateAsterismGroup(asterismId, { savedView });
+    },
+    [handleUpdateAsterismGroup]
+  );
+
+  const handleCreateAsterismCircle = useCallback(
+    (center: AsterismVertex, radiusDeg: number, explicitEdge?: AsterismVertex) => {
+      const safeR = Math.max(0.01, Math.min(89, radiusDeg));
+      const edgePt =
+        explicitEdge ??
+        (() => {
+          const p = destinationPointSpherical(center.raDeg, center.decDeg, 90, safeR);
+          return { raDeg: p.raDeg, decDeg: p.decDeg };
+        })();
+      let createdId = '';
+      commitAsterismMutation((prev) => {
+        const { state: base, asterism } = ensureWorkingAsterism(prev);
+        const s = base.settings;
+        const newObj: AsterismObject = {
+          id: makeAsterismId('cir'),
+          layerId: asterism.layerId,
+          asterismId: asterism.id,
+          type: 'circle',
+          vertices: [center, edgePt],
+          radiusDeg: safeR,
+          color: s.defaultColor,
+          lineWidth: s.defaultLineWidth,
+          opacity: s.defaultOpacity,
+          lineStyle: s.defaultLineStyle,
+          smooth: false,
+          fillAlpha: s.defaultCircleFillEnabled ? s.defaultFillAlpha : 0,
+          visibleFovRange: [asterism.visibleFovRange[0], asterism.visibleFovRange[1]],
+          label: getNextShapeName('circle', false, base.objects, asterism.id),
+          labelAnchor: s.defaultLabelAnchor,
+          createdAt: Date.now(),
+        };
+        createdId = newObj.id;
+        return {
+          ...base,
+          layers: base.layers.map((l) =>
+            l.id === asterism.layerId ? { ...l, visible: true } : l
+          ),
+          asterisms: base.asterisms.map((g) =>
+            g.id === asterism.id ? { ...g, visible: true } : g
+          ),
+          objects: [...base.objects, newObj],
+        };
+      });
+      setAsterismDraft(null);
+      if (createdId) setAsterismSelectedId(createdId);
+    },
+    [commitAsterismMutation]
+  );
+
   const finalizeAsterismVertices = useCallback(
-    (tool: 'polyline' | 'polygon' | 'arrow', rawVertices: AsterismVertex[]) => {
-      // Remove adjacent duplicate vertices (e.g. from double-click completion)
+    (tool: 'polyline' | 'polygon' | 'circle' | 'arrow', rawVertices: AsterismVertex[]) => {
+      if (tool === 'circle') {
+        if (rawVertices.length < 2) {
+          setAsterismDraft(null);
+          return;
+        }
+        const rDeg = angularDistanceDeg(
+          rawVertices[0].raDeg,
+          rawVertices[0].decDeg,
+          rawVertices[1].raDeg,
+          rawVertices[1].decDeg
+        );
+        handleCreateAsterismCircle(rawVertices[0], Math.max(0.02, rDeg), rawVertices[1]);
+        return;
+      }
+
       const cleaned: AsterismVertex[] = [];
       for (const v of rawVertices) {
         const last = cleaned[cleaned.length - 1];
@@ -3366,41 +3716,55 @@ export default function App() {
         setAsterismDraft(null);
         return;
       }
-      const cur = asterismStoreRef.current;
-      const s = cur.settings;
-      const newObj: AsterismObject = {
-        id: makeAsterismId('ast'),
-        layerId: cur.activeLayerId,
-        type: tool,
-        vertices: cleaned,
-        color: s.defaultColor,
-        lineWidth: s.defaultLineWidth,
-        opacity: s.defaultOpacity,
-        lineStyle: s.defaultLineStyle,
-        smooth: tool === 'polyline' ? s.defaultSmooth : false,
-        fillAlpha: tool === 'polygon' ? s.defaultFillAlpha : undefined,
-        extensionFactor: tool === 'arrow' ? s.defaultExtensionFactor : undefined,
-        visibleFovRange: [s.defaultVisibleFovRange[0], s.defaultVisibleFovRange[1]],
-        label: '',
-        labelAnchor: s.defaultLabelAnchor,
-        createdAt: Date.now(),
-      };
-      commitAsterismMutation((prev) => ({
-        ...prev,
-        layers: prev.layers.map((l) =>
-          l.id === prev.activeLayerId ? { ...l, visible: true } : l
-        ),
-        objects: [...prev.objects, newObj],
-      }));
+      let createdId = '';
+      commitAsterismMutation((prev) => {
+        const { state: base, asterism } = ensureWorkingAsterism(prev);
+        const s = base.settings;
+        const smooth = tool === 'polyline' ? s.defaultSmooth : false;
+        const newObj: AsterismObject = {
+          id: makeAsterismId('ast'),
+          layerId: asterism.layerId,
+          asterismId: asterism.id,
+          type: tool,
+          vertices: cleaned,
+          color: s.defaultColor,
+          lineWidth: s.defaultLineWidth,
+          opacity: s.defaultOpacity,
+          lineStyle: s.defaultLineStyle,
+          smooth,
+          fillAlpha: tool === 'polygon' ? s.defaultFillAlpha : undefined,
+          extensionFactor: tool === 'arrow' ? s.defaultExtensionFactor : undefined,
+          visibleFovRange: [asterism.visibleFovRange[0], asterism.visibleFovRange[1]],
+          label: getNextShapeName(tool, smooth, base.objects, asterism.id),
+          labelAnchor: s.defaultLabelAnchor,
+          createdAt: Date.now(),
+        };
+        createdId = newObj.id;
+        return {
+          ...base,
+          layers: base.layers.map((l) =>
+            l.id === asterism.layerId ? { ...l, visible: true } : l
+          ),
+          asterisms: base.asterisms.map((g) =>
+            g.id === asterism.id ? { ...g, visible: true } : g
+          ),
+          objects: [...base.objects, newObj],
+        };
+      });
       setAsterismDraft(null);
-      setAsterismSelectedId(newObj.id);
+      if (createdId) setAsterismSelectedId(createdId);
     },
-    [commitAsterismMutation]
+    [commitAsterismMutation, handleCreateAsterismCircle]
   );
 
   const handleAddAsterismDraftPoint = useCallback(
     (vertex: AsterismVertex) => {
-      if (asterismTool !== 'polyline' && asterismTool !== 'polygon' && asterismTool !== 'arrow') {
+      if (
+        asterismTool !== 'polyline' &&
+        asterismTool !== 'polygon' &&
+        asterismTool !== 'circle' &&
+        asterismTool !== 'arrow'
+      ) {
         return;
       }
       if (!asterismDraft || asterismDraft.type !== asterismTool) {
@@ -3412,9 +3776,12 @@ export default function App() {
         return;
       }
       const nextVerts = [...asterismDraft.vertices, vertex];
-      // Direction pointer auto-completes cleanly on its 2nd point (ready to adjust 1x~5x extension)
       if (asterismTool === 'arrow' && nextVerts.length >= 2) {
         finalizeAsterismVertices('arrow', nextVerts);
+        return;
+      }
+      if (asterismTool === 'circle' && nextVerts.length >= 2) {
+        finalizeAsterismVertices('circle', nextVerts);
         return;
       }
       setAsterismDraft({ type: asterismTool, vertices: nextVerts });
@@ -3441,31 +3808,42 @@ export default function App() {
 
   const handleCreateAsterismLabel = useCallback(
     (vertex: AsterismVertex) => {
-      const cur = asterismStoreRef.current;
-      const s = cur.settings;
-      const newObj: AsterismObject = {
-        id: makeAsterismId('lbl'),
-        layerId: cur.activeLayerId,
-        type: 'label',
-        vertices: [vertex],
-        color: s.defaultColor,
-        lineWidth: s.defaultLineWidth,
-        opacity: s.defaultOpacity,
-        lineStyle: 'solid',
-        smooth: false,
-        visibleFovRange: [s.defaultVisibleFovRange[0], s.defaultVisibleFovRange[1]],
-        label: vertex.starName ? `${vertex.starName}` : '관측 라벨',
-        labelAnchor: s.defaultLabelAnchor,
-        createdAt: Date.now(),
-      };
-      commitAsterismMutation((prev) => ({
-        ...prev,
-        layers: prev.layers.map((l) =>
-          l.id === prev.activeLayerId ? { ...l, visible: true } : l
-        ),
-        objects: [...prev.objects, newObj],
-      }));
-      setAsterismSelectedId(newObj.id);
+      let createdId = '';
+      commitAsterismMutation((prev) => {
+        const { state: base, asterism } = ensureWorkingAsterism(prev);
+        const s = base.settings;
+        const newObj: AsterismObject = {
+          id: makeAsterismId('lbl'),
+          layerId: asterism.layerId,
+          asterismId: asterism.id,
+          type: 'label',
+          vertices: [vertex],
+          color: s.defaultColor,
+          lineWidth: s.defaultLineWidth,
+          opacity: s.defaultOpacity,
+          textOpacity: s.defaultTextOpacity,
+          textSize: s.defaultTextSize,
+          lineStyle: 'solid',
+          smooth: false,
+          visibleFovRange: [asterism.visibleFovRange[0], asterism.visibleFovRange[1]],
+          label: getNextShapeName('label', false, base.objects, asterism.id),
+          memo: vertex.starName ? `${vertex.starName}` : '관측 텍스트',
+          labelAnchor: s.defaultLabelAnchor,
+          createdAt: Date.now(),
+        };
+        createdId = newObj.id;
+        return {
+          ...base,
+          layers: base.layers.map((l) =>
+            l.id === asterism.layerId ? { ...l, visible: true } : l
+          ),
+          asterisms: base.asterisms.map((g) =>
+            g.id === asterism.id ? { ...g, visible: true } : g
+          ),
+          objects: [...base.objects, newObj],
+        };
+      });
+      if (createdId) setAsterismSelectedId(createdId);
       setAsterismTool('select');
     },
     [commitAsterismMutation]
@@ -3478,6 +3856,8 @@ export default function App() {
         asterismDragSnapRef.current = {
           layers: cur.layers,
           activeLayerId: cur.activeLayerId,
+          asterisms: cur.asterisms,
+          activeAsterismId: cur.activeAsterismId,
           objects: cur.objects,
         };
       }
@@ -3485,6 +3865,34 @@ export default function App() {
         ...cur,
         objects: cur.objects.map((o) => {
           if (o.id !== objectId) return o;
+          if (o.type === 'circle') {
+            if (vertexIndex === 0) {
+              const rDeg = getCircleRadiusDeg(o);
+              const edge = destinationPointSpherical(vertex.raDeg, vertex.decDeg, 90, rDeg);
+              return {
+                ...o,
+                vertices: [vertex, { raDeg: edge.raDeg, decDeg: edge.decDeg }],
+                radiusDeg: rDeg,
+              };
+            }
+            if (vertexIndex === 1 && o.vertices[0]) {
+              const newR = Math.max(
+                0.01,
+                angularDistanceDeg(
+                  o.vertices[0].raDeg,
+                  o.vertices[0].decDeg,
+                  vertex.raDeg,
+                  vertex.decDeg
+                )
+              );
+              return {
+                ...o,
+                vertices: [o.vertices[0], vertex],
+                radiusDeg: newR,
+              };
+            }
+            return o;
+          }
           if (vertexIndex < 0 || vertexIndex >= o.vertices.length) return o;
           const verts = o.vertices.slice();
           verts[vertexIndex] = vertex;
@@ -3510,7 +3918,7 @@ export default function App() {
       commitAsterismMutation((prev) => ({
         ...prev,
         objects: prev.objects.map((o) => {
-          if (o.id !== objectId) return o;
+          if (o.id !== objectId || o.type === 'circle') return o;
           const verts = o.vertices.slice();
           verts.splice(segmentIndex + 1, 0, vertex);
           return { ...o, vertices: verts };
@@ -3523,18 +3931,18 @@ export default function App() {
   const handleDeleteAsterismVertex = useCallback(
     async (objectId: string, vertexIndex: number): Promise<boolean> => {
       const target = asterismStoreRef.current.objects.find((o) => o.id === objectId);
-      if (!target || target.type === 'label') return false;
+      if (!target || target.type === 'label' || target.type === 'circle') return false;
       const minV = target.type === 'polygon' ? 3 : 2;
       if (target.vertices.length <= minV) return false;
       const ok = await requestConfirm({
         title: '꼭짓점 삭제 확인',
-        message: `‘${target.label || '작도 항목'}’의 ${vertexIndex + 1}번 꼭짓점을 삭제하시겠습니까?`,
+        message: `‘${target.label || '도형 요소'}’의 ${vertexIndex + 1}번 꼭짓점을 삭제하시겠습니까?`,
         confirmLabel: '삭제',
       });
       if (!ok) return false;
       commitAsterismMutation((prev) => {
         const curTarget = prev.objects.find((o) => o.id === objectId);
-        if (!curTarget || curTarget.type === 'label') return prev;
+        if (!curTarget || curTarget.type === 'label' || curTarget.type === 'circle') return prev;
         const curMinV = curTarget.type === 'polygon' ? 3 : 2;
         if (curTarget.vertices.length <= curMinV) return prev;
         return {
@@ -3555,7 +3963,24 @@ export default function App() {
     (id: string, patch: Partial<AsterismObject>) => {
       commitAsterismMutation((prev) => ({
         ...prev,
-        objects: prev.objects.map((o) => (o.id === id ? { ...o, ...patch } : o)),
+        objects: prev.objects.map((o) => {
+          if (o.id !== id) return o;
+          const nextObj = { ...o, ...patch };
+          if (
+            nextObj.type === 'circle' &&
+            patch.radiusDeg !== undefined &&
+            nextObj.vertices[0]
+          ) {
+            const edge = destinationPointSpherical(
+              nextObj.vertices[0].raDeg,
+              nextObj.vertices[0].decDeg,
+              90,
+              patch.radiusDeg
+            );
+            nextObj.vertices = [nextObj.vertices[0], { raDeg: edge.raDeg, decDeg: edge.decDeg }];
+          }
+          return nextObj;
+        }),
       }));
     },
     [commitAsterismMutation]
@@ -3566,8 +3991,8 @@ export default function App() {
       const target = asterismStoreRef.current.objects.find((o) => o.id === id);
       if (!target) return false;
       const ok = await requestConfirm({
-        title: '작도 항목 삭제 확인',
-        message: `‘${target.label || '이름 없는 성군'}’ 작도 항목을 삭제하시겠습니까?`,
+        title: '도형 삭제 확인',
+        message: `‘${target.label || '도형 요소'}’를 삭제하시겠습니까?`,
         confirmLabel: '삭제',
       });
       if (!ok) return false;
@@ -3665,13 +4090,13 @@ export default function App() {
       if (cur.layers.length <= 1) return false;
       const target = cur.layers.find((l) => l.id === layerId);
       if (!target) return false;
-      const objCount = cur.objects.filter((o) => o.layerId === layerId).length;
+      const grpCount = cur.asterisms.filter((g) => g.layerId === layerId).length;
       const ok = await requestConfirm({
-        title: '작도 레이어 삭제 확인',
-        message: `‘${target.name}’ 레이어를 삭제하시겠습니까?`,
+        title: '성군 그룹 삭제 확인',
+        message: `‘${target.name}’ 그룹을 삭제하시겠습니까?`,
         detail:
-          objCount > 0
-            ? `이 레이어의 작도 항목 ${objCount}개는 기본 레이어로 이동됩니다.`
+          grpCount > 0
+            ? `이 그룹의 성군 ${grpCount}개는 기본 그룹으로 이동됩니다.`
             : undefined,
         confirmLabel: '삭제',
       });
@@ -3684,6 +4109,9 @@ export default function App() {
           ...prev,
           layers: remaining,
           activeLayerId: prev.activeLayerId === layerId ? fallbackId : prev.activeLayerId,
+          asterisms: prev.asterisms.map((g) =>
+            g.layerId === layerId ? { ...g, layerId: fallbackId } : g
+          ),
           objects: prev.objects.map((o) =>
             o.layerId === layerId ? { ...o, layerId: fallbackId } : o
           ),
@@ -3694,88 +4122,47 @@ export default function App() {
     [commitAsterismMutation, requestConfirm]
   );
 
-  const handleLoadAsterismPresets = useCallback((): number => {
-    const presets = createBuiltInPresetAsterisms();
+  const handleFocusAsterismGroup = useCallback((grp: AsterismGroup) => {
     const cur = asterismStoreRef.current;
-    const existingIds = new Set(cur.objects.map((o) => o.id));
-    const toAdd = presets.filter((p) => !existingIds.has(p.id));
-    if (toAdd.length === 0) return 0;
-
-    commitAsterismMutation((prev) => {
-      const layerIds = new Set(prev.layers.map((l) => l.id));
-      const nextLayers = prev.layers.map((l) =>
-        toAdd.some((p) => p.layerId === l.id) ? { ...l, visible: true } : l
-      );
-      for (const def of DEFAULT_ASTERISM_LAYERS) {
-        if (toAdd.some((p) => p.layerId === def.id) && !layerIds.has(def.id)) {
-          nextLayers.push({ ...def, visible: true });
-          layerIds.add(def.id);
-        }
-      }
-      return {
-        ...prev,
-        layers: nextLayers,
-        objects: [...prev.objects, ...toAdd],
-      };
-    });
-    return toAdd.length;
-  }, [commitAsterismMutation]);
-
-  const handleImportAsterismBundle = useCallback(
-    (
-      incomingLayers: AsterismLayer[],
-      incomingObjects: AsterismObject[]
-    ): { addedCount: number } => {
-      const cur = asterismStoreRef.current;
-      const existingObjIds = new Set(cur.objects.map((o) => o.id));
-      const freshObjects = incomingObjects.filter((o) => !existingObjIds.has(o.id));
-      if (freshObjects.length === 0) return { addedCount: 0 };
-
-      commitAsterismMutation((prev) => {
-        const layerMap = new Map(prev.layers.map((l) => [l.id, l]));
-        for (const l of incomingLayers) {
-          if (!layerMap.has(l.id)) {
-            layerMap.set(l.id, { ...l, visible: true });
-          } else {
-            const ex = layerMap.get(l.id)!;
-            layerMap.set(l.id, { ...ex, visible: true });
-          }
-        }
-        const validIds = new Set(layerMap.keys());
-        const normalizedObjs = freshObjects.map((o) =>
-          validIds.has(o.layerId) ? o : { ...o, layerId: prev.activeLayerId }
-        );
-        return {
-          ...prev,
-          layers: Array.from(layerMap.values()),
-          objects: [...prev.objects, ...normalizedObjs],
-        };
-      });
-      return { addedCount: freshObjects.length };
-    },
-    [commitAsterismMutation]
-  );
-
-  const handleFocusAsterismObject = useCallback((obj: AsterismObject) => {
-    if (obj.vertices.length === 0) return;
-    // Ensure object's layer is visible
+    // Ensure group & parent layer are visible and mark active
     setAsterismStore((prev) => {
-      const layer = prev.layers.find((l) => l.id === obj.layerId);
-      if (!layer || layer.visible) return prev;
-      const next = {
+      const next: AsterismStoreState = {
         ...prev,
-        layers: prev.layers.map((l) => (l.id === obj.layerId ? { ...l, visible: true } : l)),
+        activeAsterismId: grp.id,
+        activeLayerId: grp.layerId,
+        layers: prev.layers.map((l) => (l.id === grp.layerId ? { ...l, visible: true } : l)),
+        asterisms: prev.asterisms.map((g) => (g.id === grp.id ? { ...g, visible: true } : g)),
       };
       asterismStoreRef.current = next;
       return next;
     });
-    setAsterismSelectedId(obj.id);
+    setAsterismSelectedId(null);
 
-    // Spherical 3D centroid (safe around RA=0h and poles like UMi Engagement Ring)
+    // If user saved a specific chart center & FOV via "위치·시야 적용", honor it directly!
+    if (grp.savedView) {
+      canvasHandleRef.current?.smoothCenterOn(grp.savedView.raDeg, grp.savedView.decDeg, {
+        targetFsz: grp.savedView.fsz,
+      });
+      return;
+    }
+
+    const childObjs = cur.objects.filter((o) => o.asterismId === grp.id);
+    const allVerts: AsterismVertex[] = [];
+    let extraRadius = 0;
+    for (const o of childObjs) {
+      if (o.type === 'circle' && o.vertices[0]) {
+        allVerts.push(o.vertices[0]);
+        extraRadius = Math.max(extraRadius, getCircleRadiusDeg(o));
+      } else {
+        for (const v of o.vertices) allVerts.push(v);
+      }
+    }
+    if (allVerts.length === 0) return;
+
     let sx = 0;
     let sy = 0;
     let sz = 0;
-    for (const v of obj.vertices) {
+    for (const v of allVerts) {
       const a = v.raDeg * DEG2RAD;
       const d = v.decDeg * DEG2RAD;
       sx += Math.cos(d) * Math.cos(a);
@@ -3786,12 +4173,12 @@ export default function App() {
     const centerRaDeg = (((Math.atan2(sy / len, sx / len) * RAD2DEG) % 360) + 360) % 360;
     const centerDecDeg = Math.asin(Math.max(-1, Math.min(1, sz / len))) * RAD2DEG;
 
-    let maxDist = 0;
-    for (const v of obj.vertices) {
+    let maxDist = extraRadius;
+    for (const v of allVerts) {
       const d = angularDistanceDeg(centerRaDeg, centerDecDeg, v.raDeg, v.decDeg);
       if (d > maxDist) maxDist = d;
     }
-    const [minFov, maxFov] = obj.visibleFovRange;
+    const [minFov, maxFov] = grp.visibleFovRange;
     const spanFov = Math.max(0.8, maxDist * 3.2);
     const targetFsz = Math.max(
       minFov * 1.15,
@@ -3803,36 +4190,119 @@ export default function App() {
     });
   }, []);
 
-  const handleToggleAsterismPreset = useCallback(
-    (preset: AsterismObject): boolean => {
+  const handleLoadAsterismPresets = useCallback((): number => {
+    const presets = createBuiltInPresetAsterismBundles();
+    const cur = asterismStoreRef.current;
+    const existingGrpIds = new Set(cur.asterisms.map((g) => g.id));
+    const toAdd = presets.filter((p) => !existingGrpIds.has(p.asterism.id));
+    if (toAdd.length === 0) return 0;
+
+    commitAsterismMutation((prev) => {
+      const layerIds = new Set(prev.layers.map((l) => l.id));
+      const nextLayers = prev.layers.map((l) =>
+        toAdd.some((p) => p.asterism.layerId === l.id) ? { ...l, visible: true } : l
+      );
+      for (const def of DEFAULT_ASTERISM_LAYERS) {
+        if (toAdd.some((p) => p.asterism.layerId === def.id) && !layerIds.has(def.id)) {
+          nextLayers.push({ ...def, visible: true });
+          layerIds.add(def.id);
+        }
+      }
+      const existingObjIds = new Set(prev.objects.map((o) => o.id));
+      const newObjs = toAdd
+        .flatMap((p) => p.objects)
+        .filter((o) => !existingObjIds.has(o.id));
+      return {
+        ...prev,
+        layers: nextLayers,
+        asterisms: [...prev.asterisms, ...toAdd.map((p) => p.asterism)],
+        objects: [...prev.objects, ...newObjs],
+      };
+    });
+    return toAdd.length;
+  }, [commitAsterismMutation]);
+
+  const handleImportAsterismBundle = useCallback(
+    (
+      incomingLayers: AsterismLayer[],
+      incomingAsterisms: AsterismGroup[],
+      incomingObjects: AsterismObject[]
+    ): { addedCount: number } => {
       const cur = asterismStoreRef.current;
-      const exists = cur.objects.some((o) => o.id === preset.id);
+      const existingGrpIds = new Set(cur.asterisms.map((g) => g.id));
+      const existingObjIds = new Set(cur.objects.map((o) => o.id));
+      const freshGroups = incomingAsterisms.filter((g) => !existingGrpIds.has(g.id));
+      const freshObjects = incomingObjects.filter((o) => !existingObjIds.has(o.id));
+      if (freshGroups.length === 0 && freshObjects.length === 0) return { addedCount: 0 };
+
+      commitAsterismMutation((prev) => {
+        const layerMap = new Map(prev.layers.map((l) => [l.id, l]));
+        for (const l of incomingLayers) {
+          if (!layerMap.has(l.id)) {
+            layerMap.set(l.id, { ...l, visible: true });
+          } else {
+            layerMap.set(l.id, { ...layerMap.get(l.id)!, visible: true });
+          }
+        }
+        const validIds = new Set(layerMap.keys());
+        const normalizedGroups = freshGroups.map((g) =>
+          validIds.has(g.layerId) ? g : { ...g, layerId: prev.activeLayerId }
+        );
+        const normalizedObjs = freshObjects.map((o) =>
+          validIds.has(o.layerId) ? o : { ...o, layerId: prev.activeLayerId }
+        );
+        return {
+          ...prev,
+          layers: Array.from(layerMap.values()),
+          asterisms: [...prev.asterisms, ...normalizedGroups],
+          activeAsterismId: normalizedGroups[0]?.id ?? prev.activeAsterismId,
+          objects: [...prev.objects, ...normalizedObjs],
+        };
+      });
+      return { addedCount: freshGroups.length + freshObjects.length };
+    },
+    [commitAsterismMutation]
+  );
+
+  const handleToggleAsterismPreset = useCallback(
+    (preset: BuiltInAsterismPreset): boolean => {
+      const cur = asterismStoreRef.current;
+      const exists = cur.asterisms.some((g) => g.id === preset.asterism.id);
       if (exists) {
         commitAsterismMutation((prev) => ({
           ...prev,
-          objects: prev.objects.filter((o) => o.id !== preset.id),
+          asterisms: prev.asterisms.filter((g) => g.id !== preset.asterism.id),
+          activeAsterismId:
+            prev.activeAsterismId === preset.asterism.id ? null : prev.activeAsterismId,
+          objects: prev.objects.filter((o) => o.asterismId !== preset.asterism.id),
         }));
-        setAsterismSelectedId((sel) => (sel === preset.id ? null : sel));
         return false;
       }
       commitAsterismMutation((prev) => {
-        const hasLayer = prev.layers.some((l) => l.id === preset.layerId);
+        const hasLayer = prev.layers.some((l) => l.id === preset.asterism.layerId);
         let nextLayers = prev.layers.map((l) =>
-          l.id === preset.layerId ? { ...l, visible: true } : l
+          l.id === preset.asterism.layerId ? { ...l, visible: true } : l
         );
         if (!hasLayer) {
-          const defLayer = DEFAULT_ASTERISM_LAYERS.find((d) => d.id === preset.layerId);
+          const defLayer = DEFAULT_ASTERISM_LAYERS.find((d) => d.id === preset.asterism.layerId);
           if (defLayer) {
             nextLayers = [...nextLayers, { ...defLayer, visible: true }];
           }
         }
-        const resolvedLayerId = nextLayers.some((l) => l.id === preset.layerId)
-          ? preset.layerId
+        const resolvedLayerId = nextLayers.some((l) => l.id === preset.asterism.layerId)
+          ? preset.asterism.layerId
           : prev.activeLayerId;
+        const grp: AsterismGroup = { ...preset.asterism, layerId: resolvedLayerId, visible: true };
+        const existingObjIds = new Set(prev.objects.map((o) => o.id));
+        const objs = preset.objects
+          .filter((o) => !existingObjIds.has(o.id))
+          .map((o) => ({ ...o, layerId: resolvedLayerId }));
         return {
           ...prev,
           layers: nextLayers,
-          objects: [...prev.objects, { ...preset, layerId: resolvedLayerId }],
+          asterisms: [...prev.asterisms, grp],
+          activeAsterismId: grp.id,
+          objects: [...prev.objects, ...objs],
         };
       });
       return true;
@@ -3841,17 +4311,22 @@ export default function App() {
   );
 
   const handleFocusAsterismPreset = useCallback(
-    (preset: AsterismObject) => {
+    (preset: BuiltInAsterismPreset) => {
       const cur = asterismStoreRef.current;
-      const existing = cur.objects.find((o) => o.id === preset.id);
+      const existing = cur.asterisms.find((g) => g.id === preset.asterism.id);
       if (!existing) {
         handleToggleAsterismPreset(preset);
-        handleFocusAsterismObject(preset);
+        window.setTimeout(() => {
+          const latest = asterismStoreRef.current.asterisms.find(
+            (g) => g.id === preset.asterism.id
+          );
+          if (latest) handleFocusAsterismGroup(latest);
+        }, 20);
       } else {
-        handleFocusAsterismObject(existing);
+        handleFocusAsterismGroup(existing);
       }
     },
-    [handleToggleAsterismPreset, handleFocusAsterismObject]
+    [handleToggleAsterismPreset, handleFocusAsterismGroup]
   );
 
   const handleToggleAsterismMode = useCallback(() => {
@@ -3860,6 +4335,7 @@ export default function App() {
       setAsterismTool('select');
       if (prev) {
         setAsterismSelectedId(null);
+        setAsterismPopover('none');
       }
       return !prev;
     });
@@ -4290,8 +4766,26 @@ export default function App() {
 
                   <button
                     type="button"
-                    onClick={handleToggleAsterismMode}
-                    title={asterismMode ? '성군 작도 모드 끄기' : '성군 작도 모드 켜기'}
+                    onClick={() => {
+                      if (!asterismMode) {
+                        setAsterismDraft(null);
+                        setAsterismTool('select');
+                        setAsterismMode(true);
+                        setInspectorTab('asterism');
+                        setRightOpen(true);
+                      } else if (!rightOpen || inspectorTab !== 'asterism') {
+                        setInspectorTab('asterism');
+                        setRightOpen(true);
+                      } else {
+                        handleCloseAsterismMode();
+                        setRightOpen(false);
+                      }
+                    }}
+                    title={
+                      asterismMode
+                        ? '성군 작도 모드 닫기'
+                        : '성군 작도 (도구모음 및 성군 목록 열기)'
+                    }
                     aria-label="성군 작도"
                     className={`w-7 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
                       asterismMode ? activeBoxBtn : idleBoxBtn
@@ -4498,17 +4992,22 @@ export default function App() {
               asterismMode={asterismMode}
               asterismStore={asterismStore}
               asterismTool={asterismTool}
+              asterismPopover={asterismPopover}
               asterismSelectedId={asterismSelectedId}
               asterismDraft={asterismDraft}
               asterismCanUndo={asterismPast.length > 0}
               asterismCanRedo={asterismFuture.length > 0}
               onChangeAsterismTool={handleChangeAsterismTool}
-              onSelectAsterism={setAsterismSelectedId}
+              onChangeAsterismPopover={setAsterismPopover}
+              onOpenAsterismShapeProps={handleOpenAsterismShapeProps}
+              onSelectAsterism={handleSelectAsterism}
               onAddAsterismDraftPoint={handleAddAsterismDraftPoint}
               onFinishAsterismDraft={handleFinishAsterismDraft}
               onUndoAsterismDraftPoint={handleUndoAsterismDraftPoint}
               onCancelAsterismDraft={handleCancelAsterismDraft}
               onCreateAsterismLabel={handleCreateAsterismLabel}
+              onCreateAsterismCircle={handleCreateAsterismCircle}
+              onStartNewAsterismFromStar={handleStartNewAsterismFromStar}
               onMoveAsterismVertex={handleMoveAsterismVertex}
               onInsertAsterismVertex={handleInsertAsterismVertex}
               onDeleteAsterismVertex={handleDeleteAsterismVertex}
@@ -4524,9 +5023,15 @@ export default function App() {
               onCreateAsterismLayer={handleCreateAsterismLayer}
               onRenameAsterismLayer={handleRenameAsterismLayer}
               onDeleteAsterismLayer={handleDeleteAsterismLayer}
+              onSetActiveAsterism={handleSetActiveAsterism}
+              onCreateAsterismGroup={handleCreateAsterismGroup}
+              onUpdateAsterismGroup={handleUpdateAsterismGroup}
+              onDeleteAsterismGroup={handleDeleteAsterismGroup}
+              onToggleAsterismGroupVisible={handleToggleAsterismGroupVisible}
+              onSaveAsterismGroupView={handleSaveAsterismGroupView}
+              onFocusAsterismGroup={handleFocusAsterismGroup}
               onLoadAsterismPresets={handleLoadAsterismPresets}
               onImportAsterismBundle={handleImportAsterismBundle}
-              onFocusAsterismObject={handleFocusAsterismObject}
               onChangeOptics={setOptics}
             />
             <TourGuideOverlay
@@ -4700,9 +5205,7 @@ export default function App() {
               asterismMode={asterismMode}
               asterismSelectedId={asterismSelectedId}
               onToggleAsterismMode={handleToggleAsterismMode}
-              onSelectAsterism={setAsterismSelectedId}
-              onFocusAsterismObject={handleFocusAsterismObject}
-              onUpdateAsterismObject={handleUpdateAsterismObject}
+              onSelectAsterism={handleSelectAsterism}
               onDeleteAsterismObject={handleDeleteAsterismObject}
               onSetAsterismActiveLayer={handleSetAsterismActiveLayer}
               onToggleAsterismLayerVisible={handleToggleAsterismLayerVisible}
@@ -4710,6 +5213,14 @@ export default function App() {
               onCreateAsterismLayer={handleCreateAsterismLayer}
               onRenameAsterismLayer={handleRenameAsterismLayer}
               onDeleteAsterismLayer={handleDeleteAsterismLayer}
+              onSetActiveAsterism={handleSetActiveAsterism}
+              onOpenAsterismLayers={handleOpenAsterismLayers}
+              onOpenAsterismShapeProps={handleOpenAsterismShapeProps}
+              onCreateAsterismGroup={handleCreateAsterismGroup}
+              onUpdateAsterismGroup={handleUpdateAsterismGroup}
+              onDeleteAsterismGroup={handleDeleteAsterismGroup}
+              onToggleAsterismGroupVisible={handleToggleAsterismGroupVisible}
+              onFocusAsterismGroup={handleFocusAsterismGroup}
               onLoadAsterismPresets={handleLoadAsterismPresets}
               onToggleAsterismPreset={handleToggleAsterismPreset}
               onFocusAsterismPreset={handleFocusAsterismPreset}
