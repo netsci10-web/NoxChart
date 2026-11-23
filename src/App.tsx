@@ -309,6 +309,8 @@ const DEFAULT_OPTICS: OpticsSettings = {
   showFinder7x50: false,
   finderFovDeg: 7.0,
   finderLabel: '7×50 파인더',
+  finderColor: undefined,
+  finderCrosshair: false,
   showEyepiece: false,
   eyepieceFovDeg: 1.7,
   eyepieceRotationDeg: 0,
@@ -400,6 +402,11 @@ function loadSavedOpticsSettings(): OpticsSettings {
             typeof parsed.finderLabel === 'string' && parsed.finderLabel.trim()
               ? parsed.finderLabel
               : DEFAULT_OPTICS.finderLabel,
+          finderColor:
+            typeof parsed.finderColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(parsed.finderColor.trim())
+              ? parsed.finderColor.trim()
+              : undefined,
+          finderCrosshair: boolOr('finderCrosshair', Boolean(DEFAULT_OPTICS.finderCrosshair)),
           showEyepiece: boolOr('showEyepiece', DEFAULT_OPTICS.showEyepiece),
           eyepieceFovDeg: numOr('eyepieceFovDeg', DEFAULT_OPTICS.eyepieceFovDeg, 0.05, 20),
           eyepieceRotationDeg: numOr('eyepieceRotationDeg', DEFAULT_OPTICS.eyepieceRotationDeg, 0, 360),
@@ -2292,6 +2299,8 @@ export default function App() {
         const nextFinderFovDeg =
           activeFinder?.fovDeg && activeFinder.fovDeg > 0 ? activeFinder.fovDeg : 7.0;
         const nextFinderLabel = activeFinder?.name?.trim() || '7×50 파인더';
+        const nextFinderColor = activeFinder?.finderColor;
+        const nextFinderCrosshair = Boolean(activeFinder?.finderCrosshair);
 
         const canRotateSensor = camera ? isSmartTelescopeRotatable(camera) : true;
         const sensorEquipLabel = camera
@@ -2313,6 +2322,8 @@ export default function App() {
           showEyepiece: shouldShowEyepiece,
           finderFovDeg: nextFinderFovDeg,
           finderLabel: nextFinderLabel,
+          finderColor: nextFinderColor,
+          finderCrosshair: nextFinderCrosshair,
           showFinder7x50: shouldShowFinder,
           sensorWidthDeg: sensorW,
           sensorHeightDeg: sensorH,
@@ -2404,14 +2415,29 @@ export default function App() {
         : undefined) ?? finders[0];
     const nextFov = resolved?.fovDeg && resolved.fovDeg > 0 ? resolved.fovDeg : 7.0;
     const nextLabel = resolved?.name?.trim() || '7×50 파인더';
-    if (optics.finderFovDeg !== nextFov || optics.finderLabel !== nextLabel) {
+    const nextColor = resolved?.finderColor;
+    const nextCrosshair = Boolean(resolved?.finderCrosshair);
+    if (
+      optics.finderFovDeg !== nextFov ||
+      optics.finderLabel !== nextLabel ||
+      optics.finderColor !== nextColor ||
+      Boolean(optics.finderCrosshair) !== nextCrosshair
+    ) {
       setOptics((prev) => ({
         ...prev,
         finderFovDeg: nextFov,
         finderLabel: nextLabel,
+        finderColor: nextColor,
+        finderCrosshair: nextCrosshair,
       }));
     }
-  }, [equipmentLocker, optics.finderFovDeg, optics.finderLabel]);
+  }, [
+    equipmentLocker,
+    optics.finderFovDeg,
+    optics.finderLabel,
+    optics.finderColor,
+    optics.finderCrosshair,
+  ]);
 
   const handleAddOrUpdateEquipment = useCallback(
     (item: EquipmentItem) => {

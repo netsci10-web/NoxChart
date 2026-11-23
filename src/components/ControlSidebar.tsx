@@ -2224,7 +2224,7 @@ export function ControlSidebar({
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.06em] ${ui.textSecondary}`}>
-                  Gaia DR3 실시간 심층 별 (≤5.5°)
+                  Gaia DR3 실시간 심층 별 (≤10°)
                 </span>
                 <input
                   type="checkbox"
@@ -2251,7 +2251,7 @@ export function ControlSidebar({
               </label>
 
               <p className={`pt-0.5 text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
-                시야각 5.5° 이하 확대 시 Gaia DR3 심층 별(최대 15.8m)이 화면 전체에 균일하게 로딩됩니다.
+                시야각 10° 이하에서 파인더 타일 캐싱 및 고배율 Gaia DR3 심층 별(최대 20.0m)이 자동 로딩됩니다.
               </p>
               </div>
               )}
@@ -2762,7 +2762,7 @@ export function ControlSidebar({
                 <input
                   type="range"
                   min={-3.0}
-                  max={3.0}
+                  max={4.0}
                   step={0.2}
                   value={layers.magOffset}
                   onChange={(e) =>
@@ -3215,6 +3215,11 @@ export function ControlSidebar({
                   const finderFov =
                     activeFinder?.fovDeg && activeFinder.fovDeg > 0 ? activeFinder.fovDeg : 7.0;
                   const finderTitle = activeFinder ? activeFinder.name : '7×50 파인더';
+                  const finderCustomColor =
+                    activeFinder?.finderColor && /^#[0-9a-fA-F]{6}$/.test(activeFinder.finderColor)
+                      ? activeFinder.finderColor
+                      : undefined;
+                  const finderCrosshair = Boolean(activeFinder?.finderCrosshair);
 
                   return (
                     <div
@@ -3231,11 +3236,37 @@ export function ControlSidebar({
                       <label className="flex items-center justify-between gap-1.5 px-2 py-1.5 cursor-pointer">
                         <span className="flex items-center gap-1.5 min-w-0">
                           <span
-                            className={`w-3 h-3 rounded-full border-2 shrink-0 inline-block ${
-                              theme === 'red' ? 'border-[#EF4444]' : 'border-cyan-400'
+                            className={`w-3 h-3 rounded-full border-2 shrink-0 inline-flex items-center justify-center relative ${
+                              finderCustomColor
+                                ? ''
+                                : theme === 'red'
+                                ? 'border-[#EF4444]'
+                                : 'border-cyan-400'
                             }`}
+                            style={finderCustomColor ? { borderColor: finderCustomColor } : undefined}
                             aria-hidden="true"
-                          />
+                          >
+                            {finderCrosshair && (
+                              <>
+                                <span
+                                  className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-[1px]"
+                                  style={{
+                                    backgroundColor:
+                                      finderCustomColor ??
+                                      (theme === 'red' ? '#EF4444' : '#22D3EE'),
+                                  }}
+                                />
+                                <span
+                                  className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-[1px]"
+                                  style={{
+                                    backgroundColor:
+                                      finderCustomColor ??
+                                      (theme === 'red' ? '#EF4444' : '#22D3EE'),
+                                  }}
+                                />
+                              </>
+                            )}
+                          </span>
                           <span className={`truncate tracking-[-0.05em] ${ui.textSecondary}`}>
                             {finderTitle} ({finderFov.toFixed(1)}°)
                           </span>
@@ -3249,6 +3280,8 @@ export function ControlSidebar({
                               showFinder7x50: e.target.checked,
                               finderFovDeg: finderFov,
                               finderLabel: finderTitle,
+                              finderColor: finderCustomColor,
+                              finderCrosshair,
                             }))
                           }
                           className="w-3.5 h-3.5 shrink-0 accent-cyan-500"

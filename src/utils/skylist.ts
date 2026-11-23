@@ -621,6 +621,12 @@ export function exportEquipmentToSkylist(locker: EquipmentLockerState): string {
     if (item.fovDeg !== undefined && Number.isFinite(item.fovDeg)) {
       lines.push(`\tFovDeg=${item.fovDeg}`);
     }
+    if (item.finderColor) {
+      lines.push(`\tFinderColor=${sanitizeSkylistValue(item.finderColor)}`);
+    }
+    if (item.finderCrosshair) {
+      lines.push('\tFinderCrosshair=1');
+    }
     if (item.factor !== undefined && Number.isFinite(item.factor)) {
       lines.push(`\tFactor=${item.factor}`);
     }
@@ -700,6 +706,8 @@ export function parseEquipmentFromSkylist(text: string): EquipmentLockerState {
           afovDeg: current.afovDeg,
           magnification: current.magnification,
           fovDeg: current.fovDeg,
+          finderColor: current.finderColor,
+          finderCrosshair: current.finderCrosshair,
           factor: current.factor,
           filterType: current.filterType,
           sensorWidthMm: current.sensorWidthMm,
@@ -752,6 +760,14 @@ export function parseEquipmentFromSkylist(text: string): EquipmentLockerState {
           break;
         case 'fovdeg':
           if (Number.isFinite(num) && num > 0) current.fovDeg = num;
+          break;
+        case 'findercolor': {
+          const hex = unescapeSkylistValue(val).trim();
+          if (/^#[0-9a-fA-F]{6}$/.test(hex)) current.finderColor = hex;
+          break;
+        }
+        case 'findercrosshair':
+          current.finderCrosshair = val === '1' || val.toLowerCase() === 'true';
           break;
         case 'factor':
           if (Number.isFinite(num) && num > 0) current.factor = num;

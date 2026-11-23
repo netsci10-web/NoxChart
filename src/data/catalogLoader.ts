@@ -84,10 +84,20 @@ type DoubleStarTuple = [
   DoubleStarPairTuple[]?
 ];
 
+export interface GaiaTileCoverage {
+  raMin: number;
+  raMax: number;
+  decMin: number;
+  decMax: number;
+  effectiveMaxMag: number;
+}
+
 export interface GaiaPatchMeta {
   centerRa: number;
   centerDec: number;
   radius: number;
+  effectiveMaxMag?: number;
+  tiles?: GaiaTileCoverage[];
 }
 
 export interface CatalogSnapshot {
@@ -140,6 +150,16 @@ let deepDsosPromise: Promise<void> | null = null;
 let doubleStarsPromise: Promise<void> | null = null;
 const ultraTilePromises = new Map<string, Promise<void>>();
 const gaiaPatchCache = new Map<string, { stars: Star[]; patch: GaiaPatchMeta }>();
+interface GaiaTileCacheEntry {
+  stars: Star[];
+  raMin: number;
+  raMax: number;
+  decMin: number;
+  decMax: number;
+  requestedMag: number;
+  effectiveMaxMag: number;
+}
+const gaiaTileCache = new Map<string, GaiaTileCacheEntry>();
 const hipSearchCache = new Map<string, Star[]>();
 const catalogListeners = new Set<() => void>();
 
@@ -584,12 +604,95 @@ export function getCatalogSnapshot(): CatalogSnapshot {
   };
 }
 
-export const GAIA_LIVE_MAX_FSZ = 5.5;
+export const GAIA_LIVE_MAX_FSZ = 10.0;
+const GAIA_TILE_MIN_FSZ = 3.2;
+
+const GAIA_RA_STEPS = [4, 5, 6, 8, 10, 12, 15, 20, 30, 45, 90, 360] as const;
+
+interface FinderTileSpec {
+  key: string;
+  raMin: number;
+  raMax: number;
+  decMin: number;
+  decMax: number;
+  distSq: number;
+}
+
+function getVisibleGaiaFinderTiles(
+  raHours: number,
+  decDeg: number,
+  fsz: number
+): FinderTileSpec[] {
+  const raCenter = ((raHours * 15) % 360 + 360) % 360;
+  const halfDec = Math.min(8.5, fsz * 0.68);
+  const minDec = Math.max(-90, decDeg - halfDec);
+  const maxDec = Math.min(90, decDeg + halfDec);
+
+  const decStep = 4;
+  const startBand = Math.max(0, Math.floor((minDec + 90) / decStep));
+  const endBand = Math.min(44, Math.floor((Math.min(89.999, maxDec) + 90) / decStep));
+
+  const specs: FinderTileSpec[] = [];
+  for (let band = startBand; band <= endBand; band++) {
+    const dMin = -90 + band * decStep;
+    const dMax = Math.min(90, dMin + decStep);
+    const dMid = (dMin + dMax) / 2;
+
+    if (dMax >= 89.5 || dMin <= -89.5) {
+      const distDec = dMid - decDeg;
+      specs.push({
+        key: `0.00_360.00_${dMin.toFixed(2)}_${dMax.toFixed(2)}`,
+        raMin: 0,
+        raMax: 360,
+        decMin: dMin,
+        decMax: dMax,
+        distSq: distDec * distDec,
+      });
+      continue;
+    }
+
+    const cosBand = Math.max(0.08, Math.cos(Math.max(Math.abs(dMin), Math.abs(dMax)) * DEG2RAD));
+    const idealRaStep = decStep / cosBand;
+    const raStep = GAIA_RA_STEPS.find((s) => s >= idealRaStep) ?? 360;
+    const raHalf = Math.min(180, halfDec / Math.max(0.12, Math.cos(dMid * DEG2RAD)));
+
+    const numCols = Math.round(360 / raStep);
+    const seenCols = new Set<number>();
+    const startRa = raCenter - raHalf;
+    const endRa = raCenter + raHalf;
+    const firstCol = Math.floor(startRa / raStep);
+    const lastCol = Math.floor(endRa / raStep);
+
+    for (let c = firstCol; c <= lastCol; c++) {
+      const normCol = ((c % numCols) + numCols) % numCols;
+      if (seenCols.has(normCol)) continue;
+      seenCols.add(normCol);
+      const rMin = normCol * raStep;
+      const rMax = rMin + raStep;
+      const rMid = rMin + raStep / 2;
+      let dRa = Math.abs(rMid - raCenter);
+      if (dRa > 180) dRa = 360 - dRa;
+      const dRaSky = dRa * Math.cos(dMid * DEG2RAD);
+      const dDec = dMid - decDeg;
+      specs.push({
+        key: `${rMin.toFixed(2)}_${rMax.toFixed(2)}_${dMin.toFixed(2)}_${dMax.toFixed(2)}`,
+        raMin: rMin,
+        raMax: rMax,
+        decMin: dMin,
+        decMax: dMax,
+        distSq: dRaSky * dRaSky + dDec * dDec,
+      });
+    }
+  }
+
+  specs.sort((a, b) => a.distSq - b.distSq);
+  return specs.slice(0, 16);
+}
 
 /**
  * React hook providing reactive LoD access to external catalog files in /public/data/:
  * - 118,216 Hipparcos stars (up to 13.78m) via stars-bright + stars-deep + 36 spatial ultra tiles
- * - Live ESA Gaia DR3 stars (8.3m–15.8m) when zoomed into eyepiece/finder FOV (<= 5.5°)
+ * - Live ESA Gaia DR3 stars (8.3m–20.0m) with 4° finder tiles (3.2°–10.0°) & deep cones (<= 3.2°)
  * - 8,260 Washington Double Star (WDS) visual double & multiple systems
  * - 12,344 OpenNGC/Messier/IC DSOs + 109 Caldwell + 391 Barnard/LDN Dark Nebulae
  * - 513 FChart3 multi-level Nebula Contours + 88 IAU Constellations + 782 Boundaries
@@ -697,7 +800,9 @@ export function useCatalogData(
     }
   }, [loadDoubleStars, searchActive, tick]);
 
-  // Live ESA Gaia DR3 faint star streaming ONLY at narrow eyepiece/finder FOV (<= 5.5°)
+  // Live ESA Gaia DR3 faint star streaming:
+  // - Finder / mid-field (3.2° < fsz <= 10.0°): 4° spatial tile caching (up to 15.5m)
+  // - Eyepiece & ultra-deep high-mag (fsz <= 3.2°, down to 0.008°): adaptive deep cone (up to 20.0m)
   useEffect(() => {
     const magLimit = getLimitingMagnitude(fsz, magOffset);
     if (!enableGaiaLive || fsz > GAIA_LIVE_MAX_FSZ || magLimit <= 9.0) {
@@ -706,13 +811,134 @@ export function useCatalogData(
     }
 
     const raDeg = ((raHours * 15) % 360 + 360) % 360;
-    const radius = Math.max(0.55, Math.min(5.5, fsz * 0.98));
-    const step = radius <= 1.2 ? 0.25 : 0.5;
+
+    // Tier 1: Finder / Mid-field spatial tile caching (3.2° < fsz <= 10.0°)
+    if (fsz > GAIA_TILE_MIN_FSZ) {
+      const qMag = Math.ceil(Math.min(15.5, magLimit) * 2) / 2;
+      const visibleTiles = getVisibleGaiaFinderTiles(raHours, decDeg, fsz);
+
+      const emitMergedTiles = () => {
+        const mergedStars: Star[] = [];
+        const coveredTiles: GaiaTileCoverage[] = [];
+        for (const spec of visibleTiles) {
+          const entry = gaiaTileCache.get(spec.key);
+          if (!entry) continue;
+          coveredTiles.push({
+            raMin: entry.raMin,
+            raMax: entry.raMax,
+            decMin: entry.decMin,
+            decMax: entry.decMax,
+            effectiveMaxMag: Math.min(qMag, entry.effectiveMaxMag),
+          });
+          for (let i = 0; i < entry.stars.length; i++) {
+            const st = entry.stars[i];
+            if (st.mag > qMag) break;
+            mergedStars.push(st);
+          }
+        }
+        if (coveredTiles.length > 0) {
+          mergedStars.sort((a, b) => a.mag - b.mag);
+          setGaiaStars(mergedStars);
+          setGaiaPatch({
+            centerRa: raDeg,
+            centerDec: decDeg,
+            radius: Math.max(fsz * 0.9, 4.0),
+            effectiveMaxMag: qMag,
+            tiles: coveredTiles,
+          });
+        }
+      };
+
+      const missingTiles = visibleTiles.filter((spec) => {
+        const entry = gaiaTileCache.get(spec.key);
+        return !entry || entry.requestedMag < qMag;
+      });
+
+      // Immediately render any already-cached tiles for flicker-free panning
+      emitMergedTiles();
+
+      if (missingTiles.length === 0) {
+        setGaiaLoading(false);
+        return;
+      }
+
+      let cancelled = false;
+      const timer = window.setTimeout(async () => {
+        if (cancelled) return;
+        setGaiaLoading(true);
+        try {
+          const BATCH_SIZE = 3;
+          for (let i = 0; i < missingTiles.length; i += BATCH_SIZE) {
+            if (cancelled) break;
+            const batch = missingTiles.slice(i, i + BATCH_SIZE);
+            const results = await Promise.all(
+              batch.map(async (spec) => {
+                const params = new URLSearchParams({
+                  mode: 'tile',
+                  raMin: spec.raMin.toFixed(2),
+                  raMax: spec.raMax.toFixed(2),
+                  decMin: spec.decMin.toFixed(2),
+                  decMax: spec.decMax.toFixed(2),
+                  magLimit: qMag.toFixed(2),
+                });
+                const json = await safeFetchJson<{
+                  stars?: GaiaStarTuple[];
+                  requestedMag?: number;
+                  effectiveMaxMag?: number;
+                  degraded?: boolean;
+                }>(`/api/gaia?${params.toString()}`, 1);
+                if (!json || json.degraded) return false;
+                const parsed = (json.stars ?? []).map(mapGaiaStar);
+                if (gaiaTileCache.size >= 160) {
+                  const oldest = gaiaTileCache.keys().next().value;
+                  if (oldest) gaiaTileCache.delete(oldest);
+                }
+                gaiaTileCache.set(spec.key, {
+                  stars: parsed,
+                  raMin: spec.raMin,
+                  raMax: spec.raMax,
+                  decMin: spec.decMin,
+                  decMax: spec.decMax,
+                  requestedMag: json.requestedMag ?? qMag,
+                  effectiveMaxMag: json.effectiveMaxMag ?? qMag,
+                });
+                return true;
+              })
+            );
+            if (!cancelled && results.some(Boolean)) {
+              emitMergedTiles();
+            }
+          }
+        } catch {
+          // Silent fallback to Hipparcos tiles
+        } finally {
+          if (!cancelled) setGaiaLoading(false);
+        }
+      }, 280);
+
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timer);
+      };
+    }
+
+    // Tier 2 & 3: Eyepiece & ultra-deep high-magnification cone queries (fsz <= 3.2°, up to 20.0m)
+    const radius =
+      fsz <= 0.45
+        ? Math.max(0.015, Math.min(0.55, fsz * 1.08))
+        : Math.max(0.35, Math.min(3.5, fsz * 0.96));
+    const step =
+      radius <= 0.06 ? 0.01 : radius <= 0.25 ? 0.05 : radius <= 1.2 ? 0.25 : 0.5;
     const qRa = ((Math.round(raDeg / step) * step) % 360 + 360) % 360;
     const qDec = Math.max(-90, Math.min(90, Math.round(decDeg / step) * step));
-    const qRad = Math.ceil(radius * 4) / 4;
-    const qMag = Math.ceil(Math.min(15.6, magLimit) * 2) / 2;
-    const patchKey = `${qRa.toFixed(2)}_${qDec.toFixed(2)}_${qRad.toFixed(2)}_${qMag.toFixed(1)}`;
+    const qRad =
+      radius <= 0.06
+        ? Math.ceil(radius * 50) / 50
+        : radius <= 0.25
+        ? Math.ceil(radius * 20) / 20
+        : Math.ceil(radius * 4) / 4;
+    const qMag = Math.ceil(Math.min(20.0, magLimit) * 2) / 2;
+    const patchKey = `${qRa.toFixed(3)}_${qDec.toFixed(3)}_${qRad.toFixed(3)}_${qMag.toFixed(1)}`;
 
     const existing = gaiaPatchCache.get(patchKey);
     if (existing) {
@@ -730,7 +956,7 @@ export function useCatalogData(
         const params = new URLSearchParams({
           ra: qRa.toFixed(4),
           dec: qDec.toFixed(4),
-          radius: qRad.toFixed(2),
+          radius: qRad.toFixed(4),
           magLimit: qMag.toFixed(2),
         });
         const json = await safeFetchJson<{
@@ -738,6 +964,7 @@ export function useCatalogData(
           centerRa?: number;
           centerDec?: number;
           radius?: number;
+          effectiveMaxMag?: number;
           degraded?: boolean;
         }>(`/api/gaia?${params.toString()}`, 1);
         if (!json) return;
@@ -746,9 +973,10 @@ export function useCatalogData(
           centerRa: json.centerRa ?? qRa,
           centerDec: json.centerDec ?? qDec,
           radius: json.radius ?? qRad,
+          effectiveMaxMag: json.effectiveMaxMag ?? qMag,
         };
         if (!json.degraded) {
-          if (gaiaPatchCache.size > 40) {
+          if (gaiaPatchCache.size > 90) {
             const oldest = gaiaPatchCache.keys().next().value;
             if (oldest) gaiaPatchCache.delete(oldest);
           }
@@ -763,7 +991,7 @@ export function useCatalogData(
       } finally {
         if (!cancelled) setGaiaLoading(false);
       }
-    }, 360);
+    }, 300);
 
     return () => {
       cancelled = true;

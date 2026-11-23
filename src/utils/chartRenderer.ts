@@ -1024,8 +1024,13 @@ function drawOpticalReticles(
     const finderR = stereoRadiusPx(finderFov);
     if (finderR >= 4 && finderR < Math.max(width, height) * 1.6) {
       ctx.save();
+      const customFinderColor =
+        typeof optics.finderColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(optics.finderColor.trim())
+          ? optics.finderColor.trim()
+          : '';
       const finderColor =
-        theme === 'white' ? '#0284C7' : theme === 'red' ? '#EF4444' : '#22D3EE';
+        customFinderColor ||
+        (theme === 'white' ? '#0284C7' : theme === 'red' ? '#EF4444' : '#22D3EE');
       ctx.strokeStyle = finderColor;
       ctx.globalAlpha = reticleOpacity;
       ctx.lineWidth = reticleLineWidth;
@@ -1041,6 +1046,27 @@ function drawOpticalReticles(
       ctx.moveTo(cx, cy + finderR - tk);
       ctx.lineTo(cx, cy + finderR + tk);
       ctx.stroke();
+
+      // Optional optical finder center crosshair spanning rim-to-center with a tiny target gap
+      if (optics.finderCrosshair && finderR >= 10) {
+        const gap = Math.max(3.5, Math.min(finderR * 0.14, 11));
+        ctx.save();
+        ctx.strokeStyle = finderColor;
+        ctx.globalAlpha = Math.max(0.15, reticleOpacity * 0.78);
+        ctx.lineWidth = Math.max(0.75, reticleLineWidth * 0.72);
+        ctx.beginPath();
+        ctx.moveTo(cx - finderR, cy);
+        ctx.lineTo(cx - gap, cy);
+        ctx.moveTo(cx + gap, cy);
+        ctx.lineTo(cx + finderR, cy);
+        ctx.moveTo(cx, cy - finderR);
+        ctx.lineTo(cx, cy - gap);
+        ctx.moveTo(cx, cy + gap);
+        ctx.lineTo(cx, cy + finderR);
+        ctx.stroke();
+        ctx.restore();
+      }
+
       if (showReticleLabel && finderR > 14 && finderR < Math.min(width, height) * 0.5) {
         drawCircleRimLabel(
           ctx,
@@ -2052,12 +2078,31 @@ function renderStarChartPass(
     catalogs.gaiaStars.length > 0 &&
     gaiaPatch !== null;
 
-  const isInsideGaiaPatch = (raDeg: number, decDeg: number): boolean => {
+  const isInsideGaiaPatch = (raDeg: number, decDeg: number, starMag: number): boolean => {
     if (!gaiaActive || !gaiaPatch) return false;
-    return (
-      angularDistanceDeg(raDeg, decDeg, gaiaPatch.centerRa, gaiaPatch.centerDec) <=
-      gaiaPatch.radius - 0.03
-    );
+    if (gaiaPatch.tiles && gaiaPatch.tiles.length > 0) {
+      const normRa = ((raDeg % 360) + 360) % 360;
+      for (let i = 0; i < gaiaPatch.tiles.length; i++) {
+        const t = gaiaPatch.tiles[i];
+        if (
+          normRa >= t.raMin &&
+          normRa < t.raMax &&
+          decDeg >= t.decMin &&
+          decDeg <= t.decMax
+        ) {
+          return starMag <= t.effectiveMaxMag + 0.05;
+        }
+      }
+      return false;
+    }
+    const margin = Math.min(0.03, gaiaPatch.radius * 0.05);
+    if (
+      angularDistanceDeg(raDeg, decDeg, gaiaPatch.centerRa, gaiaPatch.centerDec) >
+      gaiaPatch.radius - margin
+    ) {
+      return false;
+    }
+    return starMag <= (gaiaPatch.effectiveMaxMag ?? 20.5) + 0.05;
   };
 
   const evalStarAltitude = (
@@ -2107,9 +2152,11 @@ function renderStarChartPass(
     }
   }
 
-  // 8b. Live ESA Gaia DR3 faint stars (8.3m - 15.8m) when zoomed into eyepiece/finder FOV (<= 5.5°)
+  // 8b. Live ESA Gaia DR3 faint stars (8.3m - 20.0m) across finder tiles (<= 10°) & deep cones (<= 3.2°)
   if (gaiaActive) {
     const gList = catalogs.gaiaStars;
+    let gaiaClickableCount = 0;
+    const gaiaClickMagCutoff = Math.min(18.5, magLimit);
     for (let i = 0; i < gList.length; i++) {
       const star = gList[i];
       if (star.mag > magLimit) break;
@@ -2128,7 +2175,10 @@ function renderStarChartPass(
         isSelected,
         dimmed: altCheck.dimmed,
       });
-      if (view.fsz <= 4.5 && star.mag <= 13.0) {
+      if (
+        (isSelected || (view.fsz <= 4.5 && star.mag <= gaiaClickMagCutoff && gaiaClickableCount < 1000))
+      ) {
+        gaiaClickableCount++;
         targets.push({
           kind: 'star',
           id: star.id,
@@ -2143,7 +2193,7 @@ function renderStarChartPass(
   }
 
   // 8c. Spatially-Tiled Hipparcos Ultra Stars (mag 8.01 - 13.78)
-  // Always fills areas outside an active Gaia patch AND 8.01m-8.30m inside a Gaia patch!
+  // Always fills areas outside an active Gaia patch/tiles AND 8.01m-8.30m inside Gaia coverage!
   if (magLimit > 8.0 && catalogs.ultraStarTiles.size > 0) {
     const tileKeys = getVisibleUltraTileKeys(view.ra, view.dec, view.fsz);
     for (const key of tileKeys) {
@@ -2152,7 +2202,7 @@ function renderStarChartPass(
       for (let i = 0; i < tileStars.length; i++) {
         const star = tileStars[i];
         if (star.mag > magLimit) break;
-        if (gaiaActive && star.mag > 8.3 && isInsideGaiaPatch(star.ra, star.dec)) continue;
+        if (gaiaActive && star.mag > 8.3 && isInsideGaiaPatch(star.ra, star.dec, star.mag)) continue;
         const pt = projectStereographic(star.ra, star.dec, proj, 10);
         if (!pt) continue;
         const isSelected = selected?.kind === 'star' && selected.data.id === star.id;
@@ -2189,7 +2239,7 @@ function renderStarChartPass(
     for (let i = 0; i < deepList.length; i++) {
       const star = deepList[i];
       if (star.mag > magLimit) break;
-      if (gaiaActive && star.mag > 8.3 && isInsideGaiaPatch(star.ra, star.dec)) continue;
+      if (gaiaActive && star.mag > 8.3 && isInsideGaiaPatch(star.ra, star.dec, star.mag)) continue;
       const pt = projectStereographic(star.ra, star.dec, proj, 12);
       if (!pt) continue;
       const isSelected = selected?.kind === 'star' && selected.data.id === star.id;
@@ -2366,20 +2416,71 @@ function renderStarChartPass(
     }
   }
 
+  // High-density readability optimization:
+  // In rich Milky Way or 17-20m deep fields, enforce a screen-space cell budget (brightest-first)
+  // so every bright/medium star is preserved while hyper-dense overlapping faint points stay crisp.
+  let renderStars = drawableStars;
+  if (drawableStars.length > 1100) {
+    const cellSize = 22;
+    const cols = Math.max(1, Math.ceil((width + 40) / cellSize));
+    const cellCounts = new Uint16Array(cols * Math.max(1, Math.ceil((height + 40) / cellSize)));
+    const maxPerCell = view.fsz <= 1.0 ? 5 : 4;
+    const globalSoftCap = Math.max(2800, Math.min(6800, Math.round((width * height) / 210)));
+
+    const sortedBrightFirst = drawableStars.slice().sort((a, b) => a.star.mag - b.star.mag);
+    const filtered: DrawableStar[] = [];
+    for (let i = 0; i < sortedBrightFirst.length; i++) {
+      const item = sortedBrightFirst[i];
+      const mustKeep =
+        item.isSelected ||
+        item.isBright ||
+        item.star.mag <= 8.5 ||
+        Boolean(item.star.name || item.star.koName || item.star.bayer);
+      if (mustKeep) {
+        filtered.push(item);
+        continue;
+      }
+      if (filtered.length >= globalSoftCap) break;
+      const cxIdx = Math.floor((item.x + 20) / cellSize);
+      const cyIdx = Math.floor((item.y + 20) / cellSize);
+      if (cxIdx >= 0 && cyIdx >= 0) {
+        const flatIdx = cyIdx * cols + cxIdx;
+        if (flatIdx < cellCounts.length) {
+          if (cellCounts[flatIdx] >= maxPerCell) continue;
+          cellCounts[flatIdx]++;
+        }
+      }
+      filtered.push(item);
+    }
+    renderStars = filtered;
+  }
+
   // Sort stars faintest -> brightest so bright stars + halo strokes cleanly separate binaries & clusters
-  drawableStars.sort((a, b) => b.star.mag - a.star.mag);
-  const visibleStarCount = drawableStars.length;
+  renderStars.sort((a, b) => b.star.mag - a.star.mag);
+  const visibleStarCount = renderStars.length;
   const drawHalo = !hipsVisible || hips.opacity < 0.45;
+  const deepAlphaActive = magLimit > 13.0;
+  const faintMinAlpha = theme === 'white' ? 0.48 : 0.42;
 
   if (!(isSensorPhoto && hipsVisible)) {
     ctx.save();
     ctx.lineWidth = 1.15;
     ctx.strokeStyle = palette.starHaloStroke;
 
-    for (let i = 0; i < drawableStars.length; i++) {
-      const { star, x, y, radius, isBright, dimmed } = drawableStars[i];
+    for (let i = 0; i < renderStars.length; i++) {
+      const { star, x, y, radius, isBright, dimmed, isSelected } = renderStars[i];
       const color = bvToStarColor(star.bv, theme, layers.showStarColors);
-      ctx.globalAlpha = dimmed ? 0.16 : 1.0;
+
+      // Gentle faint-end luminance roll-off near magLimit keeps 17-20m fields refined and legible
+      let starAlpha = dimmed ? 0.16 : 1.0;
+      if (!dimmed && !isSelected && deepAlphaActive) {
+        const dm = magLimit - star.mag;
+        if (dm < 1.8) {
+          const t = Math.max(0, Math.min(1, dm / 1.8));
+          starAlpha = faintMinAlpha + (1 - faintMinAlpha) * (t * t * (3 - 2 * t));
+        }
+      }
+      ctx.globalAlpha = starAlpha;
 
       if (theme === 'dark' && isBright && star.mag < 2.1 && !hipsVisible && !dimmed) {
         const glowR = radius * 2.6;
@@ -2392,7 +2493,7 @@ function renderStarChartPass(
         ctx.fill();
       }
 
-      if (drawHalo && radius >= 1.2 && !dimmed) {
+      if (drawHalo && radius >= 1.35 && !dimmed) {
         ctx.beginPath();
         ctx.arc(x, y, radius + 0.55, 0, Math.PI * 2);
         ctx.stroke();

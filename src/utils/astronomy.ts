@@ -336,20 +336,27 @@ export function getStarRadiusPogson(
   fszDeg: number
 ): number {
   const dm = Math.max(0, magLimit - mag);
-  // Pogson's flux ratio = 2.5118864 per magnitude; exponent 0.235 yields smooth visual disk scaling
+  // Smoothly compress faint pinpoint floor & growth exponent when displaying 14–20m deep fields
+  const deepFactor = Math.max(0, Math.min(1, (magLimit - 14.0) / 6.0));
   const fovScale =
-    fszDeg <= 2.5
-      ? 1.18
+    fszDeg <= 0.5
+      ? 1.12 - 0.12 * deepFactor
+      : fszDeg <= 2.5
+      ? 1.18 - 0.1 * deepFactor
       : fszDeg <= 10
       ? 1.08
       : fszDeg <= 40
       ? 0.98
       : fszDeg <= 100
-      ? 0.90
+      ? 0.9
       : 0.82;
-  const base = 0.56 + 0.54 * (Math.pow(2.5118864, dm * 0.235) - 1);
+  const baseFloor = 0.56 - 0.22 * deepFactor;
+  const slope = 0.54 - 0.08 * deepFactor;
+  const exp = 0.235 - 0.047 * deepFactor;
+  const minFloor = 0.52 - 0.2 * deepFactor; // down to 0.32px crisp pinpoints at 20m
+  const base = baseFloor + slope * (Math.pow(2.5118864, dm * exp) - 1);
   const maxR = fszDeg <= 12 ? 7.6 : fszDeg <= 60 ? 6.2 : 5.2;
-  return Math.max(0.52, Math.min(maxR, base * fovScale));
+  return Math.max(minFloor, Math.min(maxR, base * fovScale));
 }
 
 /**
@@ -602,11 +609,11 @@ export function bvToStarColor(
 
 /**
  * Compute dynamic Level-of-Detail (LoD) limiting magnitude from Field Size (fsz).
- * Baseline is 6.0m at 60° FOV (offset = 0), scaling deeper as FOV narrows.
+ * Baseline is 6.0m at 60° FOV (offset = 0), scaling smoothly down to 20.0m at 0.008° FOV.
  */
 export function getLimitingMagnitude(fszDeg: number, magOffset: number): number {
-  const base = 6.0 - 3.65 * Math.log10(Math.max(0.35, fszDeg) / 60);
-  return Math.max(3.0, Math.min(15.8, base + magOffset));
+  const base = 6.0 - 3.65 * Math.log10(Math.max(0.008, fszDeg) / 60);
+  return Math.max(3.0, Math.min(20.0, base + magOffset));
 }
 
 /**
@@ -614,8 +621,8 @@ export function getLimitingMagnitude(fszDeg: number, magOffset: number): number 
  * Baseline is 10.0m at 60° FOV (offset = 0), scaling deeper as FOV narrows.
  */
 export function getDsoLimitingMagnitude(fszDeg: number, dsoMagOffset: number): number {
-  const base = 10.0 - 3.65 * Math.log10(Math.max(0.35, fszDeg) / 60);
-  return Math.max(4.0, Math.min(17.5, base + dsoMagOffset));
+  const base = 10.0 - 3.65 * Math.log10(Math.max(0.05, fszDeg) / 60);
+  return Math.max(4.0, Math.min(19.0, base + dsoMagOffset));
 }
 
 export function getDsoTypeLabel(type: DsoType): string {

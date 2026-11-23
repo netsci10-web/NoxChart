@@ -62,6 +62,8 @@ interface FormDraft {
   afovDeg: string;
   magnification: string;
   fovDeg: string;
+  finderColor: string;
+  finderCrosshair: boolean;
   factor: string;
   filterType: string;
   sensorWidthMm: string;
@@ -70,6 +72,15 @@ interface FormDraft {
   isSmartTelescope: boolean;
   supportsSensorRotation: boolean;
 }
+
+const FINDER_COLOR_SWATCHES = [
+  '#22D3EE',
+  '#F59E0B',
+  '#EF4444',
+  '#10B981',
+  '#A855F7',
+  '#F8FAFC',
+];
 
 function createEmptyDraft(category: EquipmentCategory): FormDraft {
   return {
@@ -82,6 +93,8 @@ function createEmptyDraft(category: EquipmentCategory): FormDraft {
     afovDeg: category === 'eyepiece' ? '68' : '',
     magnification: category === 'finder' ? '7' : '',
     fovDeg: category === 'finder' ? '7.0' : '',
+    finderColor: '',
+    finderCrosshair: false,
     factor: category === 'barlow' ? '2.0' : '',
     filterType: category === 'filter' ? 'UHC' : '',
     sensorWidthMm: category === 'camera' ? '11.3' : '',
@@ -103,6 +116,8 @@ function itemToDraft(item: EquipmentItem): FormDraft {
     afovDeg: item.afovDeg !== undefined ? String(item.afovDeg) : '',
     magnification: item.magnification !== undefined ? String(item.magnification) : '',
     fovDeg: item.fovDeg !== undefined ? String(item.fovDeg) : '',
+    finderColor: item.finderColor ?? '',
+    finderCrosshair: Boolean(item.finderCrosshair),
     factor: item.factor !== undefined ? String(item.factor) : '',
     filterType: item.filterType ?? '',
     sensorWidthMm: item.sensorWidthMm !== undefined ? String(item.sensorWidthMm) : '',
@@ -124,6 +139,8 @@ function presetToDraft(preset: EquipmentPreset): FormDraft {
     afovDeg: preset.afovDeg !== undefined ? String(preset.afovDeg) : '',
     magnification: preset.magnification !== undefined ? String(preset.magnification) : '',
     fovDeg: preset.fovDeg !== undefined ? String(preset.fovDeg) : '',
+    finderColor: '',
+    finderCrosshair: false,
     factor: preset.factor !== undefined ? String(preset.factor) : '',
     filterType: preset.filterType ?? '',
     sensorWidthMm: preset.sensorWidthMm !== undefined ? String(preset.sensorWidthMm) : '',
@@ -216,6 +233,7 @@ function formatItemSpec(item: EquipmentItem): string {
         parts.push(`D${item.apertureMm}mm`);
       }
       if (item.fovDeg) parts.push(`${item.fovDeg.toFixed(1)}°`);
+      if (item.finderCrosshair) parts.push('십자선');
       return parts.join(' · ') || '파인더';
     }
     case 'barlow': {
@@ -451,6 +469,11 @@ export function EquipmentLockerPanel({
       item.magnification = parsePos(draft.magnification);
       item.apertureMm = parsePos(draft.apertureMm);
       item.fovDeg = parsePos(draft.fovDeg) ?? 7.0;
+      item.finderColor =
+        draft.finderColor && /^#[0-9a-fA-F]{6}$/.test(draft.finderColor.trim())
+          ? draft.finderColor.trim()
+          : undefined;
+      item.finderCrosshair = draft.finderCrosshair;
     } else if (activeTab === 'barlow') {
       item.factor = parsePos(draft.factor) ?? 2.0;
     } else if (activeTab === 'filter') {
@@ -684,6 +707,13 @@ export function EquipmentLockerPanel({
                 >
                   <div className="flex items-center gap-1 min-w-0">
                     {isSelected && <Check className="w-3 h-3 shrink-0" />}
+                    {item.category === 'finder' && item.finderColor && (
+                      <span
+                        className="w-2.5 h-2.5 rounded-full border border-white/40 shrink-0 inline-block"
+                        style={{ backgroundColor: item.finderColor }}
+                        aria-hidden="true"
+                      />
+                    )}
                     <span className="text-[10.5px] font-medium truncate tracking-[-0.04em]">
                       {item.name}
                     </span>
@@ -995,46 +1025,111 @@ export function EquipmentLockerPanel({
               )}
 
               {activeTab === 'finder' && (
-                <div className="grid grid-cols-3 gap-1">
-                  <div>
-                    <label className={`block text-[9.5px] mb-0.5 ${ui.textMuted}`}>배율 (×)</label>
-                    <input
-                      type="number"
-                      min={1}
-                      max={30}
-                      step={0.5}
-                      value={draft.magnification}
-                      onChange={(e) => setDraft((d) => ({ ...d, magnification: e.target.value }))}
-                      className={`w-full px-1 py-1 border font-mono text-[10px] ${ui.input}`}
-                      style={{ borderRadius: '4px' }}
-                    />
+                <div className="space-y-2">
+                  <div className="grid grid-cols-3 gap-1">
+                    <div>
+                      <label className={`block text-[9.5px] mb-0.5 ${ui.textMuted}`}>배율 (×)</label>
+                      <input
+                        type="number"
+                        min={1}
+                        max={30}
+                        step={0.5}
+                        value={draft.magnification}
+                        onChange={(e) => setDraft((d) => ({ ...d, magnification: e.target.value }))}
+                        className={`w-full px-1 py-1 border font-mono text-[10px] ${ui.input}`}
+                        style={{ borderRadius: '4px' }}
+                      />
+                    </div>
+                    <div>
+                      <label className={`block text-[9.5px] mb-0.5 ${ui.textMuted}`}>구경 (mm)</label>
+                      <input
+                        type="number"
+                        min={15}
+                        max={150}
+                        step={1}
+                        value={draft.apertureMm}
+                        onChange={(e) => setDraft((d) => ({ ...d, apertureMm: e.target.value }))}
+                        className={`w-full px-1 py-1 border font-mono text-[10px] ${ui.input}`}
+                        style={{ borderRadius: '4px' }}
+                      />
+                    </div>
+                    <div>
+                      <label className={`block text-[9.5px] mb-0.5 ${ui.textMuted}`}>시야각 (°)</label>
+                      <input
+                        type="number"
+                        min={0.5}
+                        max={25}
+                        step={0.1}
+                        value={draft.fovDeg}
+                        onChange={(e) => setDraft((d) => ({ ...d, fovDeg: e.target.value }))}
+                        className={`w-full px-1 py-1 border font-mono text-[10px] ${ui.input}`}
+                        style={{ borderRadius: '4px' }}
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className={`block text-[9.5px] mb-0.5 ${ui.textMuted}`}>구경 (mm)</label>
-                    <input
-                      type="number"
-                      min={15}
-                      max={150}
-                      step={1}
-                      value={draft.apertureMm}
-                      onChange={(e) => setDraft((d) => ({ ...d, apertureMm: e.target.value }))}
-                      className={`w-full px-1 py-1 border font-mono text-[10px] ${ui.input}`}
-                      style={{ borderRadius: '4px' }}
-                    />
+
+                  {/* 파인더 시야원 색상 선택 */}
+                  <div className="flex items-center justify-between gap-1.5 pt-0.5">
+                    <span className={`text-[10px] shrink-0 ${ui.textSecondary}`}>색상 선택</span>
+                    <div className="flex items-center gap-1 flex-wrap justify-end">
+                      {FINDER_COLOR_SWATCHES.map((swatch) => {
+                        const selectedSwatch =
+                          draft.finderColor.toLowerCase() === swatch.toLowerCase();
+                        return (
+                          <button
+                            key={swatch}
+                            type="button"
+                            onClick={() => setDraft((d) => ({ ...d, finderColor: swatch }))}
+                            title={swatch}
+                            aria-label={`파인더 색상 ${swatch}`}
+                            className={`w-4 h-4 rounded-full border transition-transform ${
+                              selectedSwatch
+                                ? 'scale-110 ring-2 ring-cyan-400 border-white'
+                                : 'border-white/30 hover:scale-105'
+                            }`}
+                            style={{ backgroundColor: swatch }}
+                          />
+                        );
+                      })}
+                      <input
+                        type="color"
+                        aria-label="파인더 사용자 지정 색상"
+                        value={
+                          /^#[0-9a-fA-F]{6}$/.test(draft.finderColor)
+                            ? draft.finderColor
+                            : theme === 'white'
+                            ? '#0284C7'
+                            : theme === 'red'
+                            ? '#EF4444'
+                            : '#22D3EE'
+                        }
+                        onChange={(e) => setDraft((d) => ({ ...d, finderColor: e.target.value }))}
+                        className="w-5 h-5 p-0 border-0 bg-transparent cursor-pointer rounded"
+                      />
+                      {draft.finderColor && (
+                        <button
+                          type="button"
+                          onClick={() => setDraft((d) => ({ ...d, finderColor: '' }))}
+                          className={`px-1 py-0.5 text-[9px] border rounded ${ui.buttonIdle}`}
+                        >
+                          기본
+                        </button>
+                      )}
+                    </div>
                   </div>
-                  <div>
-                    <label className={`block text-[9.5px] mb-0.5 ${ui.textMuted}`}>시야각 (°)</label>
+
+                  {/* 파인더 중심 십자선 표시 */}
+                  <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
+                    <span className={`text-[10px] ${ui.textSecondary}`}>중심 십자선 표시</span>
                     <input
-                      type="number"
-                      min={0.5}
-                      max={25}
-                      step={0.1}
-                      value={draft.fovDeg}
-                      onChange={(e) => setDraft((d) => ({ ...d, fovDeg: e.target.value }))}
-                      className={`w-full px-1 py-1 border font-mono text-[10px] ${ui.input}`}
-                      style={{ borderRadius: '4px' }}
+                      type="checkbox"
+                      checked={draft.finderCrosshair}
+                      onChange={(e) =>
+                        setDraft((d) => ({ ...d, finderCrosshair: e.target.checked }))
+                      }
+                      className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
                     />
-                  </div>
+                  </label>
                 </div>
               )}
 

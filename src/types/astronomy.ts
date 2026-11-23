@@ -143,7 +143,7 @@ export interface LayerSettings {
   starLabelDensityPct: number; // 0..100 (% of currently visible on-screen stars to label)
   showFieldStars: boolean;
   enableGaiaLive: boolean;
-  magOffset: number; // -3.0 to +3.0 star limiting magnitude adjustment
+  magOffset: number; // -3.0 to +4.0 star limiting magnitude adjustment
   dsoMagOffset: number; // -4.0 to +4.0 DSO limiting magnitude adjustment
   dsoCategories: Record<DsoType, boolean>;
   catalogFilter: 'all' | 'messier' | 'ngc' | 'ic' | 'barnard';
@@ -189,6 +189,8 @@ export interface OpticsSettings {
   showFinder7x50: boolean; // 파인더 시야 링 (기본 7×50 파인더 7.0° 또는 내 장비 파인더)
   finderFovDeg?: number; // 활성 파인더 실 시야각 (°)
   finderLabel?: string; // 활성 파인더 이름
+  finderColor?: string; // 활성 파인더 시야원 색상 (미지정 시 테마 기본색)
+  finderCrosshair?: boolean; // 파인더 중심 십자선 표시 여부
   showEyepiece: boolean;
   eyepieceFovDeg: number; // Custom or calculated circular TFOV in degrees
   eyepieceRotationDeg: number; // Clockwise rotation angle (0..360°) inside telescope eyepiece circle
@@ -344,6 +346,8 @@ export interface EquipmentItem {
   afovDeg?: number;
   magnification?: number;
   fovDeg?: number;
+  finderColor?: string;
+  finderCrosshair?: boolean;
   factor?: number;
   filterType?: string;
   sensorWidthMm?: number;

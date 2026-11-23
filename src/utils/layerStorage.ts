@@ -157,7 +157,7 @@ export function sanitizeLayerSettings(
     ),
     showFieldStars: readBool(obj.showFieldStars, fallback.showFieldStars),
     enableGaiaLive: readBool(obj.enableGaiaLive, fallback.enableGaiaLive),
-    magOffset: clampNum(obj.magOffset, fallback.magOffset, -3.0, 3.0),
+    magOffset: clampNum(obj.magOffset, fallback.magOffset, -3.0, 4.0),
     dsoMagOffset: clampNum(obj.dsoMagOffset, fallback.dsoMagOffset, -4.0, 4.0),
     // DSO catalog/type filter UI is removed: always normalize to show all DSOs
     catalogFilter: 'all',
