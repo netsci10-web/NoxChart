@@ -87,6 +87,8 @@ export interface CelestialInfoWindowProps {
   asterismMode: boolean;
   leftDrawerOpen: boolean;
   rightDrawerOpen: boolean;
+  dockSide: 'left' | 'right';
+  onChangeDockSide: (side: 'left' | 'right') => void;
   onClose: () => void;
   onToggleCenterLock: () => void;
   onToggleSolarTrail: (bodyId: string) => void;
@@ -127,6 +129,8 @@ export function CelestialInfoWindow({
   asterismMode,
   leftDrawerOpen,
   rightDrawerOpen,
+  dockSide,
+  onChangeDockSide,
   onClose,
   onToggleCenterLock,
   onToggleSolarTrail,
@@ -140,7 +144,6 @@ export function CelestialInfoWindow({
   onOpenObservationLogsTab,
 }: CelestialInfoWindowProps) {
   const ui = getUiTheme(theme);
-  const [dockSide, setDockSide] = useState<'left' | 'right'>('right');
   const [detailTargetListId, setDetailTargetListId] = useState<string>('__tonight__');
   const [detailLogDraft, setDetailLogDraft] = useState<{
     id: string | null;
@@ -670,7 +673,7 @@ export function CelestialInfoWindow({
           <div className="flex items-center gap-0.5 ml-1 shrink-0" role="group" aria-label="천체 정보 표시 위치">
             <button
               type="button"
-              onClick={() => setDockSide('left')}
+              onClick={() => onChangeDockSide('left')}
               title="천체 정보를 왼쪽에 표시"
               aria-label="왼쪽에 표시"
               aria-pressed={dockSide === 'left'}
@@ -683,7 +686,7 @@ export function CelestialInfoWindow({
             </button>
             <button
               type="button"
-              onClick={() => setDockSide('right')}
+              onClick={() => onChangeDockSide('right')}
               title="천체 정보를 오른쪽에 표시"
               aria-label="오른쪽에 표시"
               aria-pressed={dockSide === 'right'}

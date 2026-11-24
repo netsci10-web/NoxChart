@@ -175,6 +175,7 @@ import { getUiTheme } from './utils/themeClasses';
 
 const SESSION_STORAGE_KEY = 'sidereal_atlas_session_v1';
 const OBSERVING_LISTS_STORAGE_KEY = 'sidereal_atlas_observing_lists_v1';
+const INFO_DOCK_SIDE_STORAGE_KEY = 'sidereal_atlas_info_dock_side_v1';
 const DEFAULT_OBSERVING_LIST_ID = 'list_default';
 const DEFAULT_OBSERVING_LIST_NAME = '기본 관측 목록';
 
@@ -815,6 +816,24 @@ export default function App() {
 
   const [selected, setSelected] = useState<SelectedItem | null>(null);
   const [detailWindowOpen, setDetailWindowOpen] = useState(false);
+  const detailWindowOpenRef = useRef<boolean>(detailWindowOpen);
+  detailWindowOpenRef.current = detailWindowOpen;
+  const [infoWindowDockSide, setInfoWindowDockSide] = useState<'left' | 'right'>(() => {
+    try {
+      const saved = localStorage.getItem(INFO_DOCK_SIDE_STORAGE_KEY);
+      if (saved === 'left' || saved === 'right') return saved;
+    } catch {
+      // Ignore storage read failure
+    }
+    return 'right';
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem(INFO_DOCK_SIDE_STORAGE_KEY, infoWindowDockSide);
+    } catch {
+      // Ignore storage write failure
+    }
+  }, [infoWindowDockSide]);
   const [centerLocked, setCenterLocked] = useState(false);
   const [solarTrails, setSolarTrails] = useState<Record<string, number>>({});
   const [leftOpen, setLeftOpen] = useState(false);
@@ -1604,6 +1623,7 @@ export default function App() {
           coordSystem: view.coordSystem,
           flipH: view.flipH,
           flipV: view.flipV,
+          infoWindowDockSide,
         },
         layers,
         hips,
@@ -1629,6 +1649,7 @@ export default function App() {
       view.coordSystem,
       view.flipH,
       view.flipV,
+      infoWindowDockSide,
       layers,
       hips,
       optics,
@@ -1691,6 +1712,7 @@ export default function App() {
       let nextCoordSystem = basePayload.root.prefs?.coordSystem ?? DEFAULT_VIEW.coordSystem;
       let nextFlipH = basePayload.root.prefs?.flipH ?? false;
       let nextFlipV = basePayload.root.prefs?.flipV ?? false;
+      let nextInfoDockSide: 'left' | 'right' = basePayload.root.prefs?.infoWindowDockSide ?? 'right';
       let nextLayers = basePayload.root.layers ?? DEFAULT_LAYERS;
       let nextHips = basePayload.root.hips ?? DEFAULT_HIPS;
       let nextOptics = basePayload.root.optics ?? DEFAULT_OPTICS;
@@ -1724,6 +1746,9 @@ export default function App() {
             }
             if (typeof p.flipH === 'boolean') nextFlipH = p.flipH;
             if (typeof p.flipV === 'boolean') nextFlipV = p.flipV;
+            if (p.infoWindowDockSide === 'left' || p.infoWindowDockSide === 'right') {
+              nextInfoDockSide = p.infoWindowDockSide;
+            }
 
             const basePrefs = basePayload.root.prefs;
             if (nextTheme !== (basePrefs?.theme ?? DEFAULT_THEME)) {
@@ -1741,6 +1766,10 @@ export default function App() {
                 flipH: nextFlipH,
                 flipV: nextFlipV,
               }));
+              changed = true;
+            }
+            if (nextInfoDockSide !== (basePrefs?.infoWindowDockSide ?? 'right')) {
+              setInfoWindowDockSide(nextInfoDockSide);
               changed = true;
             }
           }
@@ -2013,6 +2042,7 @@ export default function App() {
               coordSystem: nextCoordSystem,
               flipH: nextFlipH,
               flipV: nextFlipV,
+              infoWindowDockSide: nextInfoDockSide,
             },
             layers: nextLayers,
             hips: nextHips,
@@ -2643,9 +2673,19 @@ export default function App() {
 
   const handleSelect = (
     item: SelectedItem | null,
-    options?: { hideSelectionMark?: boolean }
+    options?: { hideSelectionMark?: boolean; toggleDetailIfSame?: boolean }
   ) => {
-    const prevId = selectedRef.current?.data.id;
+    const prev = selectedRef.current;
+    const isSameTarget = Boolean(
+      item && prev && prev.kind === item.kind && prev.data.id === item.data.id
+    );
+    if (isSameTarget && options?.toggleDetailIfSame && detailWindowOpenRef.current) {
+      detailWindowOpenRef.current = false;
+      setDetailWindowOpen(false);
+      return;
+    }
+
+    const prevId = prev?.data.id;
     const nextId = item?.data.id;
     if (!item || nextId !== prevId) {
       slewingToCenterRef.current = false;
@@ -2654,13 +2694,14 @@ export default function App() {
     }
     selectedRef.current = item;
     setSelected(item);
+    detailWindowOpenRef.current = Boolean(item);
     setDetailWindowOpen(Boolean(item));
     if (item) {
       const wantMark = !options?.hideSelectionMark;
-      setOptics((prev) =>
-        prev.showSelectionMark === wantMark
-          ? prev
-          : { ...prev, showSelectionMark: wantMark }
+      setOptics((prevOptics) =>
+        prevOptics.showSelectionMark === wantMark
+          ? prevOptics
+          : { ...prevOptics, showSelectionMark: wantMark }
       );
     }
   };
@@ -6947,6 +6988,8 @@ export default function App() {
               onRulerPickPoint={handleRulerPickPoint}
               onClearRuler={handleClearRuler}
               onCloseRulerMode={handleCloseRulerMode}
+              onToggleSessionItem={handleToggleSessionItem}
+              onJumpCardinal={handleJumpCardinal}
               asterismMode={asterismMode}
               asterismStore={tourAwareAsterismStore}
               asterismTool={asterismTool}
@@ -7032,6 +7075,8 @@ export default function App() {
                 asterismMode={asterismMode}
                 leftDrawerOpen={leftOpen}
                 rightDrawerOpen={rightOpen}
+                dockSide={infoWindowDockSide}
+                onChangeDockSide={setInfoWindowDockSide}
                 onClose={() => setDetailWindowOpen(false)}
                 onToggleCenterLock={handleToggleCenterLock}
                 onToggleSolarTrail={handleToggleSolarTrail}

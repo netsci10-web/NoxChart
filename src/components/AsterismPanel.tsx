@@ -212,21 +212,22 @@ export function AsterismPanel({
     reader.readAsText(file);
   };
 
-  // Distinct visual styling tokens for Group vs Asterism vs Shape!
+  // Distinct visual styling tokens for Group vs Asterism vs Shape
+  // Unselected items have no fill; selected items get an accent background; hover uses translucent tint
   const asterismRowTone = (isActive: boolean) => {
     if (theme === 'white') {
       return isActive
-        ? 'bg-amber-100/90 border-amber-400/80'
-        : 'bg-amber-50/75 border-amber-300/60 hover:bg-amber-100/60';
+        ? 'bg-blue-100/85 border-blue-400/80'
+        : 'bg-transparent border-slate-200 hover:bg-slate-200/50 hover:border-slate-300';
     }
     if (theme === 'red') {
       return isActive
-        ? 'bg-[#360C06] border-red-600/80'
-        : 'bg-[#220704] border-red-900/70 hover:bg-[#2C0905]';
+        ? 'bg-[#380A0A] border-[#DC2626]/80'
+        : 'bg-transparent border-[#3F0A0A]/80 hover:bg-[#2A0505]/60 hover:border-[#7F1D1D]/70';
     }
     return isActive
-      ? 'bg-amber-500/20 border-amber-400/60'
-      : 'bg-amber-500/10 border-amber-500/25 hover:bg-amber-500/15';
+      ? 'bg-cyan-500/20 border-cyan-400/60'
+      : 'bg-transparent border-slate-700/60 hover:bg-slate-700/35 hover:border-slate-500/70';
   };
 
   const asterismBadgeTone =
@@ -240,16 +241,16 @@ export function AsterismPanel({
     if (theme === 'white') {
       return isSelected
         ? 'bg-sky-100/95 border-sky-400/80'
-        : 'bg-sky-50/60 border-sky-200/80 hover:bg-sky-100/60';
+        : 'bg-transparent border-slate-200/90 hover:bg-slate-200/45 hover:border-slate-300';
     }
     if (theme === 'red') {
       return isSelected
-        ? 'bg-[#28040A] border-rose-500/70'
-        : 'bg-[#130204] border-red-950/80 hover:bg-[#1B0306]';
+        ? 'bg-[#2E060A] border-rose-500/70'
+        : 'bg-transparent border-[#380808]/75 hover:bg-[#220406]/55 hover:border-[#6B1212]/70';
     }
     return isSelected
       ? 'bg-cyan-500/22 border-cyan-400/60'
-      : 'bg-sky-950/35 border-sky-800/40 hover:bg-sky-900/35';
+      : 'bg-transparent border-slate-800/70 hover:bg-slate-700/30 hover:border-slate-600/60';
   };
 
   const shapeBadgeTone =
@@ -564,15 +565,15 @@ export function AsterismPanel({
                         className={`text-[10.5px] font-semibold truncate ${
                           theme === 'white'
                             ? isActiveLayer
-                              ? 'text-amber-700'
-                              : 'text-amber-800/85'
+                              ? 'text-blue-700'
+                              : 'text-blue-600/85'
                             : theme === 'red'
                             ? isActiveLayer
-                              ? 'text-[#FF8A80]'
+                              ? 'text-[#FF5252]'
                               : 'text-[#F87171]/85'
                             : isActiveLayer
-                            ? 'text-amber-300'
-                            : 'text-amber-400/85'
+                            ? 'text-cyan-400'
+                            : 'text-sky-400/85'
                         }`}
                       >
                         {isActiveLayer ? '● ' : ''}

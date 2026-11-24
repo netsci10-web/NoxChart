@@ -43,6 +43,7 @@ export interface CloudAppPrefs {
   fsz?: number;
   flipH: boolean;
   flipV: boolean;
+  infoWindowDockSide?: 'left' | 'right';
 }
 
 export interface CloudActiveSite {
@@ -159,6 +160,7 @@ export function computePayloadHashes(payload: CloudSyncPayload): SyncHashes {
           coordSystem: payload.root.prefs.coordSystem,
           flipH: payload.root.prefs.flipH,
           flipV: payload.root.prefs.flipV,
+          infoWindowDockSide: payload.root.prefs.infoWindowDockSide ?? 'right',
         }
       : undefined,
     layers: payload.root.layers,

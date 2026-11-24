@@ -1,8 +1,12 @@
 import React, { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
+  BookmarkCheck,
+  BookmarkPlus,
+  Compass,
   Crosshair,
   FlipHorizontal2,
   FlipVertical2,
+  Info,
   MapPin,
   Minus,
   Plus,
@@ -100,7 +104,10 @@ interface StarChartCanvasProps {
   challengePickAllowEmpty?: boolean;
   challengeDraftCount?: number;
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
-  onSelect: (item: SelectedItem | null, options?: { hideSelectionMark?: boolean }) => void;
+  onSelect: (
+    item: SelectedItem | null,
+    options?: { hideSelectionMark?: boolean; toggleDetailIfSame?: boolean }
+  ) => void;
   onUnlockCenter?: () => void;
   onUserCameraInteract?: () => void;
   onChallengeChartPick?: (pick: {
@@ -115,6 +122,8 @@ interface StarChartCanvasProps {
   onRulerPickPoint?: (point: RulerPoint) => void;
   onClearRuler?: () => void;
   onCloseRulerMode?: () => void;
+  onToggleSessionItem?: (item: SelectedItem, targetListId?: string) => void;
+  onJumpCardinal?: (azDeg: number) => void;
   // Custom Asterism & Star Chain Drawing Mode
   asterismMode: boolean;
   asterismStore: AsterismStoreState;
@@ -452,6 +461,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       onRulerPickPoint,
       onClearRuler,
       onCloseRulerMode,
+      onToggleSessionItem,
+      onJumpCardinal,
       asterismMode,
       asterismStore,
       asterismTool,
@@ -546,6 +557,13 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     const [hoveredTarget, setHoveredTarget] = useState<ScreenTarget | null>(null);
     const [asterismHoverSnap, setAsterismHoverSnap] = useState<AsterismSnapPreview | null>(null);
     const [rulerHoverPoint, setRulerHoverPoint] = useState<RulerPoint | null>(null);
+    const [contextMenu, setContextMenu] = useState<{
+      x: number;
+      y: number;
+      target: SelectedItem | null;
+    } | null>(null);
+    const contextMenuRef = useRef<HTMLDivElement>(null);
+    const skipNextContextMenuRef = useRef(false);
     const [pointerEq, setPointerEq] = useState<{ raDeg: number; decDeg: number } | null>(null);
     const [pointerScreen, setPointerScreen] = useState<{ x: number; y: number } | null>(null);
     const [renderStats, setRenderStats] = useState<{
@@ -559,6 +577,30 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     const [fovEditing, setFovEditing] = useState(false);
     const [fovInputDraft, setFovInputDraft] = useState('');
     const fovCancelRef = useRef(false);
+
+    useEffect(() => {
+      if (!contextMenu) return;
+      const handleOutsidePointerDown = (e: PointerEvent) => {
+        if (contextMenuRef.current && contextMenuRef.current.contains(e.target as Node)) {
+          return;
+        }
+        setContextMenu(null);
+      };
+      const handleKeyDown = (e: KeyboardEvent) => {
+        if (e.key === 'Escape') {
+          setContextMenu(null);
+        }
+      };
+      const handleBlur = () => setContextMenu(null);
+      window.addEventListener('pointerdown', handleOutsidePointerDown, true);
+      window.addEventListener('keydown', handleKeyDown);
+      window.addEventListener('blur', handleBlur);
+      return () => {
+        window.removeEventListener('pointerdown', handleOutsidePointerDown, true);
+        window.removeEventListener('keydown', handleKeyDown);
+        window.removeEventListener('blur', handleBlur);
+      };
+    }, [contextMenu]);
 
     useEffect(() => {
       if (!asterismMode) {
@@ -1540,6 +1582,44 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     };
 
     const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
+      if (contextMenu) {
+        setContextMenu(null);
+      }
+
+      // Secondary (right) mouse button: only preserve asterism vertex deletion, otherwise let custom context menu handle it
+      if (e.button === 2) {
+        if (asterismMode && !challengePickMode && asterismTool === 'select') {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const x = e.clientX - rect.left;
+          const y = e.clientY - rect.top;
+          const eff = getEffectiveTransformAtPoint(x, y, view);
+          const proj = createProjectionParams(
+            eff.view,
+            size.width,
+            size.height,
+            lstDeg,
+            observer.lat,
+            eff.rotationDeg
+          );
+          const hitAst = hitTestAsterisms(
+            x,
+            y,
+            asterismStore,
+            asterismSelectedId,
+            view.fsz,
+            {
+              project: (raDeg, decDeg, margin = 200) =>
+                projectStereographic(raDeg, decDeg, proj, margin),
+            }
+          );
+          if (hitAst?.kind === 'vertex' && hitAst.vertexIndex !== undefined) {
+            skipNextContextMenuRef.current = true;
+            onDeleteAsterismVertex(hitAst.objectId, hitAst.vertexIndex);
+          }
+        }
+        return;
+      }
+
       cancelCenterAnim();
       onUserCameraInteract?.();
       try {
@@ -1595,7 +1675,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           }
         );
         if (hitAst?.kind === 'vertex' && hitAst.vertexIndex !== undefined) {
-          if (e.altKey || e.button === 2) {
+          if (e.altKey) {
             onDeleteAsterismVertex(hitAst.objectId, hitAst.vertexIndex);
             return;
           }
@@ -1945,15 +2025,27 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           return;
         }
 
+        const nowMs = Date.now();
+        const prevClick = lastClickedTargetRef.current;
+        const isRapidSecondClickOnSame = Boolean(
+          hit &&
+            prevClick &&
+            prevClick.item.kind === hit.item.kind &&
+            prevClick.item.data.id === hit.item.data.id &&
+            nowMs - prevClick.timeMs < 400 &&
+            Math.hypot(e.clientX - prevClick.clientX, e.clientY - prevClick.clientY) < 14
+        );
         if (hit) {
           lastClickedTargetRef.current = {
             item: hit.item,
-            timeMs: Date.now(),
+            timeMs: nowMs,
             clientX: e.clientX,
             clientY: e.clientY,
           };
         }
-        onSelect(hit ? hit.item : null);
+        onSelect(hit ? hit.item : null, {
+          toggleDetailIfSame: Boolean(hit) && !isRapidSecondClickOnSame,
+        });
       }
     };
 
@@ -2035,11 +2127,36 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         return;
       }
       lastClickedTargetRef.current = null;
-      onSelect(targetItem, { hideSelectionMark: true });
+      onSelect(targetItem);
       smoothCenterOn(targetItem.data.ra, targetItem.data.dec);
     };
 
+    const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
+      e.preventDefault();
+      if (skipNextContextMenuRef.current) {
+        skipNextContextMenuRef.current = false;
+        return;
+      }
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const y = e.clientY - rect.top;
+      const hit = findHitTarget(x, y, 8);
+      const target = hit ? hit.item : null;
+
+      const menuW = target ? 186 : 124;
+      const menuH = target ? 240 : 132;
+      const clampedX = Math.max(8, Math.min(size.width - menuW - 8, x));
+      const clampedY = Math.max(8, Math.min(size.height - menuH - 8, y));
+
+      setContextMenu({
+        x: clampedX,
+        y: clampedY,
+        target,
+      });
+    };
+
     const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
+      if (contextMenu) setContextMenu(null);
       cancelCenterAnim();
       onUserCameraInteract?.();
       e.preventDefault();
@@ -2106,6 +2223,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       <div
         id="chart-stage"
         ref={containerRef}
+        onContextMenu={(e) => e.preventDefault()}
         className="relative flex-1 h-full overflow-hidden select-none"
       >
         {/* Native WebGL HEALPix HiPS Photographic Sky Background */}
@@ -2135,9 +2253,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             setPointerEq(null);
             setPointerScreen(null);
           }}
-          onContextMenu={(e) => {
-            if (asterismMode) e.preventDefault();
-          }}
+          onContextMenu={handleContextMenu}
           onWheel={handleWheel}
           className={`relative z-10 block w-full h-full touch-none ${
             !rulerMode && asterismMode && asterismTool === 'select'
@@ -2146,6 +2262,130 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           }`}
           style={{ touchAction: 'none' }}
         />
+
+        {/* Custom Star Chart Right-Click Context Menu */}
+        {contextMenu && (
+          <div
+            ref={contextMenuRef}
+            role="menu"
+            aria-label="성도 빠른 메뉴"
+            onContextMenu={(e) => e.preventDefault()}
+            className={`no-print absolute z-50 py-1 border shadow-2xl backdrop-blur-md text-[12px] ${
+              contextMenu.target ? 'min-w-[178px]' : 'min-w-[116px]'
+            } ${
+              theme === 'white'
+                ? 'bg-white/95 border-slate-300 text-slate-800'
+                : theme === 'red'
+                ? 'bg-[#120202]/95 border-[#5A1212] text-[#EF4444]'
+                : 'bg-[#0C1322]/95 border-[#293B5A] text-slate-100'
+            }`}
+            style={{
+              left: `${contextMenu.x}px`,
+              top: `${contextMenu.y}px`,
+              borderRadius: '6px',
+            }}
+          >
+            {contextMenu.target && (() => {
+              const target = contextMenu.target;
+              const inTonight = sessionIds.has(target.data.id);
+              const itemBtnCls =
+                theme === 'white'
+                  ? 'w-full px-2.5 py-1.5 flex items-center gap-2 text-left text-[11.5px] font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-700 transition-colors cursor-pointer'
+                  : theme === 'red'
+                  ? 'w-full px-2.5 py-1.5 flex items-center gap-2 text-left text-[11.5px] font-medium text-[#EF4444] hover:bg-[#2A0505] hover:text-[#FF6B6B] transition-colors cursor-pointer'
+                  : 'w-full px-2.5 py-1.5 flex items-center gap-2 text-left text-[11.5px] font-medium text-slate-200 hover:bg-[#192740] hover:text-cyan-300 transition-colors cursor-pointer';
+              return (
+                <>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onSelect(target);
+                      setContextMenu(null);
+                    }}
+                    className={itemBtnCls}
+                  >
+                    <Info className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                    <span>천체 정보 보기</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onUnlockCenter?.();
+                      smoothCenterOn(target.data.ra, target.data.dec);
+                      setContextMenu(null);
+                    }}
+                    className={itemBtnCls}
+                  >
+                    <Crosshair className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                    <span>시야 중심 가기</span>
+                  </button>
+                  <button
+                    type="button"
+                    role="menuitem"
+                    onClick={() => {
+                      onToggleSessionItem?.(target, '__tonight__');
+                      setContextMenu(null);
+                    }}
+                    className={itemBtnCls}
+                  >
+                    {inTonight ? (
+                      <BookmarkCheck className="w-3.5 h-3.5 shrink-0 opacity-85" />
+                    ) : (
+                      <BookmarkPlus className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                    )}
+                    <span>
+                      {inTonight ? '오늘밤 관측목록 빼기' : '오늘밤 관측목록 넣기'}
+                    </span>
+                  </button>
+                  <div
+                    className={`my-1 border-t ${
+                      theme === 'white'
+                        ? 'border-slate-200'
+                        : theme === 'red'
+                        ? 'border-[#3F0A0A]'
+                        : 'border-slate-700/80'
+                    }`}
+                  />
+                </>
+              );
+            })()}
+            {(
+              [
+                { label: '북', az: 0 },
+                { label: '동', az: 90 },
+                { label: '남', az: 180 },
+                { label: '서', az: 270 },
+              ] as const
+            ).map((dir) => (
+              <button
+                key={dir.label}
+                type="button"
+                role="menuitem"
+                onClick={() => {
+                  onJumpCardinal?.(dir.az);
+                  setContextMenu(null);
+                }}
+                className={`w-full px-2.5 py-1.5 flex items-center justify-between text-left text-[11.5px] font-medium transition-colors cursor-pointer ${
+                  theme === 'white'
+                    ? 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                    : theme === 'red'
+                    ? 'text-[#EF4444] hover:bg-[#2A0505] hover:text-[#FF6B6B]'
+                    : 'text-slate-200 hover:bg-[#192740] hover:text-cyan-300'
+                }`}
+              >
+                <span className="flex items-center gap-2">
+                  <Compass className="w-3.5 h-3.5 shrink-0 opacity-75" />
+                  <span>{dir.label}</span>
+                </span>
+                <span className="font-mono text-[10px] opacity-60 tabular-nums">
+                  {dir.az}°
+                </span>
+              </button>
+            ))}
+          </div>
+        )}
 
         {/* Top-Left Live Coordinate & Object Count Telemetry HUD (strictly single line, matched h-9 height with right FOV controls) */}
         <div
