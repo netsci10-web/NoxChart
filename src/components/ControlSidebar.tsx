@@ -982,6 +982,35 @@ export function ControlSidebar({
       ? 'bg-[#140000] text-[#732626] border-[#320909]'
       : 'bg-[#0E1624] text-slate-500 border-[#1C283D]';
 
+  const sectionHeaderCls = (open: boolean) =>
+    open
+      ? theme === 'white'
+        ? 'bg-sky-100/95 border-sky-300 border-l-2 border-l-blue-600 hover:bg-sky-200/85 hover:border-blue-400'
+        : theme === 'red'
+        ? 'bg-[#300606] border-[#7F1D1D] border-l-2 border-l-[#FF5252] hover:bg-[#440909] hover:border-[#B91C1C]'
+        : 'bg-[#12263A] border-cyan-500/50 border-l-2 border-l-cyan-400 hover:bg-[#19344E] hover:border-cyan-400/75'
+      : theme === 'white'
+      ? 'bg-transparent border-transparent hover:bg-slate-200/80 hover:border-slate-300'
+      : theme === 'red'
+      ? 'bg-transparent border-transparent hover:bg-[#220404] hover:border-[#5C1212]'
+      : 'bg-transparent border-transparent hover:bg-[#192338] hover:border-slate-700/80';
+
+  const sectionChevronCls = (open: boolean) =>
+    open
+      ? theme === 'white'
+        ? 'text-blue-600'
+        : theme === 'red'
+        ? 'text-[#FF5252]'
+        : 'text-cyan-400'
+      : ui.textMuted;
+
+  const sectionBodyCls =
+    theme === 'white'
+      ? 'bg-sky-50/55 border border-sky-200/75 rounded-md p-2'
+      : theme === 'red'
+      ? 'bg-[#130202]/90 border border-[#450A0A] rounded-md p-2'
+      : 'bg-[#0F1728]/85 border border-cyan-500/20 rounded-md p-2';
+
   const searchPlaceholder =
     exploreCategory === 'all'
       ? '천체명, M/C/NGC/IC, 별, 행성...'
@@ -1835,28 +1864,56 @@ export function ControlSidebar({
           <>
             {/* 0. 관측 목록 강조 모드 (Observing List Highlight Mode) */}
             <div
-              className={`p-2 border space-y-1 transition-colors ${
+              className={`p-1.5 border space-y-1.5 transition-colors ${
                 layers.highlightSessionPlan
                   ? theme === 'white'
                     ? 'bg-amber-50 border-amber-300'
                     : theme === 'red'
                     ? 'bg-[#1D0404] border-[#7F1D1D]'
                     : 'bg-[#1A1408] border-[#784A12]'
+                  : isSectionOpen('layers_highlight')
+                  ? theme === 'white'
+                    ? 'bg-sky-50/55 border-sky-200/80'
+                    : theme === 'red'
+                    ? 'bg-[#130202]/90 border-[#450A0A]'
+                    : 'bg-[#0F1728]/85 border-cyan-500/25'
                   : ui.border
               }`}
               style={{ borderRadius: '6px' }}
             >
-              <div className="flex items-center justify-between gap-1.5">
+              <div
+                className={`flex items-center justify-between gap-1.5 px-1.5 py-1 rounded-md border transition-colors ${
+                  layers.highlightSessionPlan
+                    ? isSectionOpen('layers_highlight')
+                      ? theme === 'white'
+                        ? 'bg-amber-200/75 border-amber-400 border-l-2 border-l-amber-600 hover:bg-amber-200'
+                        : theme === 'red'
+                        ? 'bg-[#360707] border-[#991B1B] border-l-2 border-l-[#FF5252] hover:bg-[#490A0A]'
+                        : 'bg-amber-500/20 border-amber-500/50 border-l-2 border-l-amber-400 hover:bg-amber-500/30'
+                      : theme === 'white'
+                      ? 'bg-transparent border-transparent hover:bg-amber-100/90 hover:border-amber-300'
+                      : theme === 'red'
+                      ? 'bg-transparent border-transparent hover:bg-[#290505] hover:border-[#6B1414]'
+                      : 'bg-transparent border-transparent hover:bg-amber-500/15 hover:border-amber-500/35'
+                    : sectionHeaderCls(isSectionOpen('layers_highlight'))
+                }`}
+              >
                 <button
                   type="button"
                   onClick={() => toggleSection('layers_highlight')}
                   aria-expanded={isSectionOpen('layers_highlight')}
-                  className="flex items-center gap-1 min-w-0 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                  className="flex-1 flex items-center gap-1 min-w-0 text-left cursor-pointer"
                 >
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('layers_highlight') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${
+                      layers.highlightSessionPlan && isSectionOpen('layers_highlight')
+                        ? theme === 'red'
+                          ? 'text-[#FF5252]'
+                          : theme === 'white'
+                          ? 'text-amber-700'
+                          : 'text-amber-400'
+                        : sectionChevronCls(isSectionOpen('layers_highlight'))
+                    } ${isSectionOpen('layers_highlight') ? '' : '-rotate-90'}`}
                   />
                   <Target
                     className={`w-3.5 h-3.5 shrink-0 ${
@@ -1901,7 +1958,7 @@ export function ControlSidebar({
                 </label>
               </div>
               {isSectionOpen('layers_highlight') && (
-                <p className={`text-[9.5px] tracking-[-0.04em] leading-snug break-keep ${ui.textMuted}`}>
+                <p className={`px-1 pb-0.5 text-[9.5px] tracking-[-0.04em] leading-snug break-keep ${ui.textMuted}`}>
                   {sessionPlanCount > 0
                     ? '관측 목록에 담긴 천체(별·행성·이중성·DSO)를 성도 위에 번호·이중 링·배지 라벨로 눈에 띄게 강조합니다.'
                     : '활성화 후 관측 목록에 대상을 추가하거나 .skylist를 불러오면 성도 위에 번호·링으로 강조 표시됩니다.'}
@@ -1910,18 +1967,20 @@ export function ControlSidebar({
             </div>
 
             {/* 1. 별자리 (Constellations) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('layers_constellations')}
                 aria-expanded={isSectionOpen('layers_constellations')}
-                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                className={`w-full flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border text-left transition-colors cursor-pointer ${sectionHeaderCls(
+                  isSectionOpen('layers_constellations')
+                )}`}
               >
                 <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('layers_constellations') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('layers_constellations')
+                    )} ${isSectionOpen('layers_constellations') ? '' : '-rotate-90'}`}
                   />
                   <span>별자리 (Constellations)</span>
                 </span>
@@ -1931,7 +1990,7 @@ export function ControlSidebar({
               </button>
 
               {isSectionOpen('layers_constellations') && (
-              <div className="space-y-1.5">
+              <div className={`space-y-1.5 ${sectionBodyCls}`}>
 
               <div className="grid grid-cols-2 gap-1 pt-0.5">
                 <button
@@ -2062,18 +2121,20 @@ export function ControlSidebar({
             </div>
 
             {/* 1.5. 태양계 (Solar System) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('layers_solar')}
                 aria-expanded={isSectionOpen('layers_solar')}
-                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                className={`w-full flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border text-left transition-colors cursor-pointer ${sectionHeaderCls(
+                  isSectionOpen('layers_solar')
+                )}`}
               >
                 <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('layers_solar') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('layers_solar')
+                    )} ${isSectionOpen('layers_solar') ? '' : '-rotate-90'}`}
                   />
                   <span>태양계 (Solar System)</span>
                 </span>
@@ -2083,7 +2144,7 @@ export function ControlSidebar({
               </button>
 
               {isSectionOpen('layers_solar') && (
-              <div className="space-y-1.5">
+              <div className={`space-y-1.5 ${sectionBodyCls}`}>
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -2160,18 +2221,20 @@ export function ControlSidebar({
             </div>
 
             {/* 2. 항성 (Stars) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('layers_stars')}
                 aria-expanded={isSectionOpen('layers_stars')}
-                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                className={`w-full flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border text-left transition-colors cursor-pointer ${sectionHeaderCls(
+                  isSectionOpen('layers_stars')
+                )}`}
               >
                 <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('layers_stars') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('layers_stars')
+                    )} ${isSectionOpen('layers_stars') ? '' : '-rotate-90'}`}
                   />
                   <span>항성 (Stars)</span>
                 </span>
@@ -2181,7 +2244,7 @@ export function ControlSidebar({
               </button>
 
               {isSectionOpen('layers_stars') && (
-              <div className="space-y-1.5">
+              <div className={`space-y-1.5 ${sectionBodyCls}`}>
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -2288,18 +2351,20 @@ export function ControlSidebar({
             </div>
 
             {/* 2.5. 이중성 · 다중성 (WDS Double & Multiple Stars) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('layers_doubles')}
                 aria-expanded={isSectionOpen('layers_doubles')}
-                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                className={`w-full flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border text-left transition-colors cursor-pointer ${sectionHeaderCls(
+                  isSectionOpen('layers_doubles')
+                )}`}
               >
                 <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('layers_doubles') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('layers_doubles')
+                    )} ${isSectionOpen('layers_doubles') ? '' : '-rotate-90'}`}
                   />
                   <span>이중성 · 다중성 (WDS)</span>
                 </span>
@@ -2311,7 +2376,7 @@ export function ControlSidebar({
               </button>
 
               {isSectionOpen('layers_doubles') && (
-              <div className="space-y-1.5">
+              <div className={`space-y-1.5 ${sectionBodyCls}`}>
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -2529,18 +2594,20 @@ export function ControlSidebar({
             </div>
 
             {/* 3. 심우주 천체 & 은하수 (Deep Sky & Milky Way) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('layers_dso')}
                 aria-expanded={isSectionOpen('layers_dso')}
-                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                className={`w-full flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border text-left transition-colors cursor-pointer ${sectionHeaderCls(
+                  isSectionOpen('layers_dso')
+                )}`}
               >
                 <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('layers_dso') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('layers_dso')
+                    )} ${isSectionOpen('layers_dso') ? '' : '-rotate-90'}`}
                   />
                   <span>심우주 천체 & 은하수</span>
                 </span>
@@ -2555,7 +2622,7 @@ export function ControlSidebar({
               </button>
 
               {isSectionOpen('layers_dso') && (
-              <div className="space-y-1">
+              <div className={`space-y-1 ${sectionBodyCls}`}>
                 <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                   <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
                     심우주 천체 (DSO 심볼)
@@ -2771,18 +2838,22 @@ export function ControlSidebar({
             </div>
 
             {/* 3.5. 한계등급 기준 (Star & DSO Limiting Magnitude Baseline) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
-              <div className="flex items-center justify-between gap-1">
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
+              <div
+                className={`flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
+                  isSectionOpen('layers_mag')
+                )}`}
+              >
                 <button
                   type="button"
                   onClick={() => toggleSection('layers_mag')}
                   aria-expanded={isSectionOpen('layers_mag')}
-                  className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                  className={`flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
                 >
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('layers_mag') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('layers_mag')
+                    )} ${isSectionOpen('layers_mag') ? '' : '-rotate-90'}`}
                   />
                   <span>한계등급 기준 (60°: 6.0 / 10.0)</span>
                 </button>
@@ -2792,7 +2863,7 @@ export function ControlSidebar({
                     onClick={() =>
                       onChangeLayers((p) => ({ ...p, magOffset: 0, dsoMagOffset: 0 }))
                     }
-                    className={`text-[9.5px] tracking-[-0.05em] whitespace-nowrap opacity-80 hover:opacity-100 ${ui.accentText}`}
+                    className={`text-[9.5px] tracking-[-0.05em] whitespace-nowrap opacity-80 hover:opacity-100 shrink-0 ${ui.accentText}`}
                   >
                     초기화
                   </button>
@@ -2800,7 +2871,7 @@ export function ControlSidebar({
               </div>
 
               {isSectionOpen('layers_mag') && (
-              <div className="space-y-2">
+              <div className={`space-y-2 ${sectionBodyCls}`}>
 
               {/* 항성 한계등급 기준 슬라이드바 */}
               <div className="space-y-0.5">
@@ -2875,22 +2946,24 @@ export function ControlSidebar({
             </div>
 
             {/* 4. 좌표 그리드 & 기준선 (Grids & Reference Lines) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('layers_grids')}
                 aria-expanded={isSectionOpen('layers_grids')}
-                className={`w-full flex items-center gap-1 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                className={`w-full flex items-center gap-1 px-2 py-1.5 rounded-md border text-left font-semibold whitespace-nowrap tracking-[-0.05em] transition-colors cursor-pointer ${ui.textPrimary} ${sectionHeaderCls(
+                  isSectionOpen('layers_grids')
+                )}`}
               >
                 <ChevronDown
-                  className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                    isSectionOpen('layers_grids') ? '' : '-rotate-90'
-                  }`}
+                  className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                    isSectionOpen('layers_grids')
+                  )} ${isSectionOpen('layers_grids') ? '' : '-rotate-90'}`}
                 />
                 <span>좌표 그리드 & 기준선</span>
               </button>
               {isSectionOpen('layers_grids') && (
-              <div className="space-y-1.5">
+              <div className={`space-y-1.5 ${sectionBodyCls}`}>
               {(
                 [
                   ['showGridEq', '적도 좌표 그리드 (RA/Dec)'],
@@ -2979,18 +3052,22 @@ export function ControlSidebar({
             </div>
 
             {/* 5. 실사 배경 서베이 (Aladin Lite v3 HiPS) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
-              <div className="flex items-center justify-between gap-1.5">
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
+              <div
+                className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
+                  isSectionOpen('layers_hips')
+                )}`}
+              >
                 <button
                   type="button"
                   onClick={() => toggleSection('layers_hips')}
                   aria-expanded={isSectionOpen('layers_hips')}
-                  className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                  className={`flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
                 >
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('layers_hips') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('layers_hips')
+                    )} ${isSectionOpen('layers_hips') ? '' : '-rotate-90'}`}
                   />
                   <Image className="w-3.5 h-3.5 shrink-0" />
                   <span>하이브리드 실사 배경 (HiPS)</span>
@@ -3009,7 +3086,7 @@ export function ControlSidebar({
               </div>
 
               {isSectionOpen('layers_hips') && (
-              <div className="space-y-2">
+              <div className={`space-y-2 ${sectionBodyCls}`}>
 
               {hips.enabled && (
                 <div className="space-y-2 pt-0.5">
@@ -3059,18 +3136,22 @@ export function ControlSidebar({
             </div>
 
             {/* 6. 레이어 세팅 관리 (파일 저장 / 불러오기 / 자동 로컬 저장) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
-              <div className="flex items-center justify-between gap-1.5">
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
+              <div
+                className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
+                  isSectionOpen('layers_manage')
+                )}`}
+              >
                 <button
                   type="button"
                   onClick={() => toggleSection('layers_manage')}
                   aria-expanded={isSectionOpen('layers_manage')}
-                  className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                  className={`flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
                 >
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('layers_manage') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('layers_manage')
+                    )} ${isSectionOpen('layers_manage') ? '' : '-rotate-90'}`}
                   />
                   <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
                   <span>레이어 세팅 관리</span>
@@ -3091,7 +3172,7 @@ export function ControlSidebar({
               </div>
 
               {isSectionOpen('layers_manage') && (
-              <div className="space-y-2">
+              <div className={`space-y-2 ${sectionBodyCls}`}>
 
               <div className="grid grid-cols-2 gap-1">
                 <button
@@ -3158,18 +3239,22 @@ export function ControlSidebar({
         {tab === 'optics' && (
           <>
             {/* Multi-select FOV Rings (시야 링 - 중복 표시 가능) */}
-            <div className="space-y-2">
-              <div className="flex items-center justify-between gap-1">
+            <div className="space-y-1.5">
+              <div
+                className={`flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
+                  isSectionOpen('optics_rings')
+                )}`}
+              >
                 <button
                   type="button"
                   onClick={() => toggleSection('optics_rings')}
                   aria-expanded={isSectionOpen('optics_rings')}
-                  className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                  className={`flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
                 >
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('optics_rings') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('optics_rings')
+                    )} ${isSectionOpen('optics_rings') ? '' : '-rotate-90'}`}
                   />
                   <span>시야 링 (중복 표시 가능)</span>
                 </button>
@@ -3185,14 +3270,14 @@ export function ControlSidebar({
                       showSensorBox: false,
                     }))
                   }
-                  className={`text-[10px] tracking-[-0.05em] whitespace-nowrap transition-opacity hover:opacity-100 opacity-75 ${ui.textMuted}`}
+                  className={`text-[10px] tracking-[-0.05em] whitespace-nowrap transition-opacity hover:opacity-100 opacity-80 shrink-0 ${ui.textMuted}`}
                 >
                   모두 해제
                 </button>
               </div>
 
               {isSectionOpen('optics_rings') && (
-              <div className="space-y-2">
+              <div className={`space-y-2 ${sectionBodyCls}`}>
 
               <div className="space-y-1">
                 {/* 1. 중앙 십자선 */}
@@ -3458,18 +3543,20 @@ export function ControlSidebar({
             </div>
 
             {/* Mirror / Reflector Flip */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('optics_flip')}
                 aria-expanded={isSectionOpen('optics_flip')}
-                className="w-full flex items-center justify-between gap-1 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                className={`w-full flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border text-left transition-colors cursor-pointer ${sectionHeaderCls(
+                  isSectionOpen('optics_flip')
+                )}`}
               >
                 <span className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}>
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('optics_flip') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('optics_flip')
+                    )} ${isSectionOpen('optics_flip') ? '' : '-rotate-90'}`}
                   />
                   <span>광학계 상 반전 (Flip)</span>
                 </span>
@@ -3498,7 +3585,7 @@ export function ControlSidebar({
                 </span>
               </button>
               {isSectionOpen('optics_flip') && (
-              <div className="space-y-2">
+              <div className={`space-y-2 ${sectionBodyCls}`}>
               <div className="grid grid-cols-2 gap-1.5">
                 <button
                   type="button"
@@ -3532,7 +3619,7 @@ export function ControlSidebar({
             </div>
 
             {/* My Equipment Locker (내 장비함 · .skylist 통합) */}
-            <div className={`pt-3 border-t ${ui.divider}`}>
+            <div className={`pt-2 border-t ${ui.divider}`}>
               <EquipmentLockerPanel
                 theme={theme}
                 locker={equipmentLocker}
@@ -3546,18 +3633,20 @@ export function ControlSidebar({
             </div>
 
             {/* Eyepiece TFOV Settings (내 장비 조합 / 시야각 직접 입력 / 수치 계산) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2.5`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('optics_eyepiece')}
                 aria-expanded={isSectionOpen('optics_eyepiece')}
-                className="w-full flex items-center justify-between gap-1.5 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                className={`w-full flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md border text-left transition-colors cursor-pointer ${sectionHeaderCls(
+                  isSectionOpen('optics_eyepiece')
+                )}`}
               >
                 <span className="flex items-center gap-1 min-w-0">
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('optics_eyepiece') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('optics_eyepiece')
+                    )} ${isSectionOpen('optics_eyepiece') ? '' : '-rotate-90'}`}
                   />
                   <SlidersHorizontal
                     className={`w-3.5 h-3.5 shrink-0 ${
@@ -3582,7 +3671,7 @@ export function ControlSidebar({
               </button>
 
               {isSectionOpen('optics_eyepiece') && (
-              <div className="space-y-2.5">
+              <div className={`space-y-2.5 ${sectionBodyCls}`}>
 
               {/* 3-Mode Segmented Switcher */}
               <div
@@ -4040,20 +4129,22 @@ export function ControlSidebar({
             </div>
 
             {/* Astrophotography Sensor Frame (내 장비 조합 + 스마트망원경 바로 적용 + 모자이크 화각 + 회전) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('optics_sensor')}
                 aria-expanded={isSectionOpen('optics_sensor')}
-                className="w-full flex items-center justify-between gap-1.5 text-left hover:opacity-80 transition-opacity cursor-pointer"
+                className={`w-full flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md border text-left transition-colors cursor-pointer ${sectionHeaderCls(
+                  isSectionOpen('optics_sensor')
+                )}`}
               >
                 <span
                   className={`flex items-center gap-1 min-w-0 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
                 >
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('optics_sensor') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('optics_sensor')
+                    )} ${isSectionOpen('optics_sensor') ? '' : '-rotate-90'}`}
                   />
                   <span>촬영 센서 화각 프레임</span>
                 </span>
@@ -4070,7 +4161,7 @@ export function ControlSidebar({
               </button>
 
               {isSectionOpen('optics_sensor') && (
-              <div className="space-y-2">
+              <div className={`space-y-2 ${sectionBodyCls}`}>
 
               {/* 2-Mode Switcher: 장비 조합 vs 스마트망원경 바로 적용 */}
               <div
@@ -4921,18 +5012,22 @@ export function ControlSidebar({
               );
 
               return (
-                <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
-                  <div className="flex items-center justify-between gap-1.5">
+                <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
+                  <div
+                    className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
+                      isSectionOpen('optics_sensor_caption')
+                    )}`}
+                  >
                     <button
                       type="button"
                       onClick={() => toggleSection('optics_sensor_caption')}
                       aria-expanded={isSectionOpen('optics_sensor_caption')}
-                      className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                      className={`flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
                     >
                       <ChevronDown
-                        className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                          isSectionOpen('optics_sensor_caption') ? '' : '-rotate-90'
-                        }`}
+                        className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                          isSectionOpen('optics_sensor_caption')
+                        )} ${isSectionOpen('optics_sensor_caption') ? '' : '-rotate-90'}`}
                       />
                       <Image className="w-3.5 h-3.5 shrink-0" />
                       <span>촬영센서 PNG 하단 설명</span>
@@ -4958,7 +5053,7 @@ export function ControlSidebar({
                   </div>
 
                   {isSectionOpen('optics_sensor_caption') && (
-                    <div className="space-y-2">
+                    <div className={`space-y-2 ${sectionBodyCls}`}>
                       <p
                         className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
                       >
@@ -5083,18 +5178,20 @@ export function ControlSidebar({
         {tab === 'observer' && (
           <>
             {/* Current Site Summary + Interactive Map Picker */}
-            <div className="space-y-2">
+            <div className="space-y-1.5">
               <button
                 type="button"
                 onClick={() => toggleSection('observer_current')}
                 aria-expanded={isSectionOpen('observer_current')}
-                className={`w-full font-semibold flex items-center justify-between gap-1 whitespace-nowrap tracking-[-0.05em] text-left hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                className={`w-full font-semibold flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border whitespace-nowrap tracking-[-0.05em] text-left transition-colors cursor-pointer ${ui.textPrimary} ${sectionHeaderCls(
+                  isSectionOpen('observer_current')
+                )}`}
               >
                 <span className="flex items-center gap-1">
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('observer_current') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('observer_current')
+                    )} ${isSectionOpen('observer_current') ? '' : '-rotate-90'}`}
                   />
                   <Compass className="w-3.5 h-3.5 shrink-0" />
                   <span>현재 관측지</span>
@@ -5105,7 +5202,7 @@ export function ControlSidebar({
               </button>
 
               {isSectionOpen('observer_current') && (
-              <div className="space-y-2">
+              <div className={`space-y-2 ${sectionBodyCls}`}>
 
               <div className={`p-2 border rounded-md space-y-2 ${cardIdleCls}`}>
                 <div className="flex items-center justify-between gap-1.5">
@@ -5186,18 +5283,22 @@ export function ControlSidebar({
             </div>
 
             {/* Saved Observing Sites + Local File Export/Import */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
-              <div className="flex items-center justify-between gap-1">
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
+              <div
+                className={`flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
+                  isSectionOpen('observer_saved')
+                )}`}
+              >
                 <button
                   type="button"
                   onClick={() => toggleSection('observer_saved')}
                   aria-expanded={isSectionOpen('observer_saved')}
-                  className={`font-semibold flex items-center gap-1 min-w-0 text-left whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                  className={`flex-1 font-semibold flex items-center gap-1 min-w-0 text-left whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
                 >
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('observer_saved') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('observer_saved')
+                    )} ${isSectionOpen('observer_saved') ? '' : '-rotate-90'}`}
                   />
                   <MapPin className="w-3.5 h-3.5 shrink-0" />
                   <span>내 저장 관측지 ({savedSites.length})</span>
@@ -5210,7 +5311,7 @@ export function ControlSidebar({
                     setQuickSiteNote('');
                     setQuickSaveOpen((v) => !v);
                   }}
-                  className={`px-1.5 py-0.5 border text-[10px] font-medium flex items-center gap-0.5 transition-colors ${
+                  className={`px-1.5 py-0.5 border text-[10px] font-medium flex items-center gap-0.5 transition-colors shrink-0 ${
                     quickSaveOpen ? ui.buttonActive : ui.buttonIdle
                   }`}
                   style={{ borderRadius: '4px' }}
@@ -5221,7 +5322,7 @@ export function ControlSidebar({
               </div>
 
               {isSectionOpen('observer_saved') && (
-              <div className="space-y-2">
+              <div className={`space-y-2 ${sectionBodyCls}`}>
 
               {quickSaveOpen && (
                 <form
@@ -5370,6 +5471,7 @@ export function ControlSidebar({
                               lon: site.lon,
                             }))
                           }
+                          title={site.name}
                           className="flex-1 text-left min-w-0 py-0.5"
                         >
                           <div className="text-[10.5px] font-medium truncate">
@@ -5410,18 +5512,20 @@ export function ControlSidebar({
             </div>
 
             {/* Built-in Observatory Presets */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-1.5`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('observer_presets')}
                 aria-expanded={isSectionOpen('observer_presets')}
-                className={`w-full flex items-center justify-between gap-1 text-left font-semibold text-[10.5px] tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                className={`w-full flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border text-left font-semibold text-[10.5px] tracking-[-0.05em] transition-colors cursor-pointer ${ui.textPrimary} ${sectionHeaderCls(
+                  isSectionOpen('observer_presets')
+                )}`}
               >
                 <span className="flex items-center gap-1">
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('observer_presets') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('observer_presets')
+                    )} ${isSectionOpen('observer_presets') ? '' : '-rotate-90'}`}
                   />
                   <span>기본 추천 관측지</span>
                 </span>
@@ -5430,7 +5534,7 @@ export function ControlSidebar({
                 </span>
               </button>
               {isSectionOpen('observer_presets') && (
-              <div className="grid grid-cols-1 gap-1">
+              <div className={`grid grid-cols-1 gap-1 ${sectionBodyCls}`}>
                 {SITE_PRESETS.map((site) => (
                   <button
                     key={site.name}
@@ -5443,6 +5547,7 @@ export function ControlSidebar({
                         lon: site.lon,
                       }))
                     }
+                    title={site.name}
                     className={`w-full text-left px-2 py-1.5 border flex items-center justify-between gap-1 text-[10px] tracking-[-0.05em] ${
                       observer.name === site.name ? ui.buttonActive : ui.buttonIdle
                     }`}
@@ -5459,18 +5564,20 @@ export function ControlSidebar({
             </div>
 
             {/* Minimum Altitude Filter */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <button
                 type="button"
                 onClick={() => toggleSection('observer_alt')}
                 aria-expanded={isSectionOpen('observer_alt')}
-                className={`w-full font-semibold flex items-center justify-between gap-1 whitespace-nowrap tracking-[-0.05em] text-left hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                className={`w-full font-semibold flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border whitespace-nowrap tracking-[-0.05em] text-left transition-colors cursor-pointer ${ui.textPrimary} ${sectionHeaderCls(
+                  isSectionOpen('observer_alt')
+                )}`}
               >
                 <span className="flex items-center gap-1">
                   <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('observer_alt') ? '' : '-rotate-90'
-                    }`}
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('observer_alt')
+                    )} ${isSectionOpen('observer_alt') ? '' : '-rotate-90'}`}
                   />
                   <Eye className="w-3.5 h-3.5 shrink-0" />
                   <span>고도 기반 관측 필터</span>
@@ -5480,7 +5587,7 @@ export function ControlSidebar({
                 </span>
               </button>
               {isSectionOpen('observer_alt') && (
-              <div className="space-y-2">
+              <div className={`space-y-2 ${sectionBodyCls}`}>
               <div className="grid grid-cols-5 gap-0.5">
                 {[
                   { val: -90, lbl: '전체' },

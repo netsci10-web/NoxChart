@@ -872,7 +872,7 @@ export function ObservationLogPanel({
                       className={`text-left min-w-0 flex-1 ${
                         hasCoord ? 'hover:underline cursor-pointer' : 'cursor-default'
                       }`}
-                      title={hasCoord ? '성도에서 이 천체로 이동' : undefined}
+                      title={log.objectName}
                     >
                       <div className={`font-semibold text-[11.5px] leading-tight break-keep ${ui.textPrimary}`}>
                         {log.objectName}
@@ -1006,6 +1006,7 @@ export function ObservationLogPanel({
                     })
                   }
                   className="min-w-0 flex-1 text-left hover:underline"
+                  title={obj.objectName}
                 >
                   <div className={`font-medium text-[11px] truncate ${ui.textPrimary}`}>
                     {obj.objectName}

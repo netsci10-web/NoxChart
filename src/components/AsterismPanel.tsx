@@ -558,7 +558,7 @@ export function AsterismPanel({
                       type="button"
                       onClick={() => onSetActiveLayer(layer.id)}
                       className="flex-1 text-left min-w-0"
-                      title="클릭하여 기본 작업 그룹으로 지정"
+                      title={layer.name}
                     >
                       <div
                         className={`text-[10.5px] font-semibold truncate ${
@@ -790,7 +790,7 @@ export function AsterismPanel({
                                 type="button"
                                 onClick={() => onOpenAsterismLayers(grp.id)}
                                 className="flex-1 text-left min-w-0"
-                                title="클릭하여 성군 선택 및 성도 작도 레이어 펼치기"
+                                title={grp.name}
                               >
                                 <div className={`text-[10.5px] font-semibold truncate ${ui.textPrimary}`}>
                                   {grp.name}
@@ -1017,7 +1017,7 @@ export function AsterismPanel({
                                             onSelectObject(obj.id);
                                           }}
                                           className="flex-1 text-left min-w-0 truncate"
-                                          title="클릭하여 선택 · 더블클릭하여 속성창 펼치기"
+                                          title={obj.label || '(이름 없음)'}
                                         >
                                           <span className={`font-medium ${ui.textPrimary}`}>
                                             {obj.label || '(이름 없음)'}

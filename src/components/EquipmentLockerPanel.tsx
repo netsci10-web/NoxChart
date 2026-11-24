@@ -558,18 +558,47 @@ export function EquipmentLockerPanel({
       activeRig.camera
   );
 
+  const sectionHeaderCls = panelOpen
+    ? theme === 'white'
+      ? 'bg-sky-100/95 border-sky-300 border-l-2 border-l-blue-600 hover:bg-sky-200/85 hover:border-blue-400'
+      : theme === 'red'
+      ? 'bg-[#300606] border-[#7F1D1D] border-l-2 border-l-[#FF5252] hover:bg-[#440909] hover:border-[#B91C1C]'
+      : 'bg-[#12263A] border-cyan-500/50 border-l-2 border-l-cyan-400 hover:bg-[#19344E] hover:border-cyan-400/75'
+    : theme === 'white'
+    ? 'bg-transparent border-transparent hover:bg-slate-200/80 hover:border-slate-300'
+    : theme === 'red'
+    ? 'bg-transparent border-transparent hover:bg-[#220404] hover:border-[#5C1212]'
+    : 'bg-transparent border-transparent hover:bg-[#192338] hover:border-slate-700/80';
+
+  const sectionChevronCls = panelOpen
+    ? theme === 'white'
+      ? 'text-blue-600'
+      : theme === 'red'
+      ? 'text-[#FF5252]'
+      : 'text-cyan-400'
+    : ui.textMuted;
+
+  const sectionBodyCls =
+    theme === 'white'
+      ? 'bg-sky-50/55 border border-sky-200/75 rounded-md p-2'
+      : theme === 'red'
+      ? 'bg-[#130202]/90 border border-[#450A0A] rounded-md p-2'
+      : 'bg-[#0F1728]/85 border border-cyan-500/20 rounded-md p-2';
+
   return (
-    <div className="space-y-2">
+    <div className="space-y-1.5">
       {/* Header + .skylist Save/Load */}
-      <div className="flex items-center justify-between gap-1">
+      <div
+        className={`flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls}`}
+      >
         <button
           type="button"
           onClick={handleTogglePanelOpen}
           aria-expanded={panelOpen}
-          className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+          className={`flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
         >
           <ChevronDown
-            className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+            className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls} ${
               panelOpen ? '' : '-rotate-90'
             }`}
           />
@@ -608,7 +637,7 @@ export function EquipmentLockerPanel({
       </div>
 
       {panelOpen && (
-      <div className="space-y-2">
+      <div className={`space-y-2 ${sectionBodyCls}`}>
       {statusMsg && (
         <div
           className={`px-2 py-1 border text-[10px] tracking-[-0.04em] rounded ${summaryBoxCls} ${ui.accentText}`}
@@ -720,7 +749,7 @@ export function EquipmentLockerPanel({
                   type="button"
                   onClick={() => onToggleActiveItem(activeTab, item.id)}
                   className="flex-1 text-left min-w-0"
-                  title="클릭하여 장착/해제 (광학계 시야 자동 반영)"
+                  title={item.name}
                 >
                   <div className="flex items-center gap-1 min-w-0">
                     {isSelected && <Check className="w-3 h-3 shrink-0" />}

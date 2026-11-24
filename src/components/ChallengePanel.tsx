@@ -43,6 +43,7 @@ import {
   ChallengeCheckpoint,
   ChallengeTrack,
   ObserverConfig,
+  SelectedItem,
   ThemeMode,
 } from '../types/astronomy';
 import {
@@ -68,6 +69,7 @@ import { useConfirmDialog } from './ConfirmDialog';
 
 interface ChallengePanelProps {
   tracks: ChallengeTrack[];
+  selected?: SelectedItem | null;
   theme: ThemeMode;
   observer: ObserverConfig;
   catalogs: CatalogSnapshot;
@@ -139,6 +141,7 @@ interface CatalogSearchHit {
 
 export function ChallengePanel({
   tracks,
+  selected = null,
   theme,
   observer,
   catalogs,
@@ -182,6 +185,7 @@ export function ChallengePanel({
 
   const [mode, setMode] = useState<'list' | 'detail'>('list');
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  const [selectedCpId, setSelectedCpId] = useState<string | null>(null);
   const [filterStatus, setFilterStatus] = useState<'all' | 'todo' | 'done'>('all');
   const [expandedCpId, setExpandedCpId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -288,10 +292,48 @@ export function ChallengePanel({
     return null;
   };
 
+  const doesCheckpointMatchSelected = (
+    cp: ChallengeCheckpoint,
+    sel: SelectedItem | null
+  ): boolean => {
+    if (!sel) return false;
+    const key = cp.catalogId ? cp.catalogId.replace(/\s+/g, '').toUpperCase() : '';
+    if (key) {
+      if (sel.kind === 'dso') {
+        if (sel.data.id.replace(/\s+/g, '').toUpperCase() === key) return true;
+        if (sel.data.altId && sel.data.altId.replace(/\s+/g, '').toUpperCase() === key) return true;
+      } else if (sel.kind === 'star') {
+        if (sel.data.id.replace(/\s+/g, '').toUpperCase() === key) return true;
+        if (sel.data.hip && `HIP${sel.data.hip}` === key) return true;
+        if (sel.data.name && sel.data.name.replace(/\s+/g, '').toUpperCase() === key) return true;
+      } else if (sel.kind === 'double') {
+        if (sel.data.id.replace(/\s+/g, '').toUpperCase() === key) return true;
+        if (sel.data.disc.replace(/\s+/g, '').toUpperCase() === key) return true;
+      } else if (sel.kind === 'planet') {
+        if (sel.data.id.replace(/\s+/g, '').toUpperCase() === key) return true;
+        if (sel.data.name.replace(/\s+/g, '').toUpperCase() === key) return true;
+      }
+    }
+    return false;
+  };
+
   const selectedTrack = useMemo(
     () => tracks.find((t) => t.id === selectedTrackId) ?? null,
     [tracks, selectedTrackId]
   );
+
+  // Sync clicked checkpoint highlight when user selects a different object on the star chart
+  useEffect(() => {
+    if (!selected || !selectedCpId || !selectedTrack) return;
+    const cp = selectedTrack.checkpoints.find((c) => c.id === selectedCpId);
+    if (!cp) {
+      setSelectedCpId(null);
+      return;
+    }
+    if (cp.catalogId && !doesCheckpointMatchSelected(cp, selected)) {
+      setSelectedCpId(null);
+    }
+  }, [selected, selectedCpId, selectedTrack]);
 
   const missingBuiltInTracks = useMemo(() => {
     const existingIds = new Set(tracks.map((t) => t.id));
@@ -1455,18 +1497,26 @@ export function ChallengePanel({
                       ? equatorialToHorizontal(coords.ra, coords.dec, lstDeg, observer.lat)
                       : null;
                     const isBelowHorizon = hz !== null && hz.altDeg < 0;
+                    const isSelectedCp =
+                      selectedCpId === cp.id || doesCheckpointMatchSelected(cp, selected);
                     const canReorderCp = filterStatus === 'all' && group.items.length > 1;
-                    const cpRowHover = isBelowHorizon
+                    const cpRowHover = isSelectedCp
                       ? theme === 'white'
-                        ? 'bg-slate-100/80 opacity-70'
+                        ? 'bg-sky-100/95 hover:bg-sky-200/80 border-l-2 border-l-blue-600'
                         : theme === 'red'
-                        ? 'bg-[#0C0104] opacity-70'
-                        : 'bg-slate-900/50 opacity-70'
+                        ? 'bg-[#3D0909] hover:bg-[#4C0D0D] border-l-2 border-l-[#FF5252]'
+                        : 'bg-cyan-500/25 hover:bg-cyan-500/32 border-l-2 border-l-cyan-400'
+                      : isBelowHorizon
+                      ? theme === 'white'
+                        ? 'bg-slate-100/80 hover:bg-slate-200/90 opacity-75 hover:opacity-95'
+                        : theme === 'red'
+                        ? 'bg-[#0C0104] hover:bg-[#20050A] opacity-75 hover:opacity-95'
+                        : 'bg-slate-900/50 hover:bg-slate-800/85 opacity-75 hover:opacity-95'
                       : theme === 'white'
-                      ? 'hover:bg-violet-100/65'
+                      ? 'hover:bg-violet-200/75'
                       : theme === 'red'
-                      ? 'hover:bg-[#23050F]'
-                      : 'hover:bg-violet-500/15';
+                      ? 'hover:bg-[#310817]'
+                      : 'hover:bg-violet-500/28';
                     return (
                       <div
                         key={cp.id}
@@ -1511,26 +1561,36 @@ export function ChallengePanel({
                             {cp.observed ? (
                               <CheckCircle2
                                 className={`w-3.5 h-3.5 ${
-                                  isBelowHorizon ? belowHorizonTextCls : goldTextClass
+                                  isBelowHorizon && !isSelectedCp ? belowHorizonTextCls : goldTextClass
                                 }`}
                               />
                             ) : (
                               <Circle
                                 className={`w-3.5 h-3.5 ${
-                                  isBelowHorizon ? belowHorizonSubCls : ui.textMuted
+                                  isBelowHorizon && !isSelectedCp ? belowHorizonSubCls : ui.textMuted
                                 }`}
                               />
                             )}
                           </button>
                           <button
                             type="button"
-                            onClick={() => onSelectCheckpoint(selectedTrack, cp)}
-                            className="flex-1 min-w-0 text-left"
+                            onClick={() => {
+                              setSelectedCpId(cp.id);
+                              onSelectCheckpoint(selectedTrack, cp);
+                            }}
+                            title={`${cp.code} ${cp.name}`.trim()}
+                            className="flex-1 min-w-0 text-left cursor-pointer"
                           >
                             <div className="flex items-center gap-1 min-w-0">
                               <span
                                 className={`text-[9.5px] font-mono font-semibold shrink-0 ${
-                                  isBelowHorizon
+                                  isSelectedCp
+                                    ? theme === 'white'
+                                      ? 'text-blue-700'
+                                      : theme === 'red'
+                                      ? 'text-[#FF6B6B]'
+                                      : 'text-cyan-300'
+                                    : isBelowHorizon
                                     ? belowHorizonTextCls
                                     : cp.observed
                                     ? goldTextClass
@@ -1541,7 +1601,13 @@ export function ChallengePanel({
                               </span>
                               <span
                                 className={`text-[10.5px] font-medium truncate ${
-                                  isBelowHorizon
+                                  isSelectedCp
+                                    ? theme === 'white'
+                                      ? `${cp.observed ? 'line-through ' : ''}text-blue-950 font-semibold`
+                                      : theme === 'red'
+                                      ? `${cp.observed ? 'line-through ' : ''}text-[#FF8585] font-semibold`
+                                      : `${cp.observed ? 'line-through ' : ''}text-cyan-100 font-semibold`
+                                    : isBelowHorizon
                                     ? `${cp.observed ? 'line-through ' : ''}${belowHorizonTextCls}`
                                     : cp.observed
                                     ? `line-through opacity-75 ${ui.textPrimary}`
@@ -1553,7 +1619,15 @@ export function ChallengePanel({
                             </div>
                             <div
                               className={`text-[9px] font-mono tabular-nums truncate ${
-                                isBelowHorizon ? belowHorizonSubCls : ui.textMuted
+                                isSelectedCp
+                                  ? theme === 'white'
+                                    ? 'text-blue-700'
+                                    : theme === 'red'
+                                    ? 'text-[#FCA5A5]'
+                                    : 'text-cyan-300/90'
+                                  : isBelowHorizon
+                                  ? belowHorizonSubCls
+                                  : ui.textMuted
                               }`}
                             >
                               {[
@@ -1922,17 +1996,23 @@ export function ChallengePanel({
                 setDragOverTrackId(null);
               }}
               className={`border p-2 space-y-1.5 transition-colors ${
-                track.activeOnChart
+                selectedTrackId === track.id
                   ? theme === 'white'
-                    ? 'border-violet-500/85 bg-violet-100/95'
+                    ? 'border-blue-500/80 bg-sky-100/95 hover:bg-sky-200/85'
                     : theme === 'red'
-                    ? 'border-[#E11D48] bg-[#2D0614]'
-                    : 'border-violet-400/70 bg-violet-500/22'
+                    ? 'border-[#FF4D4D] bg-[#38080C] hover:bg-[#480B10]'
+                    : 'border-cyan-400/75 bg-cyan-500/22 hover:bg-cyan-500/32'
+                  : track.activeOnChart
+                  ? theme === 'white'
+                    ? 'border-violet-500/85 bg-violet-100/95 hover:bg-violet-200/85'
+                    : theme === 'red'
+                    ? 'border-[#E11D48] bg-[#2D0614] hover:bg-[#3B091B]'
+                    : 'border-violet-400/75 bg-violet-500/24 hover:bg-violet-500/34'
                   : theme === 'white'
-                  ? 'border-violet-300/75 bg-violet-50/80 hover:bg-violet-100/60'
+                  ? 'border-violet-300/75 bg-violet-50/80 hover:bg-violet-200/65 hover:border-violet-400'
                   : theme === 'red'
-                  ? 'border-[#731834] bg-[#1B040D] hover:bg-[#240611]'
-                  : 'border-violet-500/30 bg-violet-500/10 hover:bg-violet-500/15'
+                  ? 'border-[#731834] bg-[#1B040D] hover:bg-[#2F0817] hover:border-[#A8244D]'
+                  : 'border-violet-500/30 bg-violet-500/10 hover:bg-violet-500/26 hover:border-violet-400/60'
               } ${dragOverTrackId === track.id ? 'ring-1 ring-cyan-400' : ''}`}
               style={{ borderRadius: '6px' }}
             >
@@ -1969,6 +2049,7 @@ export function ChallengePanel({
                     setExpandedCpId(null);
                     setMode('detail');
                   }}
+                  title={track.title}
                   className="flex-1 min-w-0 text-left space-y-0.5"
                 >
                   <div className="flex items-center gap-1.5">

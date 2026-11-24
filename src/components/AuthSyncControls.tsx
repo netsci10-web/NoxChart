@@ -80,6 +80,13 @@ export const AuthSyncControls: React.FC<AuthSyncControlsProps> = ({
         ? 'text-[#FF4D4D] hover:bg-[#2A0505]'
         : 'text-amber-300 hover:bg-amber-500/15';
     }
+    if (syncStatus === 'updated') {
+      return theme === 'white'
+        ? 'text-blue-700 bg-sky-100/80 hover:bg-sky-200/80'
+        : theme === 'red'
+        ? 'text-[#FF6B6B] bg-[#300707] hover:bg-[#3F0A0A]'
+        : 'text-cyan-300 bg-cyan-500/15 hover:bg-cyan-500/25';
+    }
     if (syncStatus === 'saved') {
       return theme === 'white'
         ? 'text-emerald-700 hover:bg-emerald-100/70'
@@ -97,8 +104,12 @@ export const AuthSyncControls: React.FC<AuthSyncControlsProps> = ({
   const syncLabel =
     syncStatus === 'loading'
       ? '불러오는 중'
+      : syncStatus === 'checking'
+      ? '확인 중'
       : syncStatus === 'saving' || syncStatus === 'pending'
       ? '저장 중'
+      : syncStatus === 'updated'
+      ? '반영됨'
       : syncStatus === 'saved'
       ? '저장됨'
       : syncStatus === 'error'
@@ -107,11 +118,15 @@ export const AuthSyncControls: React.FC<AuthSyncControlsProps> = ({
 
   const syncTitle =
     syncStatus === 'loading'
-      ? '클라우드에서 설정과 관측 데이터를 불러오는 중입니다.'
+      ? '클라우드에서 설정과 관측 데이터를 실시간 동기화 연결 중입니다.'
+      : syncStatus === 'checking'
+      ? '데이터베이스 실시간 연결 및 최신 수정사항을 확인하는 중입니다.'
       : syncStatus === 'saving' || syncStatus === 'pending'
       ? '변경 사항을 Firestore 클라우드에 자동 저장하는 중입니다.'
+      : syncStatus === 'updated'
+      ? `다른 기기/데이터베이스의 변경사항을 실시간 반영했습니다${lastSyncedAt ? ` (${formatTimeShort(lastSyncedAt)})` : ''}`
       : syncStatus === 'saved'
-      ? `클라우드 저장됨${lastSyncedAt ? ` (${formatTimeShort(lastSyncedAt)})` : ''} · 클릭하여 지금 동기화`
+      ? `실시간 클라우드 동기화 연결됨${lastSyncedAt ? ` (${formatTimeShort(lastSyncedAt)})` : ''} · 클릭하여 지금 동기화`
       : syncStatus === 'error'
       ? `${syncError || '동기화 오류'} · 클릭하여 재시도`
       : '클라우드 동기화';
@@ -133,7 +148,7 @@ export const AuthSyncControls: React.FC<AuthSyncControlsProps> = ({
           type="button"
           onClick={onLogin}
           disabled={authBusy}
-          title="Google 계정으로 로그인하여 설정·장비·관측 목록을 클라우드에 동기화"
+          title="Google 계정으로 로그인하여 설정·장비·관측 목록을 클라우드에 실시간 동기화"
           className={`h-7 px-2 sm:px-2.5 rounded-lg border flex items-center gap-1.5 text-[11px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer disabled:opacity-60 ${loginBtnTone}`}
         >
           {authBusy ? (
@@ -183,9 +198,12 @@ export const AuthSyncControls: React.FC<AuthSyncControlsProps> = ({
               aria-label={syncTitle}
               className={`h-6 px-1.5 rounded-md flex items-center gap-1 text-[10px] font-medium whitespace-nowrap transition-colors cursor-pointer shrink-0 ${syncTone}`}
             >
-              {syncStatus === 'loading' || syncStatus === 'saving' || syncStatus === 'pending' ? (
+              {syncStatus === 'loading' ||
+              syncStatus === 'checking' ||
+              syncStatus === 'saving' ||
+              syncStatus === 'pending' ? (
                 <Loader2 className="w-3 h-3 animate-spin shrink-0" />
-              ) : syncStatus === 'saved' ? (
+              ) : syncStatus === 'saved' || syncStatus === 'updated' ? (
                 <CloudCheck className="w-3.5 h-3.5 shrink-0" />
               ) : syncStatus === 'error' ? (
                 <CloudAlert className="w-3.5 h-3.5 shrink-0" />
@@ -247,24 +265,53 @@ export const AuthSyncControls: React.FC<AuthSyncControlsProps> = ({
         </div>
       )}
 
-      {/* Non-intrusive dismissible notice if auth or Firestore sync encounters an issue */}
+      {/* Top-of-screen alert toast for Firestore permission / network / auth errors */}
       {activeNotice && (
         <div
           role="alert"
-          className={`absolute right-0 top-full mt-1.5 z-50 w-72 px-2.5 py-2 rounded-lg border shadow-xl flex items-start gap-2 text-[11px] leading-snug ${
+          className={`fixed top-14 left-1/2 -translate-x-1/2 z-[120] max-w-[92vw] w-[420px] px-3 py-2.5 rounded-lg border shadow-2xl flex items-start gap-2.5 text-[11.5px] leading-snug backdrop-blur-md ${
             theme === 'white'
-              ? 'bg-white border-rose-300 text-rose-800'
+              ? 'bg-white/95 border-rose-400 text-rose-900'
               : theme === 'red'
-              ? 'bg-[#160202] border-[#7F1D1D] text-[#FCA5A5]'
-              : 'bg-[#0F172A] border-amber-500/50 text-amber-200'
+              ? 'bg-[#1A0202]/95 border-[#B91C1C] text-[#FCA5A5]'
+              : 'bg-[#121829]/95 border-amber-500/70 text-amber-100'
           }`}
         >
-          <CloudAlert className="w-4 h-4 shrink-0 mt-0.5" />
-          <span className="flex-1 break-words">{activeNotice}</span>
+          <CloudAlert
+            className={`w-4 h-4 shrink-0 mt-0.5 ${
+              theme === 'white'
+                ? 'text-rose-600'
+                : theme === 'red'
+                ? 'text-[#FF5252]'
+                : 'text-amber-400'
+            }`}
+          />
+          <div className="flex-1 min-w-0 space-y-1">
+            <div className="font-semibold text-[11.5px]">
+              {authError ? 'Google 로그인 오류' : 'Firestore 클라우드 동기화 오류'}
+            </div>
+            <div className="text-[11px] opacity-90 break-keep">{activeNotice}</div>
+          </div>
+          {!authError && user && (
+            <button
+              type="button"
+              onClick={onManualSync}
+              className={`px-2 py-1 rounded border text-[10.5px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                theme === 'white'
+                  ? 'bg-rose-50 border-rose-300 text-rose-700 hover:bg-rose-100'
+                  : theme === 'red'
+                  ? 'bg-[#2E0606] border-[#7F1D1D] text-[#FF7A7A] hover:bg-[#440909]'
+                  : 'bg-amber-500/15 border-amber-400/50 text-amber-200 hover:bg-amber-500/25'
+              }`}
+            >
+              재시도
+            </button>
+          )}
           <button
             type="button"
             onClick={onDismissError}
             aria-label="알림 닫기"
+            title="알림 닫기"
             className="p-0.5 opacity-70 hover:opacity-100 cursor-pointer shrink-0"
           >
             <X className="w-3.5 h-3.5" />

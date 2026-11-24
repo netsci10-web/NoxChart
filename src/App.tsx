@@ -145,14 +145,21 @@ import {
   saveLayerSettingsToLocal,
 } from './utils/layerStorage';
 import {
+  CloudSubDocKey,
   CloudSyncPayload,
   CloudSyncStatus,
   computePayloadHashes,
   formatFriendlyAuthError,
   formatFriendlySyncError,
+  LoadedCloudData,
   loadUserCloudData,
   saveUserCloudRoot,
   saveUserCloudSubdoc,
+  stripEphemeralAsterisms,
+  stripEphemeralChallenges,
+  stripEphemeralOptics,
+  stripUndefinedDeep,
+  subscribeUserCloudData,
   SyncHashes,
 } from './utils/cloudSync';
 import {
@@ -1507,7 +1514,7 @@ export default function App() {
     }
   }, [theme, view.coordSystem, view.fsz, view.flipH, view.flipV]);
 
-  // Firebase Authentication & Cloud Firestore Synchronization (users/{uid} & users/{uid}/data/*)
+  // Firebase Authentication & Real-time Cloud Firestore Synchronization (onSnapshot on users/{uid} & users/{uid}/data)
   const [authUser, setAuthUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
   const [authBusy, setAuthBusy] = useState(false);
@@ -1515,12 +1522,18 @@ export default function App() {
   const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>('idle');
   const [syncError, setSyncError] = useState<string | null>(null);
   const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+  const [cloudReconnectKey, setCloudReconnectKey] = useState(0);
 
+  const authUserRef = useRef<User | null>(null);
+  authUserRef.current = authUser;
   const hydratingCloudRef = useRef(false);
   const cloudHydratedUidRef = useRef<string | null>(null);
   const lastSyncedHashesRef = useRef<SyncHashes | null>(null);
   const cloudSyncTimerRef = useRef<number | null>(null);
+  const updatedBadgeTimerRef = useRef<number | null>(null);
   const syncInFlightRef = useRef(false);
+  const pullInFlightRef = useRef(false);
+  const realtimeListenerFailedRef = useRef(false);
 
   const currentCloudPayload = useMemo<CloudSyncPayload>(
     () => ({
@@ -1535,7 +1548,6 @@ export default function App() {
         prefs: {
           theme,
           coordSystem: view.coordSystem,
-          fsz: view.fsz,
           flipH: view.flipH,
           flipV: view.flipV,
         },
@@ -1561,7 +1573,6 @@ export default function App() {
       authUser,
       theme,
       view.coordSystem,
-      view.fsz,
       view.flipH,
       view.flipV,
       layers,
@@ -1582,6 +1593,412 @@ export default function App() {
   );
   const currentCloudPayloadRef = useRef<CloudSyncPayload>(currentCloudPayload);
   currentCloudPayloadRef.current = currentCloudPayload;
+
+  const scheduleUpdatedBadgeClear = useCallback(() => {
+    if (updatedBadgeTimerRef.current !== null) {
+      window.clearTimeout(updatedBadgeTimerRef.current);
+    }
+    updatedBadgeTimerRef.current = window.setTimeout(() => {
+      updatedBadgeTimerRef.current = null;
+      setSyncStatus((prev) => (prev === 'updated' ? 'saved' : prev));
+    }, 3500);
+  }, []);
+
+  const applyLoadedCloudData = useCallback(
+    (
+      loaded: LoadedCloudData,
+      user: User,
+      mode: 'initial' | 'poll',
+      removedSubdocs: CloudSubDocKey[] = []
+    ): { changed: boolean } => {
+      const basePayload = currentCloudPayloadRef.current;
+      const currentHashes = computePayloadHashes(basePayload);
+      const prevHashes = lastSyncedHashesRef.current;
+      const removedSet = new Set<CloudSubDocKey>(removedSubdocs);
+
+      const localDirtyRoot =
+        mode === 'poll' && Boolean(prevHashes && prevHashes.root !== currentHashes.root);
+      const localDirtyLists =
+        mode === 'poll' &&
+        Boolean(prevHashes && prevHashes.observingLists !== currentHashes.observingLists);
+      const localDirtyLogs =
+        mode === 'poll' &&
+        Boolean(prevHashes && prevHashes.observationLogs !== currentHashes.observationLogs);
+      const localDirtyChallenges =
+        mode === 'poll' &&
+        Boolean(prevHashes && prevHashes.challenges !== currentHashes.challenges);
+      const localDirtyAsterisms =
+        mode === 'poll' &&
+        Boolean(prevHashes && prevHashes.asterisms !== currentHashes.asterisms);
+
+      let changed = false;
+
+      let nextTheme = basePayload.root.prefs?.theme ?? DEFAULT_THEME;
+      let nextCoordSystem = basePayload.root.prefs?.coordSystem ?? DEFAULT_VIEW.coordSystem;
+      let nextFlipH = basePayload.root.prefs?.flipH ?? false;
+      let nextFlipV = basePayload.root.prefs?.flipV ?? false;
+      let nextLayers = basePayload.root.layers ?? DEFAULT_LAYERS;
+      let nextHips = basePayload.root.hips ?? DEFAULT_HIPS;
+      let nextOptics = basePayload.root.optics ?? DEFAULT_OPTICS;
+      let nextActiveSite = basePayload.root.activeSite ?? {
+        name: DEFAULT_OBSERVER.name,
+        lat: DEFAULT_OBSERVER.lat,
+        lon: DEFAULT_OBSERVER.lon,
+        minAltitudeDeg: DEFAULT_OBSERVER.minAltitudeDeg,
+        highlightAboveMinAlt: DEFAULT_OBSERVER.highlightAboveMinAlt,
+      };
+      let nextSavedSites = basePayload.root.savedSites ?? [];
+      let nextEquipment = basePayload.root.equipmentLocker ?? DEFAULT_EQUIPMENT_LOCKER;
+      let nextObservingLists = basePayload.observingLists;
+      let nextObservationLogs = basePayload.observationLogs;
+      let nextChallenges = basePayload.challenges;
+      let nextAsterisms = basePayload.asterisms;
+
+      const serialize = (val: unknown) => JSON.stringify(stripUndefinedDeep(val));
+
+      hydratingCloudRef.current = true;
+      try {
+        const cloudRoot = !localDirtyRoot ? loaded.root : null;
+        if (cloudRoot) {
+          if (cloudRoot.prefs) {
+            const p = cloudRoot.prefs;
+            if (p.theme === 'dark' || p.theme === 'white' || p.theme === 'red') {
+              nextTheme = p.theme;
+            }
+            if (p.coordSystem === 'horizontal' || p.coordSystem === 'equatorial') {
+              nextCoordSystem = p.coordSystem;
+            }
+            if (typeof p.flipH === 'boolean') nextFlipH = p.flipH;
+            if (typeof p.flipV === 'boolean') nextFlipV = p.flipV;
+
+            const basePrefs = basePayload.root.prefs;
+            if (nextTheme !== (basePrefs?.theme ?? DEFAULT_THEME)) {
+              setTheme(nextTheme);
+              changed = true;
+            }
+            if (
+              nextCoordSystem !== (basePrefs?.coordSystem ?? DEFAULT_VIEW.coordSystem) ||
+              nextFlipH !== (basePrefs?.flipH ?? false) ||
+              nextFlipV !== (basePrefs?.flipV ?? false)
+            ) {
+              setView((prev) => ({
+                ...prev,
+                coordSystem: nextCoordSystem,
+                flipH: nextFlipH,
+                flipV: nextFlipV,
+              }));
+              changed = true;
+            }
+          }
+
+          if (cloudRoot.layers) {
+            const candidate = sanitizeLayerSettings(cloudRoot.layers, DEFAULT_LAYERS);
+            if (serialize(candidate) !== serialize(nextLayers)) {
+              nextLayers = candidate;
+              setLayers(nextLayers);
+              changed = true;
+            }
+          }
+
+          if (cloudRoot.hips) {
+            const candidate = sanitizeHipsSettings(cloudRoot.hips, DEFAULT_HIPS);
+            if (serialize(candidate) !== serialize(nextHips)) {
+              nextHips = candidate;
+              setHips(nextHips);
+              changed = true;
+            }
+          }
+
+          if (cloudRoot.optics) {
+            const candidate = sanitizeOpticsSettings(cloudRoot.optics);
+            if (
+              serialize(stripEphemeralOptics(candidate)) !==
+              serialize(stripEphemeralOptics(nextOptics))
+            ) {
+              nextOptics = {
+                ...candidate,
+                showSelectionMark: nextOptics.showSelectionMark,
+              };
+              setOptics(nextOptics);
+              changed = true;
+            }
+          }
+
+          if (
+            cloudRoot.activeSite &&
+            typeof cloudRoot.activeSite.lat === 'number' &&
+            Number.isFinite(cloudRoot.activeSite.lat) &&
+            typeof cloudRoot.activeSite.lon === 'number' &&
+            Number.isFinite(cloudRoot.activeSite.lon)
+          ) {
+            const candidate = {
+              name:
+                typeof cloudRoot.activeSite.name === 'string' && cloudRoot.activeSite.name.trim()
+                  ? cloudRoot.activeSite.name
+                  : DEFAULT_OBSERVER.name,
+              lat: Math.max(-90, Math.min(90, cloudRoot.activeSite.lat)),
+              lon: Math.max(-180, Math.min(180, cloudRoot.activeSite.lon)),
+              minAltitudeDeg:
+                typeof cloudRoot.activeSite.minAltitudeDeg === 'number' &&
+                Number.isFinite(cloudRoot.activeSite.minAltitudeDeg)
+                  ? Math.max(-90, Math.min(85, cloudRoot.activeSite.minAltitudeDeg))
+                  : DEFAULT_OBSERVER.minAltitudeDeg,
+              highlightAboveMinAlt:
+                typeof cloudRoot.activeSite.highlightAboveMinAlt === 'boolean'
+                  ? cloudRoot.activeSite.highlightAboveMinAlt
+                  : DEFAULT_OBSERVER.highlightAboveMinAlt,
+            };
+            if (serialize(candidate) !== serialize(nextActiveSite)) {
+              nextActiveSite = candidate;
+              setObserver((prev) => ({
+                ...prev,
+                ...nextActiveSite,
+              }));
+              changed = true;
+            }
+          }
+
+          if (Array.isArray(cloudRoot.savedSites)) {
+            if (serialize(cloudRoot.savedSites) !== serialize(nextSavedSites)) {
+              nextSavedSites = cloudRoot.savedSites;
+              setSavedSites(nextSavedSites);
+              changed = true;
+            }
+          }
+
+          if (cloudRoot.equipmentLocker && Array.isArray(cloudRoot.equipmentLocker.items)) {
+            const candidate = {
+              items: cloudRoot.equipmentLocker.items,
+              activeIds: cloudRoot.equipmentLocker.activeIds ?? {},
+            };
+            if (serialize(candidate) !== serialize(nextEquipment)) {
+              nextEquipment = candidate;
+              setEquipmentLocker(nextEquipment);
+              changed = true;
+            }
+          }
+        }
+
+        if (!localDirtyLists) {
+          if (loaded.observingLists && Array.isArray(loaded.observingLists.lists)) {
+            const validLists = loaded.observingLists.lists.map((l, idx) => ({
+              id: typeof l.id === 'string' && l.id ? l.id : `olist_cloud_${idx}`,
+              name:
+                typeof l.name === 'string' && l.name.trim()
+                  ? l.name.trim()
+                  : `관측 목록 ${idx + 1}`,
+              createdAt: typeof l.createdAt === 'number' ? l.createdAt : Date.now() + idx,
+              entries: Array.isArray(l.entries) ? l.entries : [],
+            }));
+            const hasTonight =
+              typeof loaded.observingLists.tonightListId === 'string' &&
+              validLists.some((l) => l.id === loaded.observingLists?.tonightListId);
+            const candidate: ObservingListsState = {
+              lists:
+                validLists.length > 0
+                  ? validLists
+                  : [
+                      {
+                        id: DEFAULT_OBSERVING_LIST_ID,
+                        name: DEFAULT_OBSERVING_LIST_NAME,
+                        createdAt: Date.now(),
+                        entries: [],
+                      },
+                    ],
+              tonightListId: hasTonight ? loaded.observingLists.tonightListId : null,
+              tonightEntries: Array.isArray(loaded.observingLists.tonightEntries)
+                ? loaded.observingLists.tonightEntries
+                : [],
+              tonightOrder: Array.isArray(loaded.observingLists.tonightOrder)
+                ? loaded.observingLists.tonightOrder.filter(
+                    (id): id is string => typeof id === 'string'
+                  )
+                : undefined,
+              tonightLinkedOverrides:
+                loaded.observingLists.tonightLinkedOverrides &&
+                typeof loaded.observingLists.tonightLinkedOverrides === 'object'
+                  ? loaded.observingLists.tonightLinkedOverrides
+                  : {},
+            };
+            if (serialize(candidate) !== currentHashes.observingLists) {
+              nextObservingLists = candidate;
+              setObservingListsState(nextObservingLists);
+              changed = true;
+            }
+          } else if (removedSet.has('observingLists')) {
+            const emptyLists: ObservingListsState = {
+              lists: [
+                {
+                  id: DEFAULT_OBSERVING_LIST_ID,
+                  name: DEFAULT_OBSERVING_LIST_NAME,
+                  createdAt: Date.now(),
+                  entries: [],
+                },
+              ],
+              tonightListId: null,
+              tonightEntries: [],
+              tonightOrder: undefined,
+              tonightLinkedOverrides: {},
+            };
+            if (serialize(emptyLists) !== currentHashes.observingLists) {
+              nextObservingLists = emptyLists;
+              setObservingListsState(nextObservingLists);
+              changed = true;
+            }
+          }
+        }
+
+        if (!localDirtyLogs) {
+          if (
+            loaded.observationLogs &&
+            Array.isArray(loaded.observationLogs.logs) &&
+            loaded.observationLogs.observedMap &&
+            typeof loaded.observationLogs.observedMap === 'object'
+          ) {
+            const candidate: ObservationLogStoreState = {
+              observedMap: loaded.observationLogs.observedMap,
+              logs: loaded.observationLogs.logs,
+            };
+            if (serialize(candidate) !== currentHashes.observationLogs) {
+              nextObservationLogs = candidate;
+              setObservationLogStore(nextObservationLogs);
+              changed = true;
+            }
+          } else if (removedSet.has('observationLogs')) {
+            const emptyLogs: ObservationLogStoreState = { observedMap: {}, logs: [] };
+            if (serialize(emptyLogs) !== currentHashes.observationLogs) {
+              nextObservationLogs = emptyLogs;
+              setObservationLogStore(nextObservationLogs);
+              changed = true;
+            }
+          }
+        }
+
+        if (!localDirtyChallenges) {
+          if (loaded.challenges && Array.isArray(loaded.challenges)) {
+            const snap = getCatalogSnapshot();
+            const hydrated =
+              snap.dsosBright.length > 0
+                ? hydrateChallengeTracksWithCatalog(loaded.challenges, snap.dsosBright)
+                : loaded.challenges;
+            if (serialize(stripEphemeralChallenges(hydrated)) !== currentHashes.challenges) {
+              const localActiveById = new Map(
+                basePayload.challenges.map((t) => [t.id, Boolean(t.activeOnChart)])
+              );
+              nextChallenges =
+                mode === 'poll'
+                  ? hydrated.map((t) => ({
+                      ...t,
+                      activeOnChart: localActiveById.get(t.id) ?? false,
+                    }))
+                  : hydrated;
+              setChallenges(nextChallenges);
+              changed = true;
+            }
+          } else if (removedSet.has('challenges')) {
+            if (serialize([]) !== currentHashes.challenges) {
+              nextChallenges = [];
+              setChallenges(nextChallenges);
+              changed = true;
+            }
+          }
+        }
+
+        if (!localDirtyAsterisms) {
+          if (
+            loaded.asterisms &&
+            Array.isArray(loaded.asterisms.layers) &&
+            Array.isArray(loaded.asterisms.asterisms) &&
+            Array.isArray(loaded.asterisms.objects)
+          ) {
+            if (serialize(stripEphemeralAsterisms(loaded.asterisms)) !== currentHashes.asterisms) {
+              const remoteAst = loaded.asterisms;
+              const keepActiveLayerId =
+                mode === 'poll' &&
+                remoteAst.layers.some((l) => l.id === basePayload.asterisms.activeLayerId)
+                  ? basePayload.asterisms.activeLayerId
+                  : remoteAst.activeLayerId;
+              const keepActiveAsterismId =
+                mode === 'poll' &&
+                basePayload.asterisms.activeAsterismId &&
+                remoteAst.asterisms.some((g) => g.id === basePayload.asterisms.activeAsterismId)
+                  ? basePayload.asterisms.activeAsterismId
+                  : remoteAst.activeAsterismId;
+              nextAsterisms = {
+                ...remoteAst,
+                activeLayerId: keepActiveLayerId,
+                activeAsterismId: keepActiveAsterismId,
+              };
+              setAsterismStore(nextAsterisms);
+              changed = true;
+            }
+          } else if (removedSet.has('asterisms')) {
+            const clearedAst: AsterismStoreState = {
+              ...basePayload.asterisms,
+              asterisms: [],
+              activeAsterismId: null,
+              objects: [],
+            };
+            if (serialize(stripEphemeralAsterisms(clearedAst)) !== currentHashes.asterisms) {
+              nextAsterisms = clearedAst;
+              setAsterismStore(nextAsterisms);
+              changed = true;
+            }
+          }
+        }
+
+        const mergedPayload: CloudSyncPayload = {
+          root: {
+            profile: {
+              displayName: user.displayName,
+              email: user.email,
+              photoURL: user.photoURL,
+            },
+            prefs: {
+              theme: nextTheme,
+              coordSystem: nextCoordSystem,
+              flipH: nextFlipH,
+              flipV: nextFlipV,
+            },
+            layers: nextLayers,
+            hips: nextHips,
+            optics: nextOptics,
+            activeSite: nextActiveSite,
+            savedSites: nextSavedSites,
+            equipmentLocker: nextEquipment,
+          },
+          observingLists: nextObservingLists,
+          observationLogs: nextObservationLogs,
+          challenges: nextChallenges,
+          asterisms: nextAsterisms,
+        };
+        const computedHashes = computePayloadHashes(mergedPayload);
+        lastSyncedHashesRef.current = {
+          root: localDirtyRoot && prevHashes ? prevHashes.root : computedHashes.root,
+          observingLists:
+            localDirtyLists && prevHashes
+              ? prevHashes.observingLists
+              : computedHashes.observingLists,
+          observationLogs:
+            localDirtyLogs && prevHashes
+              ? prevHashes.observationLogs
+              : computedHashes.observationLogs,
+          challenges:
+            localDirtyChallenges && prevHashes
+              ? prevHashes.challenges
+              : computedHashes.challenges,
+          asterisms:
+            localDirtyAsterisms && prevHashes ? prevHashes.asterisms : computedHashes.asterisms,
+        };
+        cloudHydratedUidRef.current = user.uid;
+      } finally {
+        hydratingCloudRef.current = false;
+      }
+
+      return { changed };
+    },
+    []
+  );
 
   const flushCloudSync = useCallback(async (uid: string, forceAll = false) => {
     if (syncInFlightRef.current || hydratingCloudRef.current) return;
@@ -1628,8 +2045,9 @@ export default function App() {
       await Promise.all(ops);
       lastSyncedHashesRef.current = nextHashes;
       cloudHydratedUidRef.current = uid;
+      const now = Date.now();
       setSyncStatus('saved');
-      setLastSyncedAt(Date.now());
+      setLastSyncedAt(now);
     } catch (err) {
       setSyncStatus('error');
       setSyncError(formatFriendlySyncError(err));
@@ -1638,17 +2056,56 @@ export default function App() {
     }
   }, []);
 
-  // Subscribe to Firebase Auth state & hydrate user settings/data from Firestore on sign-in
+  const pullCloudUpdates = useCallback(
+    async (user: User) => {
+      if (pullInFlightRef.current || hydratingCloudRef.current || syncInFlightRef.current) return;
+      pullInFlightRef.current = true;
+      setSyncStatus('checking');
+      setSyncError(null);
+
+      try {
+        const loaded = await loadUserCloudData(user.uid, { fromServer: true });
+        if (authUserRef.current?.uid !== user.uid) return;
+
+        const now = Date.now();
+        if (loaded.hasAnyCloudData) {
+          const isInitial = cloudHydratedUidRef.current !== user.uid;
+          const { changed } = applyLoadedCloudData(loaded, user, isInitial ? 'initial' : 'poll');
+          setSyncError(null);
+          setLastSyncedAt(now);
+          if (changed) {
+            setSyncStatus('updated');
+            scheduleUpdatedBadgeClear();
+          } else {
+            setSyncStatus('saved');
+          }
+        } else if (cloudHydratedUidRef.current !== user.uid) {
+          await flushCloudSync(user.uid, true);
+        } else {
+          setLastSyncedAt(now);
+          setSyncStatus('saved');
+        }
+      } catch (err) {
+        if (authUserRef.current?.uid !== user.uid) return;
+        setSyncStatus('error');
+        setSyncError(formatFriendlySyncError(err));
+      } finally {
+        pullInFlightRef.current = false;
+      }
+    },
+    [applyLoadedCloudData, flushCloudSync, scheduleUpdatedBadgeClear]
+  );
+
+  // 1. Subscribe to Firebase Auth state (login/logout persistence)
   useEffect(() => {
-    let activeLoadSeq = 0;
-
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      activeLoadSeq += 1;
-      const mySeq = activeLoadSeq;
-
+    const unsubscribeAuth = onAuthStateChanged(auth, (user) => {
       if (cloudSyncTimerRef.current !== null) {
         window.clearTimeout(cloudSyncTimerRef.current);
         cloudSyncTimerRef.current = null;
+      }
+      if (updatedBadgeTimerRef.current !== null) {
+        window.clearTimeout(updatedBadgeTimerRef.current);
+        updatedBadgeTimerRef.current = null;
       }
 
       setAuthUser(user);
@@ -1662,237 +2119,50 @@ export default function App() {
         setSyncStatus('idle');
         setSyncError(null);
         setLastSyncedAt(null);
-        return;
       }
+    });
 
-      hydratingCloudRef.current = true;
-      setSyncStatus('loading');
-      setSyncError(null);
+    return () => {
+      unsubscribeAuth();
+      if (cloudSyncTimerRef.current !== null) {
+        window.clearTimeout(cloudSyncTimerRef.current);
+        cloudSyncTimerRef.current = null;
+      }
+      if (updatedBadgeTimerRef.current !== null) {
+        window.clearTimeout(updatedBadgeTimerRef.current);
+        updatedBadgeTimerRef.current = null;
+      }
+    };
+  }, []);
 
-      void (async () => {
-        try {
-          const loaded = await loadUserCloudData(user.uid);
-          if (mySeq !== activeLoadSeq) return;
+  // 2. Attach real-time Firestore onSnapshot listeners to users/{uid} & users/{uid}/data while signed in
+  useEffect(() => {
+    if (!authUser) return;
 
-          const basePayload = currentCloudPayloadRef.current;
+    const user = authUser;
+    let active = true;
+    realtimeListenerFailedRef.current = false;
+    hydratingCloudRef.current = true;
+    setSyncStatus('loading');
+    setSyncError(null);
 
-          if (loaded.hasAnyCloudData) {
-            let nextTheme = basePayload.root.prefs?.theme ?? DEFAULT_THEME;
-            let nextCoordSystem = basePayload.root.prefs?.coordSystem ?? DEFAULT_VIEW.coordSystem;
-            let nextFsz = basePayload.root.prefs?.fsz ?? DEFAULT_VIEW.fsz;
-            let nextFlipH = basePayload.root.prefs?.flipH ?? false;
-            let nextFlipV = basePayload.root.prefs?.flipV ?? false;
+    const unsubscribeFirestore = subscribeUserCloudData(user.uid, {
+      onInitialSnapshot: (loaded) => {
+        if (!active || authUserRef.current?.uid !== user.uid) return;
+        const now = Date.now();
 
-            const cloudRoot = loaded.root;
-            if (cloudRoot?.prefs) {
-              const p = cloudRoot.prefs;
-              if (p.theme === 'dark' || p.theme === 'white' || p.theme === 'red') {
-                nextTheme = p.theme;
-              }
-              if (p.coordSystem === 'horizontal' || p.coordSystem === 'equatorial') {
-                nextCoordSystem = p.coordSystem;
-              }
-              if (typeof p.fsz === 'number' && Number.isFinite(p.fsz)) {
-                nextFsz = Math.max(0.008, Math.min(180, p.fsz));
-              }
-              if (typeof p.flipH === 'boolean') nextFlipH = p.flipH;
-              if (typeof p.flipV === 'boolean') nextFlipV = p.flipV;
+        if (loaded.hasAnyCloudData) {
+          applyLoadedCloudData(loaded, user, 'initial');
+          setSyncError(null);
+          setSyncStatus('saved');
+          setLastSyncedAt(now);
+          return;
+        }
 
-              setTheme(nextTheme);
-              setView((prev) => ({
-                ...prev,
-                coordSystem: nextCoordSystem,
-                fsz: nextFsz,
-                flipH: nextFlipH,
-                flipV: nextFlipV,
-              }));
-            }
-
-            let nextLayers = basePayload.root.layers ?? DEFAULT_LAYERS;
-            if (cloudRoot?.layers) {
-              nextLayers = sanitizeLayerSettings(cloudRoot.layers, DEFAULT_LAYERS);
-              setLayers(nextLayers);
-            }
-
-            let nextHips = basePayload.root.hips ?? DEFAULT_HIPS;
-            if (cloudRoot?.hips) {
-              nextHips = sanitizeHipsSettings(cloudRoot.hips, DEFAULT_HIPS);
-              setHips(nextHips);
-            }
-
-            let nextOptics = basePayload.root.optics ?? DEFAULT_OPTICS;
-            if (cloudRoot?.optics) {
-              nextOptics = sanitizeOpticsSettings(cloudRoot.optics);
-              setOptics(nextOptics);
-            }
-
-            let nextActiveSite = basePayload.root.activeSite ?? {
-              name: DEFAULT_OBSERVER.name,
-              lat: DEFAULT_OBSERVER.lat,
-              lon: DEFAULT_OBSERVER.lon,
-              minAltitudeDeg: DEFAULT_OBSERVER.minAltitudeDeg,
-              highlightAboveMinAlt: DEFAULT_OBSERVER.highlightAboveMinAlt,
-            };
-            if (
-              cloudRoot?.activeSite &&
-              typeof cloudRoot.activeSite.lat === 'number' &&
-              Number.isFinite(cloudRoot.activeSite.lat) &&
-              typeof cloudRoot.activeSite.lon === 'number' &&
-              Number.isFinite(cloudRoot.activeSite.lon)
-            ) {
-              nextActiveSite = {
-                name:
-                  typeof cloudRoot.activeSite.name === 'string' && cloudRoot.activeSite.name.trim()
-                    ? cloudRoot.activeSite.name
-                    : DEFAULT_OBSERVER.name,
-                lat: Math.max(-90, Math.min(90, cloudRoot.activeSite.lat)),
-                lon: Math.max(-180, Math.min(180, cloudRoot.activeSite.lon)),
-                minAltitudeDeg:
-                  typeof cloudRoot.activeSite.minAltitudeDeg === 'number' &&
-                  Number.isFinite(cloudRoot.activeSite.minAltitudeDeg)
-                    ? Math.max(-90, Math.min(85, cloudRoot.activeSite.minAltitudeDeg))
-                    : DEFAULT_OBSERVER.minAltitudeDeg,
-                highlightAboveMinAlt:
-                  typeof cloudRoot.activeSite.highlightAboveMinAlt === 'boolean'
-                    ? cloudRoot.activeSite.highlightAboveMinAlt
-                    : DEFAULT_OBSERVER.highlightAboveMinAlt,
-              };
-              setObserver((prev) => ({
-                ...prev,
-                ...nextActiveSite,
-              }));
-            }
-
-            let nextSavedSites = basePayload.root.savedSites ?? [];
-            if (cloudRoot && Array.isArray(cloudRoot.savedSites)) {
-              nextSavedSites = cloudRoot.savedSites;
-              setSavedSites(nextSavedSites);
-            }
-
-            let nextEquipment = basePayload.root.equipmentLocker ?? DEFAULT_EQUIPMENT_LOCKER;
-            if (
-              cloudRoot?.equipmentLocker &&
-              Array.isArray(cloudRoot.equipmentLocker.items)
-            ) {
-              nextEquipment = {
-                items: cloudRoot.equipmentLocker.items,
-                activeIds: cloudRoot.equipmentLocker.activeIds ?? {},
-              };
-              setEquipmentLocker(nextEquipment);
-            }
-
-            let nextObservingLists = basePayload.observingLists;
-            if (loaded.observingLists && Array.isArray(loaded.observingLists.lists)) {
-              const validLists = loaded.observingLists.lists.map((l, idx) => ({
-                id: typeof l.id === 'string' && l.id ? l.id : `olist_cloud_${idx}`,
-                name:
-                  typeof l.name === 'string' && l.name.trim()
-                    ? l.name.trim()
-                    : `관측 목록 ${idx + 1}`,
-                createdAt: typeof l.createdAt === 'number' ? l.createdAt : Date.now() + idx,
-                entries: Array.isArray(l.entries) ? l.entries : [],
-              }));
-              const hasTonight =
-                typeof loaded.observingLists.tonightListId === 'string' &&
-                validLists.some((l) => l.id === loaded.observingLists?.tonightListId);
-              nextObservingLists = {
-                lists:
-                  validLists.length > 0
-                    ? validLists
-                    : [
-                        {
-                          id: DEFAULT_OBSERVING_LIST_ID,
-                          name: DEFAULT_OBSERVING_LIST_NAME,
-                          createdAt: Date.now(),
-                          entries: [],
-                        },
-                      ],
-                tonightListId: hasTonight ? loaded.observingLists.tonightListId : null,
-                tonightEntries: Array.isArray(loaded.observingLists.tonightEntries)
-                  ? loaded.observingLists.tonightEntries
-                  : [],
-                tonightOrder: Array.isArray(loaded.observingLists.tonightOrder)
-                  ? loaded.observingLists.tonightOrder.filter(
-                      (id): id is string => typeof id === 'string'
-                    )
-                  : undefined,
-                tonightLinkedOverrides:
-                  loaded.observingLists.tonightLinkedOverrides &&
-                  typeof loaded.observingLists.tonightLinkedOverrides === 'object'
-                    ? loaded.observingLists.tonightLinkedOverrides
-                    : {},
-              };
-              setObservingListsState(nextObservingLists);
-            }
-
-            let nextObservationLogs = basePayload.observationLogs;
-            if (
-              loaded.observationLogs &&
-              Array.isArray(loaded.observationLogs.logs) &&
-              loaded.observationLogs.observedMap &&
-              typeof loaded.observationLogs.observedMap === 'object'
-            ) {
-              nextObservationLogs = {
-                observedMap: loaded.observationLogs.observedMap,
-                logs: loaded.observationLogs.logs,
-              };
-              setObservationLogStore(nextObservationLogs);
-            }
-
-            let nextChallenges = basePayload.challenges;
-            if (loaded.challenges && Array.isArray(loaded.challenges)) {
-              const snap = getCatalogSnapshot();
-              nextChallenges =
-                snap.dsosBright.length > 0
-                  ? hydrateChallengeTracksWithCatalog(loaded.challenges, snap.dsosBright)
-                  : loaded.challenges;
-              setChallenges(nextChallenges);
-            }
-
-            let nextAsterisms = basePayload.asterisms;
-            if (
-              loaded.asterisms &&
-              Array.isArray(loaded.asterisms.layers) &&
-              Array.isArray(loaded.asterisms.asterisms) &&
-              Array.isArray(loaded.asterisms.objects)
-            ) {
-              nextAsterisms = loaded.asterisms;
-              setAsterismStore(nextAsterisms);
-            }
-
-            const hydratedPayload: CloudSyncPayload = {
-              root: {
-                profile: {
-                  displayName: user.displayName,
-                  email: user.email,
-                  photoURL: user.photoURL,
-                },
-                prefs: {
-                  theme: nextTheme,
-                  coordSystem: nextCoordSystem,
-                  fsz: nextFsz,
-                  flipH: nextFlipH,
-                  flipV: nextFlipV,
-                },
-                layers: nextLayers,
-                hips: nextHips,
-                optics: nextOptics,
-                activeSite: nextActiveSite,
-                savedSites: nextSavedSites,
-                equipmentLocker: nextEquipment,
-              },
-              observingLists: nextObservingLists,
-              observationLogs: nextObservationLogs,
-              challenges: nextChallenges,
-              asterisms: nextAsterisms,
-            };
-            lastSyncedHashesRef.current = computePayloadHashes(hydratedPayload);
-            cloudHydratedUidRef.current = user.uid;
-            hydratingCloudRef.current = false;
-            setSyncStatus('saved');
-            setLastSyncedAt(Date.now());
-          } else {
-            // First-time sign-in: seed Firestore with existing local settings and user data
+        // First-time sign-in with empty cloud: seed Firestore with existing local settings & data
+        void (async () => {
+          try {
+            const basePayload = currentCloudPayloadRef.current;
             const seedPayload: CloudSyncPayload = {
               ...basePayload,
               root: {
@@ -1911,31 +2181,49 @@ export default function App() {
               saveUserCloudSubdoc(user.uid, 'challenges', seedPayload.challenges),
               saveUserCloudSubdoc(user.uid, 'asterisms', seedPayload.asterisms),
             ]);
-            if (mySeq !== activeLoadSeq) return;
+            if (!active || authUserRef.current?.uid !== user.uid) return;
             lastSyncedHashesRef.current = computePayloadHashes(seedPayload);
             cloudHydratedUidRef.current = user.uid;
             hydratingCloudRef.current = false;
+            setSyncError(null);
             setSyncStatus('saved');
             setLastSyncedAt(Date.now());
+          } catch (err) {
+            if (!active || authUserRef.current?.uid !== user.uid) return;
+            hydratingCloudRef.current = false;
+            setSyncStatus('error');
+            setSyncError(formatFriendlySyncError(err));
           }
-        } catch (err) {
-          if (mySeq !== activeLoadSeq) return;
-          hydratingCloudRef.current = false;
-          setSyncStatus('error');
-          setSyncError(formatFriendlySyncError(err));
+        })();
+      },
+      onRemoteUpdate: (loaded, removedSubdocs) => {
+        if (!active || authUserRef.current?.uid !== user.uid) return;
+        if (hydratingCloudRef.current) return;
+
+        const { changed } = applyLoadedCloudData(loaded, user, 'poll', removedSubdocs);
+        setSyncError(null);
+        if (changed) {
+          setLastSyncedAt(Date.now());
+          setSyncStatus('updated');
+          scheduleUpdatedBadgeClear();
+        } else {
+          setSyncStatus((prev) => (prev === 'error' ? 'saved' : prev));
         }
-      })();
+      },
+      onError: (err) => {
+        if (!active || authUserRef.current?.uid !== user.uid) return;
+        realtimeListenerFailedRef.current = true;
+        hydratingCloudRef.current = false;
+        setSyncStatus('error');
+        setSyncError(formatFriendlySyncError(err));
+      },
     });
 
     return () => {
-      activeLoadSeq += 1;
-      unsubscribe();
-      if (cloudSyncTimerRef.current !== null) {
-        window.clearTimeout(cloudSyncTimerRef.current);
-        cloudSyncTimerRef.current = null;
-      }
+      active = false;
+      unsubscribeFirestore();
     };
-  }, []);
+  }, [authUser, cloudReconnectKey, applyLoadedCloudData, scheduleUpdatedBadgeClear]);
 
   // Debounced auto-save (1.5s) to Firestore whenever settings or user data change while logged in
   useEffect(() => {
@@ -1993,6 +2281,10 @@ export default function App() {
         window.clearTimeout(cloudSyncTimerRef.current);
         cloudSyncTimerRef.current = null;
       }
+      if (updatedBadgeTimerRef.current !== null) {
+        window.clearTimeout(updatedBadgeTimerRef.current);
+        updatedBadgeTimerRef.current = null;
+      }
       await signOutUser();
     } catch (err) {
       setAuthError(formatFriendlyAuthError(err) || '로그아웃 중 오류가 발생했습니다.');
@@ -2007,8 +2299,29 @@ export default function App() {
       window.clearTimeout(cloudSyncTimerRef.current);
       cloudSyncTimerRef.current = null;
     }
-    void flushCloudSync(authUser.uid, true);
-  }, [authUser, flushCloudSync]);
+    const user = authUser;
+    if (cloudHydratedUidRef.current !== user.uid || realtimeListenerFailedRef.current) {
+      setCloudReconnectKey((k) => k + 1);
+      return;
+    }
+    void (async () => {
+      const nextHashes = computePayloadHashes(currentCloudPayloadRef.current);
+      const prevHashes = lastSyncedHashesRef.current;
+      const hasLocalDirty =
+        !prevHashes ||
+        prevHashes.root !== nextHashes.root ||
+        prevHashes.observingLists !== nextHashes.observingLists ||
+        prevHashes.observationLogs !== nextHashes.observationLogs ||
+        prevHashes.challenges !== nextHashes.challenges ||
+        prevHashes.asterisms !== nextHashes.asterisms;
+
+      if (hasLocalDirty) {
+        await flushCloudSync(user.uid, false);
+      } else {
+        await pullCloudUpdates(user);
+      }
+    })();
+  }, [authUser, flushCloudSync, pullCloudUpdates]);
 
   const handleDismissAuthSyncError = useCallback(() => {
     setAuthError(null);

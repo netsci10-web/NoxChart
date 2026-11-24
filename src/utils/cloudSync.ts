@@ -1,5 +1,18 @@
-import { doc, getDoc, serverTimestamp, setDoc } from 'firebase/firestore';
-import { db, handleFirestoreError, OperationType } from '../firebase';
+import {
+  collection,
+  doc,
+  getDoc,
+  getDocFromServer,
+  onSnapshot,
+  serverTimestamp,
+  setDoc,
+} from 'firebase/firestore';
+import {
+  buildFirestoreErrorInfo,
+  db,
+  handleFirestoreError,
+  OperationType,
+} from '../firebase';
 import {
   AsterismStoreState,
   ChallengeTrack,
@@ -14,12 +27,20 @@ import {
   ThemeMode,
 } from '../types/astronomy';
 
-export type CloudSyncStatus = 'idle' | 'loading' | 'pending' | 'saving' | 'saved' | 'error';
+export type CloudSyncStatus =
+  | 'idle'
+  | 'loading'
+  | 'checking'
+  | 'pending'
+  | 'saving'
+  | 'saved'
+  | 'updated'
+  | 'error';
 
 export interface CloudAppPrefs {
   theme: ThemeMode;
   coordSystem: CoordSystem;
-  fsz: number;
+  fsz?: number;
   flipH: boolean;
   flipV: boolean;
 }
@@ -111,36 +132,66 @@ export function stripUndefinedDeep<T>(value: T): T {
   return value;
 }
 
+export function stripEphemeralOptics(optics?: OpticsSettings) {
+  if (!optics) return optics;
+  const { showSelectionMark: _ignored, ...persistedOptics } = optics;
+  return persistedOptics;
+}
+
+export function stripEphemeralChallenges(tracks: ChallengeTrack[]) {
+  return tracks.map(({ activeOnChart: _ignored, ...persistedTrack }) => persistedTrack);
+}
+
+export function stripEphemeralAsterisms(store: AsterismStoreState) {
+  return {
+    layers: store.layers,
+    asterisms: store.asterisms,
+    objects: store.objects,
+    settings: store.settings,
+  };
+}
+
 export function computePayloadHashes(payload: CloudSyncPayload): SyncHashes {
-  const rootWithoutProfile = {
-    prefs: payload.root.prefs,
+  const rootContent = {
+    prefs: payload.root.prefs
+      ? {
+          theme: payload.root.prefs.theme,
+          coordSystem: payload.root.prefs.coordSystem,
+          flipH: payload.root.prefs.flipH,
+          flipV: payload.root.prefs.flipV,
+        }
+      : undefined,
     layers: payload.root.layers,
     hips: payload.root.hips,
-    optics: payload.root.optics,
+    optics: stripEphemeralOptics(payload.root.optics),
     activeSite: payload.root.activeSite,
     savedSites: payload.root.savedSites,
     equipmentLocker: payload.root.equipmentLocker,
   };
   return {
-    root: JSON.stringify(stripUndefinedDeep(rootWithoutProfile)),
+    root: JSON.stringify(stripUndefinedDeep(rootContent)),
     observingLists: JSON.stringify(stripUndefinedDeep(payload.observingLists)),
     observationLogs: JSON.stringify(stripUndefinedDeep(payload.observationLogs)),
-    challenges: JSON.stringify(stripUndefinedDeep(payload.challenges)),
-    asterisms: JSON.stringify(stripUndefinedDeep(payload.asterisms)),
+    challenges: JSON.stringify(stripUndefinedDeep(stripEphemeralChallenges(payload.challenges))),
+    asterisms: JSON.stringify(stripUndefinedDeep(stripEphemeralAsterisms(payload.asterisms))),
   };
 }
 
-export async function loadUserCloudData(uid: string): Promise<LoadedCloudData> {
+export async function loadUserCloudData(
+  uid: string,
+  options?: { fromServer?: boolean }
+): Promise<LoadedCloudData> {
   const rootPath = `users/${uid}`;
   const listsPath = `users/${uid}/data/observingLists`;
   const logsPath = `users/${uid}/data/observationLogs`;
   const challengesPath = `users/${uid}/data/challenges`;
   const asterismsPath = `users/${uid}/data/asterisms`;
+  const fromServer = Boolean(options?.fromServer);
 
   const readDocSafe = async (path: string, segments: [string, ...string[]]) => {
     try {
       const ref = doc(db, ...segments);
-      return await getDoc(ref);
+      return fromServer ? await getDocFromServer(ref) : await getDoc(ref);
     } catch (error) {
       handleFirestoreError(error, OperationType.GET, path);
     }
@@ -228,19 +279,184 @@ export async function saveUserCloudSubdoc(
   }
 }
 
+export interface CloudRealtimeCallbacks {
+  onInitialSnapshot: (data: LoadedCloudData) => void;
+  onRemoteUpdate: (data: LoadedCloudData, removedSubdocs: CloudSubDocKey[]) => void;
+  onError: (error: unknown, path: string) => void;
+}
+
+/**
+ * Subscribes in real time (onSnapshot) to users/{uid} and users/{uid}/data collection.
+ * Returns an unsubscribe function that cleans up all active Firestore listeners.
+ */
+export function subscribeUserCloudData(
+  uid: string,
+  callbacks: CloudRealtimeCallbacks
+): () => void {
+  const rootPath = `users/${uid}`;
+  const dataCollectionPath = `users/${uid}/data`;
+
+  let unsubscribed = false;
+  let rootReady = false;
+  let dataReady = false;
+  let initialEmitted = false;
+
+  let latestRoot: Partial<CloudUserRootData> | null = null;
+  let latestLists: ObservingListsState | null = null;
+  let latestLogs: ObservationLogStoreState | null = null;
+  let latestChallenges: ChallengeTrack[] | null = null;
+  let latestAsterisms: AsterismStoreState | null = null;
+
+  const buildLoadedData = (): LoadedCloudData => ({
+    hasAnyCloudData: Boolean(
+      latestRoot || latestLists || latestLogs || latestChallenges || latestAsterisms
+    ),
+    root: latestRoot,
+    observingLists: latestLists,
+    observationLogs: latestLogs,
+    challenges: latestChallenges,
+    asterisms: latestAsterisms,
+  });
+
+  const emitUpdate = (removedSubdocs: CloudSubDocKey[]) => {
+    if (unsubscribed) return;
+    if (!initialEmitted) {
+      if (rootReady && dataReady) {
+        initialEmitted = true;
+        callbacks.onInitialSnapshot(buildLoadedData());
+      }
+      return;
+    }
+    callbacks.onRemoteUpdate(buildLoadedData(), removedSubdocs);
+  };
+
+  const unsubRoot = onSnapshot(
+    doc(db, 'users', uid),
+    (snap) => {
+      if (unsubscribed) return;
+      if (initialEmitted && snap.metadata.hasPendingWrites) return;
+      latestRoot = snap.exists() ? (snap.data() as Partial<CloudUserRootData>) : null;
+      rootReady = true;
+      emitUpdate([]);
+    },
+    (error) => {
+      if (unsubscribed) return;
+      const errInfo = buildFirestoreErrorInfo(error, OperationType.GET, rootPath);
+      console.error('Firestore Realtime Error:', JSON.stringify(errInfo));
+      callbacks.onError(error, rootPath);
+    }
+  );
+
+  const unsubData = onSnapshot(
+    collection(db, 'users', uid, 'data'),
+    (querySnap) => {
+      if (unsubscribed) return;
+      if (initialEmitted && querySnap.metadata.hasPendingWrites) return;
+
+      let nextLists: ObservingListsState | null = null;
+      let nextLogs: ObservationLogStoreState | null = null;
+      let nextChallenges: ChallengeTrack[] | null = null;
+      let nextAsterisms: AsterismStoreState | null = null;
+
+      for (const snapDoc of querySnap.docs) {
+        const docData = snapDoc.data();
+        if (snapDoc.id === 'observingLists' && docData?.state) {
+          nextLists = docData.state as ObservingListsState;
+        } else if (snapDoc.id === 'observationLogs' && docData?.state) {
+          nextLogs = docData.state as ObservationLogStoreState;
+        } else if (snapDoc.id === 'challenges' && Array.isArray(docData?.tracks)) {
+          nextChallenges = docData.tracks as ChallengeTrack[];
+        } else if (snapDoc.id === 'asterisms' && docData?.state) {
+          nextAsterisms = docData.state as AsterismStoreState;
+        }
+      }
+
+      const removedSubdocs: CloudSubDocKey[] = [];
+      if (initialEmitted) {
+        for (const change of querySnap.docChanges()) {
+          if (
+            change.type === 'removed' &&
+            (change.doc.id === 'observingLists' ||
+              change.doc.id === 'observationLogs' ||
+              change.doc.id === 'challenges' ||
+              change.doc.id === 'asterisms')
+          ) {
+            removedSubdocs.push(change.doc.id);
+          }
+        }
+      }
+
+      latestLists = nextLists;
+      latestLogs = nextLogs;
+      latestChallenges = nextChallenges;
+      latestAsterisms = nextAsterisms;
+      dataReady = true;
+      emitUpdate(removedSubdocs);
+    },
+    (error) => {
+      if (unsubscribed) return;
+      const errInfo = buildFirestoreErrorInfo(error, OperationType.LIST, dataCollectionPath);
+      console.error('Firestore Realtime Error:', JSON.stringify(errInfo));
+      callbacks.onError(error, dataCollectionPath);
+    }
+  );
+
+  return () => {
+    unsubscribed = true;
+    unsubRoot();
+    unsubData();
+  };
+}
+
+export function isOfflineSyncError(err: unknown): boolean {
+  const code =
+    typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: unknown }).code || '').toLowerCase()
+      : '';
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    code === 'unavailable' ||
+    code === 'deadline-exceeded' ||
+    msg.includes('offline') ||
+    msg.includes('network') ||
+    msg.includes('unavailable') ||
+    msg.includes('failed to get document because the client is offline')
+  );
+}
+
 export function formatFriendlySyncError(err: unknown): string {
+  const code =
+    typeof err === 'object' && err !== null && 'code' in err
+      ? String((err as { code?: unknown }).code || '').toLowerCase()
+      : '';
   const msg = err instanceof Error ? err.message : String(err);
-  const lower = msg.toLowerCase();
-  if (lower.includes('permission') || lower.includes('insufficient')) {
-    return 'Firestore 접근 권한이 없습니다. 콘솔의 보안 규칙(users/{uid})을 확인해 주세요.';
+  const lower = `${code} ${msg}`.toLowerCase();
+
+  if (
+    code === 'permission-denied' ||
+    lower.includes('permission-denied') ||
+    lower.includes('permission') ||
+    lower.includes('insufficient')
+  ) {
+    return 'Firestore 접근 권한 오류 (permission-denied): Firebase 콘솔 보안 규칙에서 users/{uid} 읽기·쓰기 권한을 확인해 주세요.';
   }
-  if (lower.includes('quota')) {
-    return 'Firestore 일일 할당량을 초과했습니다.';
+  if (code === 'unauthenticated' || lower.includes('unauthenticated')) {
+    return '인증이 만료되었습니다 (unauthenticated). 다시 Google 로그인을 진행해 주세요.';
   }
-  if (lower.includes('offline') || lower.includes('network') || lower.includes('unavailable')) {
-    return '네트워크 연결이 불안정합니다. 변경 사항은 로컬에 보관됩니다.';
+  if (code === 'resource-exhausted' || lower.includes('quota')) {
+    return 'Firestore 할당량을 초과했습니다 (resource-exhausted). 잠시 후 다시 시도해 주세요.';
   }
-  return '클라우드 동기화 중 오류가 발생했습니다. 로컬 저장은 정상 유지됩니다.';
+  if (
+    code === 'unavailable' ||
+    code === 'deadline-exceeded' ||
+    lower.includes('offline') ||
+    lower.includes('network') ||
+    lower.includes('unavailable') ||
+    lower.includes('failed to fetch')
+  ) {
+    return 'Firestore 네트워크 연결 오류 (unavailable): 인터넷 연결 또는 학교·기관 방화벽을 확인해 주세요. 로컬 저장은 정상 유지됩니다.';
+  }
+  return `클라우드 동기화 오류가 발생했습니다${code ? ` (${code})` : ''}. 로컬 저장은 정상 유지됩니다.`;
 }
 
 export function formatFriendlyAuthError(err: unknown): string {

@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useMemo, useRef, useState } from 'react';
 import {
+  ArrowLeft,
   Check,
   CheckCircle2,
   CheckSquare,
@@ -310,33 +311,17 @@ export function ObjectInspector({
     id: string;
   } | null>(null);
   const [dragOverSessionKey, setDragOverSessionKey] = useState<string | null>(null);
-  const [expandedListIds, setExpandedListIds] = useState<Record<string, boolean>>(() => {
-    try {
-      const raw = localStorage.getItem('noxchart_observing_lists_collapse_v1');
-      if (raw) {
-        const parsed = JSON.parse(raw) as unknown;
-        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
-          const res: Record<string, boolean> = {};
-          for (const [k, v] of Object.entries(parsed as Record<string, unknown>)) {
-            if (typeof v === 'boolean') res[k] = v;
-          }
-          return res;
-        }
-      }
-    } catch {
-      // Ignore storage parse failure
-    }
-    return {};
-  });
+  const [selectedManageListId, setSelectedManageListId] = useState<string | null>(null);
+  const [lastSelectedManageListId, setLastSelectedManageListId] = useState<string | null>(null);
   const [recommend25Active, setRecommend25Active] = useState(false);
 
-  useEffect(() => {
-    try {
-      localStorage.setItem('noxchart_observing_lists_collapse_v1', JSON.stringify(expandedListIds));
-    } catch {
-      // Ignore storage write failure
-    }
-  }, [expandedListIds]);
+  const activeManageList = useMemo(
+    () =>
+      selectedManageListId
+        ? observingLists.find((l) => l.id === selectedManageListId) ?? null
+        : null,
+    [observingLists, selectedManageListId]
+  );
 
   const activeTonightList = tonightListId
     ? observingLists.find((l) => l.id === tonightListId) ?? null
@@ -585,6 +570,7 @@ export function ObjectInspector({
         {activeTab === 'challenge' ? (
           <ChallengePanel
             tracks={challenges}
+            selected={selected}
             theme={theme}
             observer={observer}
             catalogs={catalogs}
@@ -695,7 +681,14 @@ export function ObjectInspector({
               </button>
               <button
                 type="button"
-                onClick={() => setSessionSubTab('manage')}
+                onClick={() => {
+                  if (sessionSubTab === 'manage') {
+                    setSelectedManageListId(null);
+                    setRenamingListId(null);
+                  } else {
+                    setSessionSubTab('manage');
+                  }
+                }}
                 className={`py-1.5 px-1.5 border text-[10.5px] tracking-[-0.05em] font-semibold flex items-center justify-center gap-1 whitespace-nowrap transition-colors ${
                   sessionSubTab === 'manage' ? ui.buttonActive : ui.buttonIdle
                 }`}
@@ -891,25 +884,46 @@ export function ObjectInspector({
                             item.data.id
                           );
 
-                    const rowBgClass = isBelowHorizon
+                    const isSelectedRow = Boolean(
+                      selected && selected.kind === item.kind && selected.data.id === item.data.id
+                    );
+                    const rowBgClass = isSelectedRow
                       ? theme === 'white'
-                        ? 'bg-slate-100/85'
+                        ? 'bg-sky-100/95 hover:bg-sky-200/80 border-l-2 border-l-blue-600'
                         : theme === 'red'
-                        ? 'bg-[#090101]'
-                        : 'bg-slate-900/55'
+                        ? 'bg-[#3D0909] hover:bg-[#4C0D0D] border-l-2 border-l-[#FF5252]'
+                        : 'bg-cyan-500/25 hover:bg-cyan-500/32 border-l-2 border-l-cyan-400'
+                      : isBelowHorizon
+                      ? theme === 'white'
+                        ? 'bg-slate-100/85 hover:bg-slate-200/90'
+                        : theme === 'red'
+                        ? 'bg-[#090101] hover:bg-[#1E0505]'
+                        : 'bg-slate-900/55 hover:bg-slate-800/85'
                       : theme === 'white'
-                      ? 'bg-emerald-50/75 hover:bg-emerald-100/70'
+                      ? 'bg-emerald-50/75 hover:bg-emerald-200/75'
                       : theme === 'red'
-                      ? 'bg-[#190507] hover:bg-[#22070A]'
-                      : 'bg-emerald-500/10 hover:bg-emerald-500/15';
-                    const titleColorClass = isBelowHorizon
+                      ? 'bg-[#190507] hover:bg-[#310A0E]'
+                      : 'bg-emerald-500/10 hover:bg-emerald-500/28';
+                    const titleColorClass = isSelectedRow
+                      ? theme === 'white'
+                        ? 'text-blue-950 font-semibold'
+                        : theme === 'red'
+                        ? 'text-[#FF8585] font-semibold'
+                        : 'text-cyan-100 font-semibold'
+                      : isBelowHorizon
                       ? theme === 'white'
                         ? 'text-slate-400'
                         : theme === 'red'
                         ? 'text-[#7F1D1D]'
                         : 'text-slate-500'
                       : ui.textPrimary;
-                    const metaColorClass = isBelowHorizon
+                    const metaColorClass = isSelectedRow
+                      ? theme === 'white'
+                        ? 'text-blue-700'
+                        : theme === 'red'
+                        ? 'text-[#FCA5A5]'
+                        : 'text-cyan-300/90'
+                      : isBelowHorizon
                       ? theme === 'white'
                         ? 'text-slate-400'
                         : theme === 'red'
@@ -1026,6 +1040,7 @@ export function ObjectInspector({
                         <button
                           type="button"
                           onClick={() => jumpToSessionObject(item)}
+                          title={title}
                           className="flex-1 text-left min-w-0"
                         >
                           <div className="flex items-center gap-1 min-w-0">
@@ -1241,8 +1256,466 @@ export function ObjectInspector({
                   );
                 })()}
               </div>
+            ) : activeManageList ? (
+              /* Sub-tab 2 Detail View: 선택한 관측목록 상세 (챌린지처럼 ← 목록으로 복귀) */
+              (() => {
+                const list = activeManageList;
+                const isTonight = list.id === tonightListId;
+                const isRenaming = renamingListId === list.id;
+                const detailItems = resolveEntriesList(list.entries);
+                const observedCount = list.entries.filter((e) => e.observed).length;
+                const risenCount = detailItems.filter((x) => x.hz.altDeg >= 0).length;
+                const detailDividerCls =
+                  theme === 'white'
+                    ? 'border-emerald-300/75 divide-emerald-200/80'
+                    : theme === 'red'
+                    ? 'border-[#6E1620] divide-[#4B0E16]'
+                    : 'border-emerald-500/30 divide-emerald-500/20';
+
+                return (
+                  <div className="space-y-2.5">
+                    {/* Top Action Bar with ← 목록 button */}
+                    <div className="flex items-center justify-between gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedManageListId(null);
+                          setRenamingListId(null);
+                        }}
+                        className={`px-1.5 py-1 border text-[10px] tracking-[-0.05em] font-medium flex items-center gap-1 cursor-pointer ${ui.buttonIdle}`}
+                        style={{ borderRadius: '4px' }}
+                      >
+                        <ArrowLeft className="w-3 h-3" />
+                        <span>목록</span>
+                      </button>
+
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => onSetTonightList(list.id)}
+                          title={
+                            isTonight
+                              ? '클릭하여 오늘 관측 연동 해제'
+                              : '이 목록을 오늘 밤 관측목록에 반영'
+                          }
+                          aria-checked={isTonight}
+                          role="checkbox"
+                          className={`px-1.5 py-1 border text-[9.5px] font-semibold tracking-[-0.05em] flex items-center gap-1 whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                            isTonight ? ui.buttonActive : ui.buttonIdle
+                          }`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          {isTonight ? (
+                            <CheckSquare className="w-3 h-3 shrink-0" />
+                          ) : (
+                            <Square className="w-3 h-3 shrink-0" />
+                          )}
+                          <span>오늘 관측</span>
+                        </button>
+                        <button
+                          type="button"
+                          disabled={skylistBusy}
+                          onClick={() =>
+                            triggerSkylistFilePicker({
+                              targetListId: list.id,
+                              makeTonight: false,
+                            })
+                          }
+                          title={`‘${list.name}’ 목록으로 .skylist 파일 가져오기`}
+                          aria-label="파일 가져오기"
+                          className={`p-1 border shrink-0 cursor-pointer ${ui.buttonIdle} ${
+                            skylistBusy ? 'opacity-50 cursor-wait' : ''
+                          }`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          <Upload className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRenamingListId(list.id);
+                            setRenameDraft(list.name);
+                          }}
+                          title="목록명 수정"
+                          aria-label="목록명 수정"
+                          className={`p-1 border shrink-0 cursor-pointer ${ui.buttonIdle}`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          <Pencil className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={list.entries.length === 0}
+                          onClick={() => {
+                            onExportSkylist(list.id);
+                            setSkylistNotice(
+                              `‘${list.name}’ .skylist 저장 완료 (${list.entries.length}개)`
+                            );
+                          }}
+                          title="이 목록을 .skylist 파일로 내보내기"
+                          aria-label="내보내기"
+                          className={`p-1 border shrink-0 ${
+                            list.entries.length === 0
+                              ? `${ui.buttonIdle} opacity-40 cursor-not-allowed`
+                              : `${ui.buttonIdle} cursor-pointer`
+                          }`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          <Download className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const ok = await onDeleteObservingList(list.id);
+                            if (ok !== false) {
+                              setSelectedManageListId(null);
+                              if (lastSelectedManageListId === list.id) {
+                                setLastSelectedManageListId(null);
+                              }
+                              if (renamingListId === list.id) {
+                                setRenamingListId(null);
+                              }
+                            }
+                          }}
+                          title="이 목록 삭제"
+                          aria-label="목록 삭제"
+                          className={`p-1 border shrink-0 cursor-pointer transition-colors ${
+                            theme === 'white'
+                              ? 'border-red-300 text-red-600 hover:bg-red-50'
+                              : 'border-red-500/40 text-red-400 hover:bg-red-500/15'
+                          }`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          <Trash2 className="w-3 h-3" />
+                        </button>
+                      </div>
+                    </div>
+
+                    {/* List Overview Card */}
+                    <div
+                      className={`border px-2.5 py-2 space-y-1.5 ${ui.border}`}
+                      style={{ borderRadius: '6px' }}
+                    >
+                      {isRenaming ? (
+                        <div className="flex items-center gap-1 min-w-0">
+                          <input
+                            type="text"
+                            value={renameDraft}
+                            autoFocus
+                            onChange={(e) => setRenameDraft(e.target.value)}
+                            onKeyDown={(e) => {
+                              if (e.key === 'Enter' && renameDraft.trim()) {
+                                onRenameObservingList(list.id, renameDraft.trim());
+                                setRenamingListId(null);
+                              } else if (e.key === 'Escape') {
+                                setRenamingListId(null);
+                              }
+                            }}
+                            className={`flex-1 min-w-0 px-1.5 py-0.5 border text-[11px] ${ui.input}`}
+                            style={{ borderRadius: '4px' }}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => {
+                              if (renameDraft.trim()) {
+                                onRenameObservingList(list.id, renameDraft.trim());
+                              }
+                              setRenamingListId(null);
+                            }}
+                            title="이름 저장"
+                            className={`p-1 border shrink-0 ${ui.buttonActive}`}
+                            style={{ borderRadius: '4px' }}
+                          >
+                            <Check className="w-3 h-3" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setRenamingListId(null)}
+                            title="취소"
+                            className={`p-1 border shrink-0 ${ui.buttonIdle}`}
+                            style={{ borderRadius: '4px' }}
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center justify-between gap-1.5 min-w-0">
+                          <span
+                            className={`text-[12px] font-semibold truncate tracking-[-0.04em] ${ui.textPrimary}`}
+                          >
+                            {list.name}
+                          </span>
+                          {isTonight && (
+                            <span
+                              className={`px-1.5 py-0.5 border text-[9px] font-semibold tracking-[-0.04em] shrink-0 ${ui.buttonActive}`}
+                              style={{ borderRadius: '4px' }}
+                            >
+                              오늘 관측 연동 중
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between gap-1 text-[9.5px] font-mono tabular-nums">
+                        <span className={ui.textMuted}>
+                          전체 {list.entries.length}개 · 출현 {risenCount}개
+                        </span>
+                        <span className={ui.accentText}>
+                          완료 {observedCount}/{list.entries.length}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Full Target List inside Selected Observing List */}
+                    {detailItems.length === 0 ? (
+                      <div
+                        className={`border p-4 text-center space-y-1.5 ${ui.border} ${ui.textMuted}`}
+                        style={{ borderRadius: '6px' }}
+                      >
+                        <div className="text-[10.5px] tracking-[-0.04em]">
+                          비어 있는 관측목록입니다.
+                        </div>
+                        <p className="text-[9.5px] tracking-[-0.04em] leading-snug break-keep">
+                          상단 파일 가져오기 버튼으로 .skylist를 불러오거나 성도에서 천체를 추가하세요.
+                        </p>
+                      </div>
+                    ) : (
+                      <div
+                        className={`border divide-y overflow-hidden ${detailDividerCls}`}
+                        style={{ borderRadius: '6px' }}
+                      >
+                        {detailItems.map(({ entry, item, hz }, entryIdx) => {
+                          const isBelowHorizon = hz.altDeg < 0;
+                          const isSelectedRow = Boolean(
+                            selected &&
+                              selected.kind === item.kind &&
+                              selected.data.id === item.data.id
+                          );
+                          const title =
+                            item.kind === 'dso'
+                              ? (() => {
+                                  const displayName = formatObjectDisplayName(
+                                    item.data.koName,
+                                    item.data.name
+                                  );
+                                  return `${formatCatalogCode(item.data.id) || item.data.id}${
+                                    displayName ? ` · ${displayName}` : ''
+                                  }`;
+                                })()
+                              : item.kind === 'double'
+                              ? `${formatObjectDisplayName(
+                                  item.data.koName,
+                                  item.data.name,
+                                  item.data.bayer || item.data.disc
+                                )} (${item.data.sep.toFixed(1)}″)`
+                              : formatObjectDisplayName(
+                                  item.data.koName,
+                                  item.data.name,
+                                  item.data.id
+                                );
+                          const rowBgClass = isSelectedRow
+                            ? theme === 'white'
+                              ? 'bg-sky-100/95 hover:bg-sky-200/80 border-l-2 border-l-blue-600'
+                              : theme === 'red'
+                              ? 'bg-[#3D0909] hover:bg-[#4C0D0D] border-l-2 border-l-[#FF5252]'
+                              : 'bg-cyan-500/25 hover:bg-cyan-500/32 border-l-2 border-l-cyan-400'
+                            : isBelowHorizon
+                            ? theme === 'white'
+                              ? 'bg-slate-100/85 hover:bg-slate-200/90'
+                              : theme === 'red'
+                              ? 'bg-[#090101] hover:bg-[#1E0505]'
+                              : 'bg-slate-900/55 hover:bg-slate-800/85'
+                            : theme === 'white'
+                            ? 'bg-emerald-50/70 hover:bg-emerald-200/75'
+                            : theme === 'red'
+                            ? 'bg-[#190507] hover:bg-[#310A0E]'
+                            : 'bg-emerald-500/10 hover:bg-emerald-500/28';
+                          const titleColorClass = isSelectedRow
+                            ? theme === 'white'
+                              ? 'text-blue-950 font-semibold'
+                              : theme === 'red'
+                              ? 'text-[#FF8585] font-semibold'
+                              : 'text-cyan-100 font-semibold'
+                            : isBelowHorizon
+                            ? theme === 'white'
+                              ? 'text-slate-400'
+                              : theme === 'red'
+                              ? 'text-[#7F1D1D]'
+                              : 'text-slate-500'
+                            : ui.textPrimary;
+                          const metaColorClass = isSelectedRow
+                            ? theme === 'white'
+                              ? 'text-blue-700'
+                              : theme === 'red'
+                              ? 'text-[#FCA5A5]'
+                              : 'text-cyan-300/90'
+                            : isBelowHorizon
+                            ? theme === 'white'
+                              ? 'text-slate-400'
+                              : theme === 'red'
+                              ? 'text-[#5C1111]'
+                              : 'text-slate-600'
+                            : ui.textMuted;
+
+                          return (
+                            <div
+                              key={entry.id}
+                              draggable={detailItems.length > 1}
+                              onDragStart={(e) => {
+                                e.stopPropagation();
+                                setDragSessionState({
+                                  kind: 'listEntry',
+                                  listId: list.id,
+                                  id: entry.id,
+                                });
+                                e.dataTransfer.effectAllowed = 'move';
+                                e.dataTransfer.setData('text/plain', entry.id);
+                              }}
+                              onDragOver={(e) => {
+                                if (
+                                  !dragSessionState ||
+                                  dragSessionState.kind !== 'listEntry' ||
+                                  dragSessionState.listId !== list.id ||
+                                  dragSessionState.id === entry.id
+                                ) {
+                                  return;
+                                }
+                                e.preventDefault();
+                                e.stopPropagation();
+                                setDragOverSessionKey(`entry:${list.id}:${entry.id}`);
+                              }}
+                              onDragLeave={() => {
+                                if (dragOverSessionKey === `entry:${list.id}:${entry.id}`) {
+                                  setDragOverSessionKey(null);
+                                }
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                if (
+                                  dragSessionState &&
+                                  dragSessionState.kind === 'listEntry' &&
+                                  dragSessionState.listId === list.id &&
+                                  dragSessionState.id !== entry.id
+                                ) {
+                                  onReorderObservingListEntries(
+                                    list.id,
+                                    dragSessionState.id,
+                                    entry.id
+                                  );
+                                }
+                                setDragSessionState(null);
+                                setDragOverSessionKey(null);
+                              }}
+                              onDragEnd={() => {
+                                setDragSessionState(null);
+                                setDragOverSessionKey(null);
+                              }}
+                              className={`p-2 flex items-start gap-1.5 transition-colors ${rowBgClass} ${
+                                dragOverSessionKey === `entry:${list.id}:${entry.id}`
+                                  ? 'ring-1 ring-inset ring-cyan-400'
+                                  : ''
+                              }`}
+                            >
+                              {detailItems.length > 1 && (
+                                <div className="flex flex-col shrink-0 -ml-0.5 mt-0.5">
+                                  <button
+                                    type="button"
+                                    disabled={entryIdx === 0}
+                                    onClick={() =>
+                                      onReorderObservingListEntries(
+                                        list.id,
+                                        entry.id,
+                                        detailItems[entryIdx - 1].entry.id
+                                      )
+                                    }
+                                    title="위로 이동"
+                                    aria-label={`${title} 위로 이동`}
+                                    className={`p-0 leading-none disabled:opacity-25 ${metaColorClass} hover:opacity-100`}
+                                  >
+                                    <ChevronUp className="w-2.5 h-2.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={entryIdx === detailItems.length - 1}
+                                    onClick={() =>
+                                      onReorderObservingListEntries(
+                                        list.id,
+                                        entry.id,
+                                        detailItems[entryIdx + 1].entry.id
+                                      )
+                                    }
+                                    title="아래로 이동"
+                                    aria-label={`${title} 아래로 이동`}
+                                    className={`p-0 leading-none disabled:opacity-25 ${metaColorClass} hover:opacity-100`}
+                                  >
+                                    <ChevronDown className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => onToggleObserved(entry.id, list.id)}
+                                title={entry.observed ? '관측 완료 취소' : '관측 완료 표시'}
+                                className={`mt-0.5 shrink-0 ${isBelowHorizon ? 'opacity-45' : ''}`}
+                              >
+                                {entry.observed ? (
+                                  <CheckCircle2
+                                    className={`w-3.5 h-3.5 ${
+                                      isBelowHorizon ? metaColorClass : ui.accentText
+                                    }`}
+                                  />
+                                ) : (
+                                  <Circle className={`w-3.5 h-3.5 ${metaColorClass}`} />
+                                )}
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => jumpToSessionObject(item)}
+                                title={title}
+                                className="flex-1 text-left min-w-0 cursor-pointer"
+                              >
+                                <div
+                                  className={`text-[11px] truncate tracking-[-0.04em] font-medium ${
+                                    entry.observed ? 'line-through opacity-60 ' : ''
+                                  }${titleColorClass}`}
+                                >
+                                  {title}
+                                </div>
+                                <div
+                                  className={`text-[9.5px] font-mono tracking-[-0.04em] tabular-nums truncate ${metaColorClass}`}
+                                >
+                                  {item.data.mag.toFixed(1)}m · 고도 {hz.altDeg.toFixed(1)}°(
+                                  {getCompassDirection(hz.azDeg)})
+                                  {isBelowHorizon ? ' · 지평 아래' : ''}
+                                </div>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const ok = await confirmDialog({
+                                    title: '관측목록 항목 제거',
+                                    message: `‘${title}’을(를) ‘${list.name}’ 목록에서 제거하시겠습니까?`,
+                                    confirmLabel: '제거',
+                                  });
+                                  if (ok) onToggleSessionItem(item, list.id);
+                                }}
+                                title="목록에서 제거"
+                                className={`p-0.5 ${metaColorClass} hover:opacity-100 shrink-0 ${
+                                  isBelowHorizon ? 'opacity-50' : ''
+                                }`}
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()
             ) : (
-              /* Sub-tab 2: 목록관리 (Create, Rename, Delete, Import per list or as new file list, Single-check 오늘 관측 대상) */
+              /* Sub-tab 2 List View: 목록관리 (클릭 시 상세 화면으로 진입) */
               <div className="space-y-2.5">
                 {/* Create New List Form */}
                 <div
@@ -1262,7 +1735,9 @@ export function ObjectInspector({
                           const createdName = newListName.trim();
                           onCreateObservingList(createdName);
                           setNewListName('');
-                          setSkylistNotice(`‘${createdName}’ 목록이 생성되었습니다. 아래에서 대상 파일을 가져오거나 천체를 추가하세요.`);
+                          setSkylistNotice(
+                            `‘${createdName}’ 목록이 생성되었습니다. 아래에서 대상 파일을 가져오거나 천체를 추가하세요.`
+                          );
                         }
                       }}
                       placeholder="예: 메시에 대상, 봄철 은하..."
@@ -1303,7 +1778,7 @@ export function ObjectInspector({
 
                 {/* Help note about single tonight check */}
                 <div className={`text-[9.5px] leading-snug tracking-[-0.04em] px-0.5 ${ui.textMuted}`}>
-                  ‘오늘 관측’은 <span className={ui.accentText}>한 개의 목록만</span> 활성화할 수 있으며, 체크 시 해당 목록이 <strong className={ui.textSecondary}>오늘 밤 관측목록</strong>에 반영됩니다. 해제하면 반영된 항목만 사라지고 직접 추가한 대상은 유지됩니다.
+                  ‘오늘 관측’은 <span className={ui.accentText}>한 개의 목록만</span> 활성화할 수 있으며, 체크 시 해당 목록이 <strong className={ui.textSecondary}>오늘 밤 관측목록</strong>에 반영됩니다. 목록을 클릭하면 포함된 대상을 자세히 볼 수 있습니다.
                 </div>
 
                 {/* Categorized Observing Lists */}
@@ -1318,492 +1793,282 @@ export function ObjectInspector({
                     </p>
                   </div>
                 ) : (
-                <div className="space-y-2">
-                  {observingLists.map((list, listIdx) => {
-                    const isTonight = list.id === tonightListId;
-                    const isRenaming = renamingListId === list.id;
-                    const isExpanded = Boolean(expandedListIds[list.id]);
-                    const previewItems = isExpanded ? resolveEntriesList(list.entries) : [];
+                  <div className="space-y-2">
+                    {observingLists.map((list, listIdx) => {
+                      const isTonight = list.id === tonightListId;
+                      const isSelectedCard = lastSelectedManageListId === list.id;
+                      const isRenaming = renamingListId === list.id;
 
-                    return (
-                      <div
-                        key={list.id}
-                        draggable={observingLists.length > 1}
-                        onDragStart={(e) => {
-                          e.stopPropagation();
-                          setDragSessionState({ kind: 'list', id: list.id });
-                          e.dataTransfer.effectAllowed = 'move';
-                          e.dataTransfer.setData('text/plain', list.id);
-                        }}
-                        onDragOver={(e) => {
-                          if (
-                            !dragSessionState ||
-                            dragSessionState.kind !== 'list' ||
-                            dragSessionState.id === list.id
-                          ) {
-                            return;
-                          }
-                          e.preventDefault();
-                          e.stopPropagation();
-                          setDragOverSessionKey(`list:${list.id}`);
-                        }}
-                        onDragLeave={() => {
-                          if (dragOverSessionKey === `list:${list.id}`) {
+                      const cardToneClass = isSelectedCard
+                        ? theme === 'white'
+                          ? 'border-blue-500/80 bg-sky-100/95 hover:bg-sky-200/85'
+                          : theme === 'red'
+                          ? 'border-[#FF4D4D] bg-[#38080C] hover:bg-[#480B10]'
+                          : 'border-cyan-400/75 bg-cyan-500/22 hover:bg-cyan-500/32'
+                        : isTonight
+                        ? theme === 'white'
+                          ? 'border-emerald-500/80 bg-emerald-100/90 hover:bg-emerald-200/85'
+                          : theme === 'red'
+                          ? 'border-red-500/80 bg-[#2C080C] hover:bg-[#3B0B11]'
+                          : 'border-emerald-400/65 bg-emerald-500/20 hover:bg-emerald-500/30'
+                        : theme === 'white'
+                        ? 'border-emerald-300/70 bg-emerald-50/75 hover:bg-emerald-200/65 hover:border-emerald-400'
+                        : theme === 'red'
+                        ? 'border-[#6E1620] bg-[#1A0507] hover:bg-[#2E090E] hover:border-[#9E2434]'
+                        : 'border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/26 hover:border-emerald-400/60';
+
+                      return (
+                        <div
+                          key={list.id}
+                          draggable={observingLists.length > 1}
+                          onDragStart={(e) => {
+                            e.stopPropagation();
+                            setDragSessionState({ kind: 'list', id: list.id });
+                            e.dataTransfer.effectAllowed = 'move';
+                            e.dataTransfer.setData('text/plain', list.id);
+                          }}
+                          onDragOver={(e) => {
+                            if (
+                              !dragSessionState ||
+                              dragSessionState.kind !== 'list' ||
+                              dragSessionState.id === list.id
+                            ) {
+                              return;
+                            }
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDragOverSessionKey(`list:${list.id}`);
+                          }}
+                          onDragLeave={() => {
+                            if (dragOverSessionKey === `list:${list.id}`) {
+                              setDragOverSessionKey(null);
+                            }
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (
+                              dragSessionState &&
+                              dragSessionState.kind === 'list' &&
+                              dragSessionState.id !== list.id
+                            ) {
+                              onReorderObservingLists(dragSessionState.id, list.id);
+                            }
+                            setDragSessionState(null);
                             setDragOverSessionKey(null);
-                          }
-                        }}
-                        onDrop={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          if (
-                            dragSessionState &&
-                            dragSessionState.kind === 'list' &&
-                            dragSessionState.id !== list.id
-                          ) {
-                            onReorderObservingLists(dragSessionState.id, list.id);
-                          }
-                          setDragSessionState(null);
-                          setDragOverSessionKey(null);
-                        }}
-                        onDragEnd={() => {
-                          setDragSessionState(null);
-                          setDragOverSessionKey(null);
-                        }}
-                        className={`border transition-colors overflow-hidden ${
-                          isTonight
-                            ? theme === 'white'
-                              ? 'border-emerald-500/80 bg-emerald-100/90'
-                              : theme === 'red'
-                              ? 'border-red-500/80 bg-[#2C080C]'
-                              : 'border-emerald-400/65 bg-emerald-500/20'
-                            : theme === 'white'
-                            ? 'border-emerald-300/70 bg-emerald-50/75 hover:bg-emerald-100/55'
-                            : theme === 'red'
-                            ? 'border-[#6E1620] bg-[#1A0507] hover:bg-[#23070A]'
-                            : 'border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15'
-                        } ${
-                          dragOverSessionKey === `list:${list.id}` ? 'ring-1 ring-cyan-400' : ''
-                        }`}
-                        style={{ borderRadius: '6px' }}
-                      >
-                        <div className="p-2 space-y-1.5">
-                          {/* Row 1: Reorder + Single Tonight Toggle Check + List Name / Inline Rename */}
-                          <div className="flex items-center gap-1 min-w-0">
-                            {observingLists.length > 1 && (
-                              <div className="flex flex-col shrink-0 -ml-0.5">
-                                <button
-                                  type="button"
-                                  disabled={listIdx === 0}
-                                  onClick={() =>
-                                    onReorderObservingLists(list.id, observingLists[listIdx - 1].id)
-                                  }
-                                  title="목록 위로 이동"
-                                  aria-label={`${list.name} 위로 이동`}
-                                  className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                                >
-                                  <ChevronUp className="w-2.5 h-2.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={listIdx === observingLists.length - 1}
-                                  onClick={() =>
-                                    onReorderObservingLists(list.id, observingLists[listIdx + 1].id)
-                                  }
-                                  title="목록 아래로 이동"
-                                  aria-label={`${list.name} 아래로 이동`}
-                                  className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                                >
-                                  <ChevronDown className="w-2.5 h-2.5" />
-                                </button>
-                              </div>
-                            )}
-                            <button
-                              type="button"
-                              onClick={() => onSetTonightList(list.id)}
-                              title={
-                                isTonight
-                                  ? '클릭하여 오늘 관측 연동 해제 (직접 추가 대상만 유지)'
-                                  : '이 목록을 오늘 밤 관측목록에 반영 (단 1개만 활성화)'
-                              }
-                              aria-label={`${list.name} 오늘 관측 연동 ${isTonight ? '해제' : '활성화'}`}
-                              aria-checked={isTonight}
-                              role="checkbox"
-                              className={`flex items-center gap-1 px-1.5 py-0.5 border text-[9.5px] font-semibold tracking-[-0.05em] whitespace-nowrap shrink-0 transition-colors ${
-                                isTonight ? ui.buttonActive : ui.buttonIdle
-                              }`}
-                              style={{ borderRadius: '4px' }}
-                            >
-                              {isTonight ? (
-                                <CheckSquare className="w-3 h-3 shrink-0" />
-                              ) : (
-                                <Square className="w-3 h-3 shrink-0" />
-                              )}
-                              <span>오늘 관측</span>
-                            </button>
-
-                            {isRenaming ? (
-                              <div className="flex-1 flex items-center gap-1 min-w-0">
-                                <input
-                                  type="text"
-                                  value={renameDraft}
-                                  autoFocus
-                                  onChange={(e) => setRenameDraft(e.target.value)}
-                                  onKeyDown={(e) => {
-                                    if (e.key === 'Enter' && renameDraft.trim()) {
-                                      onRenameObservingList(list.id, renameDraft.trim());
-                                      setRenamingListId(null);
-                                    } else if (e.key === 'Escape') {
-                                      setRenamingListId(null);
+                          }}
+                          onDragEnd={() => {
+                            setDragSessionState(null);
+                            setDragOverSessionKey(null);
+                          }}
+                          className={`border transition-colors overflow-hidden ${cardToneClass} ${
+                            dragOverSessionKey === `list:${list.id}` ? 'ring-1 ring-cyan-400' : ''
+                          }`}
+                          style={{ borderRadius: '6px' }}
+                        >
+                          <div className="p-2 space-y-1.5">
+                            {/* Row 1: Reorder + Single Tonight Toggle Check + List Name (click -> detail view) */}
+                            <div className="flex items-center gap-1 min-w-0">
+                              {observingLists.length > 1 && (
+                                <div className="flex flex-col shrink-0 -ml-0.5">
+                                  <button
+                                    type="button"
+                                    disabled={listIdx === 0}
+                                    onClick={() =>
+                                      onReorderObservingLists(list.id, observingLists[listIdx - 1].id)
                                     }
-                                  }}
-                                  className={`flex-1 min-w-0 px-1.5 py-0.5 border text-[10.5px] ${ui.input}`}
-                                  style={{ borderRadius: '4px' }}
-                                />
+                                    title="목록 위로 이동"
+                                    aria-label={`${list.name} 위로 이동`}
+                                    className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                  >
+                                    <ChevronUp className="w-2.5 h-2.5" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    disabled={listIdx === observingLists.length - 1}
+                                    onClick={() =>
+                                      onReorderObservingLists(list.id, observingLists[listIdx + 1].id)
+                                    }
+                                    title="목록 아래로 이동"
+                                    aria-label={`${list.name} 아래로 이동`}
+                                    className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                  >
+                                    <ChevronDown className="w-2.5 h-2.5" />
+                                  </button>
+                                </div>
+                              )}
+                              <button
+                                type="button"
+                                onClick={() => onSetTonightList(list.id)}
+                                title={
+                                  isTonight
+                                    ? '클릭하여 오늘 관측 연동 해제 (직접 추가 대상만 유지)'
+                                    : '이 목록을 오늘 밤 관측목록에 반영 (단 1개만 활성화)'
+                                }
+                                aria-label={`${list.name} 오늘 관측 연동 ${isTonight ? '해제' : '활성화'}`}
+                                aria-checked={isTonight}
+                                role="checkbox"
+                                className={`flex items-center gap-1 px-1.5 py-0.5 border text-[9.5px] font-semibold tracking-[-0.05em] whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                                  isTonight ? ui.buttonActive : ui.buttonIdle
+                                }`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                {isTonight ? (
+                                  <CheckSquare className="w-3 h-3 shrink-0" />
+                                ) : (
+                                  <Square className="w-3 h-3 shrink-0" />
+                                )}
+                                <span>오늘 관측</span>
+                              </button>
+
+                              {isRenaming ? (
+                                <div className="flex-1 flex items-center gap-1 min-w-0">
+                                  <input
+                                    type="text"
+                                    value={renameDraft}
+                                    autoFocus
+                                    onChange={(e) => setRenameDraft(e.target.value)}
+                                    onKeyDown={(e) => {
+                                      if (e.key === 'Enter' && renameDraft.trim()) {
+                                        onRenameObservingList(list.id, renameDraft.trim());
+                                        setRenamingListId(null);
+                                      } else if (e.key === 'Escape') {
+                                        setRenamingListId(null);
+                                      }
+                                    }}
+                                    className={`flex-1 min-w-0 px-1.5 py-0.5 border text-[10.5px] ${ui.input}`}
+                                    style={{ borderRadius: '4px' }}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      if (renameDraft.trim()) {
+                                        onRenameObservingList(list.id, renameDraft.trim());
+                                      }
+                                      setRenamingListId(null);
+                                    }}
+                                    title="이름 저장"
+                                    className={`p-1 border shrink-0 ${ui.buttonActive}`}
+                                    style={{ borderRadius: '4px' }}
+                                  >
+                                    <Check className="w-3 h-3" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setRenamingListId(null)}
+                                    title="취소"
+                                    className={`p-1 border shrink-0 ${ui.buttonIdle}`}
+                                    style={{ borderRadius: '4px' }}
+                                  >
+                                    <X className="w-3 h-3" />
+                                  </button>
+                                </div>
+                              ) : (
                                 <button
                                   type="button"
                                   onClick={() => {
-                                    if (renameDraft.trim()) {
-                                      onRenameObservingList(list.id, renameDraft.trim());
-                                    }
-                                    setRenamingListId(null);
+                                    setLastSelectedManageListId(list.id);
+                                    setSelectedManageListId(list.id);
                                   }}
-                                  title="이름 저장"
-                                  className={`p-1 border shrink-0 ${ui.buttonActive}`}
-                                  style={{ borderRadius: '4px' }}
+                                  className="flex-1 flex items-center justify-between gap-1 min-w-0 text-left cursor-pointer"
+                                  title={list.name}
                                 >
-                                  <Check className="w-3 h-3" />
+                                  <span
+                                    className={`text-[11px] font-semibold truncate tracking-[-0.04em] ${ui.textPrimary}`}
+                                  >
+                                    {list.name}
+                                  </span>
+                                  <span className="flex items-center gap-0.5 shrink-0">
+                                    <span
+                                      className={`text-[9.5px] font-mono tabular-nums ${ui.textMuted}`}
+                                    >
+                                      {list.entries.length}개
+                                    </span>
+                                    <ChevronRight className={`w-3.5 h-3.5 ${ui.textMuted}`} />
+                                  </span>
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setRenamingListId(null)}
-                                  title="취소"
-                                  className={`p-1 border shrink-0 ${ui.buttonIdle}`}
-                                  style={{ borderRadius: '4px' }}
-                                >
-                                  <X className="w-3 h-3" />
-                                </button>
-                              </div>
-                            ) : (
+                              )}
+                            </div>
+
+                            {/* Row 2: Action buttons (파일 가져오기 | 이름 수정 | 내보내기 | 삭제) */}
+                            <div className="flex items-center gap-1">
                               <button
                                 type="button"
+                                disabled={skylistBusy}
                                 onClick={() =>
-                                  setExpandedListIds((p) => ({
-                                    ...p,
-                                    [list.id]: !p[list.id],
-                                  }))
+                                  triggerSkylistFilePicker({
+                                    targetListId: list.id,
+                                    makeTonight: false,
+                                  })
                                 }
-                                className="flex-1 flex items-center justify-between gap-1 min-w-0 text-left"
-                                title="클릭하여 포함된 천체 목록 펼치기/접기"
+                                title={`‘${list.name}’ 목록으로 .skylist 대상 파일 가져오기`}
+                                className={`flex-1 py-1 px-1.5 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer ${ui.buttonIdle} ${
+                                  skylistBusy ? 'opacity-50 cursor-wait' : ''
+                                }`}
+                                style={{ borderRadius: '4px' }}
                               >
-                                <span
-                                  className={`text-[11px] font-semibold truncate tracking-[-0.04em] ${ui.textPrimary}`}
-                                >
-                                  {list.name}
-                                </span>
-                                <span className="flex items-center gap-0.5 shrink-0">
-                                  <span
-                                    className={`text-[9.5px] font-mono tabular-nums ${ui.textMuted}`}
-                                  >
-                                    {list.entries.length}개
-                                  </span>
-                                  {isExpanded ? (
-                                    <ChevronDown className={`w-3 h-3 ${ui.textMuted}`} />
-                                  ) : (
-                                    <ChevronRight className={`w-3 h-3 ${ui.textMuted}`} />
-                                  )}
-                                </span>
+                                <Upload className="w-3 h-3 shrink-0" />
+                                <span>파일 가져오기</span>
                               </button>
-                            )}
-                          </div>
-
-                          {/* Row 2: Action buttons (파일 가져오기 | 이름 수정 | 내보내기 | 삭제) */}
-                          <div className="flex items-center gap-1">
-                            <button
-                              type="button"
-                              disabled={skylistBusy}
-                              onClick={() =>
-                                triggerSkylistFilePicker({
-                                  targetListId: list.id,
-                                  makeTonight: false,
-                                })
-                              }
-                              title={`‘${list.name}’ 목록으로 .skylist 대상 파일 가져오기`}
-                              className={`flex-1 py-1 px-1.5 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap ${ui.buttonIdle} ${
-                                skylistBusy ? 'opacity-50 cursor-wait' : ''
-                              }`}
-                              style={{ borderRadius: '4px' }}
-                            >
-                              <Upload className="w-3 h-3 shrink-0" />
-                              <span>파일 가져오기</span>
-                            </button>
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setRenamingListId(list.id);
-                                setRenameDraft(list.name);
-                              }}
-                              title="목록명 수정"
-                              aria-label={`${list.name} 이름 수정`}
-                              className={`p-1 border shrink-0 ${ui.buttonIdle}`}
-                              style={{ borderRadius: '4px' }}
-                            >
-                              <Pencil className="w-3 h-3" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={list.entries.length === 0}
-                              onClick={() => {
-                                onExportSkylist(list.id);
-                                setSkylistNotice(
-                                  `‘${list.name}’ .skylist 저장 완료 (${list.entries.length}개)`
-                                );
-                              }}
-                              title="이 목록을 .skylist 파일로 내보내기"
-                              aria-label={`${list.name} 내보내기`}
-                              className={`p-1 border shrink-0 ${
-                                list.entries.length === 0
-                                  ? `${ui.buttonIdle} opacity-40 cursor-not-allowed`
-                                  : ui.buttonIdle
-                              }`}
-                              style={{ borderRadius: '4px' }}
-                            >
-                              <Download className="w-3 h-3" />
-                            </button>
-                            <button
-                              type="button"
-                              onClick={async () => {
-                                const ok = await onDeleteObservingList(list.id);
-                                if (ok !== false && renamingListId === list.id) {
-                                  setRenamingListId(null);
-                                }
-                              }}
-                              title="이 목록 삭제"
-                              aria-label={`${list.name} 삭제`}
-                              className={`p-1 border shrink-0 ${ui.buttonIdle} hover:text-red-400`}
-                              style={{ borderRadius: '4px' }}
-                            >
-                              <Trash2 className="w-3 h-3" />
-                            </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setRenamingListId(list.id);
+                                  setRenameDraft(list.name);
+                                }}
+                                title="목록명 수정"
+                                aria-label={`${list.name} 이름 수정`}
+                                className={`p-1 border shrink-0 cursor-pointer ${ui.buttonIdle}`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                <Pencil className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={list.entries.length === 0}
+                                onClick={() => {
+                                  onExportSkylist(list.id);
+                                  setSkylistNotice(
+                                    `‘${list.name}’ .skylist 저장 완료 (${list.entries.length}개)`
+                                  );
+                                }}
+                                title="이 목록을 .skylist 파일로 내보내기"
+                                aria-label={`${list.name} 내보내기`}
+                                className={`p-1 border shrink-0 ${
+                                  list.entries.length === 0
+                                    ? `${ui.buttonIdle} opacity-40 cursor-not-allowed`
+                                    : `${ui.buttonIdle} cursor-pointer`
+                                }`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                <Download className="w-3 h-3" />
+                              </button>
+                              <button
+                                type="button"
+                                onClick={async () => {
+                                  const ok = await onDeleteObservingList(list.id);
+                                  if (ok !== false) {
+                                    if (renamingListId === list.id) {
+                                      setRenamingListId(null);
+                                    }
+                                    if (lastSelectedManageListId === list.id) {
+                                      setLastSelectedManageListId(null);
+                                    }
+                                  }
+                                }}
+                                title="이 목록 삭제"
+                                aria-label={`${list.name} 삭제`}
+                                className={`p-1 border shrink-0 cursor-pointer ${ui.buttonIdle} hover:text-red-400`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                <Trash2 className="w-3 h-3" />
+                              </button>
+                            </div>
                           </div>
                         </div>
-
-                        {/* Collapsible Target List Preview inside Category */}
-                        {isExpanded && (
-                          <div className={`border-t ${ui.divider}`}>
-                            {previewItems.length === 0 ? (
-                              <div className={`px-2.5 py-2 text-[10px] text-center ${ui.textMuted}`}>
-                                비어 있는 목록입니다. 상단 ‘파일 가져오기’ 또는 성도에서 천체를 추가하세요.
-                              </div>
-                            ) : (
-                              <div className={`divide-y max-h-[200px] overflow-y-auto astro-scroll ${ui.divider}`}>
-                                {previewItems.map(({ entry, item, hz }, entryIdx) => {
-                                  const isBelowHorizon = hz.altDeg < 0;
-                                  const title =
-                                    item.kind === 'dso'
-                                      ? (() => {
-                                          const displayName = formatObjectDisplayName(
-                                            item.data.koName,
-                                            item.data.name
-                                          );
-                                          return `${formatCatalogCode(item.data.id) || item.data.id}${
-                                            displayName ? ` · ${displayName}` : ''
-                                          }`;
-                                        })()
-                                      : item.kind === 'double'
-                                      ? formatObjectDisplayName(
-                                          item.data.koName,
-                                          item.data.name,
-                                          item.data.bayer || item.data.disc
-                                        )
-                                      : formatObjectDisplayName(
-                                          item.data.koName,
-                                          item.data.name,
-                                          item.data.id
-                                        );
-                                  const rowBgClass = isBelowHorizon
-                                    ? theme === 'white'
-                                      ? 'bg-slate-100/85'
-                                      : theme === 'red'
-                                      ? 'bg-[#090101]'
-                                      : 'bg-slate-900/55'
-                                    : theme === 'white'
-                                    ? 'bg-white/65 hover:bg-emerald-50/90'
-                                    : theme === 'red'
-                                    ? 'bg-[#120305] hover:bg-[#1C0508]'
-                                    : 'bg-emerald-950/35 hover:bg-emerald-900/35';
-                                  const titleColorClass = isBelowHorizon
-                                    ? theme === 'white'
-                                      ? 'text-slate-400'
-                                      : theme === 'red'
-                                      ? 'text-[#7F1D1D]'
-                                      : 'text-slate-500'
-                                    : ui.textPrimary;
-                                  const metaColorClass = isBelowHorizon
-                                    ? theme === 'white'
-                                      ? 'text-slate-400'
-                                      : theme === 'red'
-                                      ? 'text-[#5C1111]'
-                                      : 'text-slate-600'
-                                    : ui.textMuted;
-                                  return (
-                                    <div
-                                      key={entry.id}
-                                      draggable={previewItems.length > 1}
-                                      onDragStart={(e) => {
-                                        e.stopPropagation();
-                                        setDragSessionState({
-                                          kind: 'listEntry',
-                                          listId: list.id,
-                                          id: entry.id,
-                                        });
-                                        e.dataTransfer.effectAllowed = 'move';
-                                        e.dataTransfer.setData('text/plain', entry.id);
-                                      }}
-                                      onDragOver={(e) => {
-                                        if (
-                                          !dragSessionState ||
-                                          dragSessionState.kind !== 'listEntry' ||
-                                          dragSessionState.listId !== list.id ||
-                                          dragSessionState.id === entry.id
-                                        ) {
-                                          return;
-                                        }
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        setDragOverSessionKey(`entry:${list.id}:${entry.id}`);
-                                      }}
-                                      onDragLeave={() => {
-                                        if (dragOverSessionKey === `entry:${list.id}:${entry.id}`) {
-                                          setDragOverSessionKey(null);
-                                        }
-                                      }}
-                                      onDrop={(e) => {
-                                        e.preventDefault();
-                                        e.stopPropagation();
-                                        if (
-                                          dragSessionState &&
-                                          dragSessionState.kind === 'listEntry' &&
-                                          dragSessionState.listId === list.id &&
-                                          dragSessionState.id !== entry.id
-                                        ) {
-                                          onReorderObservingListEntries(
-                                            list.id,
-                                            dragSessionState.id,
-                                            entry.id
-                                          );
-                                        }
-                                        setDragSessionState(null);
-                                        setDragOverSessionKey(null);
-                                      }}
-                                      onDragEnd={() => {
-                                        setDragSessionState(null);
-                                        setDragOverSessionKey(null);
-                                      }}
-                                      className={`px-2 py-1.5 flex items-center gap-1 ${rowBgClass} ${
-                                        dragOverSessionKey === `entry:${list.id}:${entry.id}`
-                                          ? 'ring-1 ring-inset ring-cyan-400'
-                                          : ''
-                                      }`}
-                                    >
-                                      {previewItems.length > 1 && (
-                                        <div className="flex flex-col shrink-0 -ml-0.5">
-                                          <button
-                                            type="button"
-                                            disabled={entryIdx === 0}
-                                            onClick={() =>
-                                              onReorderObservingListEntries(
-                                                list.id,
-                                                entry.id,
-                                                previewItems[entryIdx - 1].entry.id
-                                              )
-                                            }
-                                            title="위로 이동"
-                                            aria-label={`${title} 위로 이동`}
-                                            className={`p-0 leading-none disabled:opacity-25 ${metaColorClass} hover:opacity-100`}
-                                          >
-                                            <ChevronUp className="w-2.5 h-2.5" />
-                                          </button>
-                                          <button
-                                            type="button"
-                                            disabled={entryIdx === previewItems.length - 1}
-                                            onClick={() =>
-                                              onReorderObservingListEntries(
-                                                list.id,
-                                                entry.id,
-                                                previewItems[entryIdx + 1].entry.id
-                                              )
-                                            }
-                                            title="아래로 이동"
-                                            aria-label={`${title} 아래로 이동`}
-                                            className={`p-0 leading-none disabled:opacity-25 ${metaColorClass} hover:opacity-100`}
-                                          >
-                                            <ChevronDown className="w-2.5 h-2.5" />
-                                          </button>
-                                        </div>
-                                      )}
-                                      <button
-                                        type="button"
-                                        onClick={() => onToggleObserved(entry.id, list.id)}
-                                        title={entry.observed ? '관측 완료 취소' : '관측 완료 표시'}
-                                        className={`shrink-0 ${isBelowHorizon ? 'opacity-45' : ''}`}
-                                      >
-                                        {entry.observed ? (
-                                          <CheckCircle2
-                                            className={`w-3 h-3 ${
-                                              isBelowHorizon ? metaColorClass : ui.accentText
-                                            }`}
-                                          />
-                                        ) : (
-                                          <Circle className={`w-3 h-3 ${metaColorClass}`} />
-                                        )}
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={() => jumpToSessionObject(item)}
-                                        className="flex-1 text-left min-w-0"
-                                      >
-                                        <div
-                                          className={`text-[10.5px] truncate tracking-[-0.04em] ${
-                                            entry.observed ? 'line-through opacity-60 ' : ''
-                                          }${titleColorClass}`}
-                                        >
-                                          {title}
-                                        </div>
-                                        <div
-                                          className={`text-[9px] font-mono tabular-nums truncate ${metaColorClass}`}
-                                        >
-                                          {item.data.mag.toFixed(1)}m · 고도 {hz.altDeg.toFixed(0)}°
-                                          {isBelowHorizon ? ' · 지평 아래' : ''}
-                                        </div>
-                                      </button>
-                                      <button
-                                        type="button"
-                                        onClick={async () => {
-                                          const ok = await confirmDialog({
-                                            title: '관측목록 항목 제거',
-                                            message: `‘${title}’을(를) ‘${list.name}’ 목록에서 제거하시겠습니까?`,
-                                            confirmLabel: '제거',
-                                          });
-                                          if (ok) onToggleSessionItem(item, list.id);
-                                        }}
-                                        title="목록에서 제거"
-                                        className={`p-0.5 ${metaColorClass} hover:opacity-80 shrink-0 ${
-                                          isBelowHorizon ? 'opacity-50' : ''
-                                        }`}
-                                      >
-                                        <Trash2 className="w-3 h-3" />
-                                      </button>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                          </div>
-                        )}
-                      </div>
-                    );
-                  })}
-                </div>
+                      );
+                    })}
+                  </div>
                 )}
               </div>
             )}
