@@ -3,6 +3,7 @@ import {
   Check,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Download,
   Eye,
   EyeOff,
@@ -53,6 +54,9 @@ interface AsterismPanelProps {
   onDeleteAsterismGroup: (asterismId: string) => void;
   onToggleAsterismGroupVisible: (asterismId: string) => void;
   onFocusAsterismGroup: (grp: AsterismGroup) => void;
+  onReorderLayers: (fromId: string, toId: string) => void;
+  onReorderAsterismGroups: (layerId: string, fromId: string, toId: string) => void;
+  onReorderAsterismObjects: (asterismId: string, fromId: string, toId: string) => void;
   onImportBundle: (
     layers: AsterismLayer[],
     asterisms: AsterismGroup[],
@@ -90,6 +94,9 @@ export function AsterismPanel({
   onDeleteAsterismGroup,
   onToggleAsterismGroupVisible,
   onFocusAsterismGroup,
+  onReorderLayers,
+  onReorderAsterismGroups,
+  onReorderAsterismObjects,
   onImportBundle,
 }: AsterismPanelProps) {
   const ui = getUiTheme(theme);
@@ -99,6 +106,12 @@ export function AsterismPanel({
   const [renameLayerDraft, setRenameLayerDraft] = useState('');
   const [renamingAsterismId, setRenamingAsterismId] = useState<string | null>(null);
   const [renameAsterismDraft, setRenameAsterismDraft] = useState('');
+  const [dragState, setDragState] = useState<{
+    kind: 'layer' | 'asterism' | 'shape';
+    parentId?: string;
+    id: string;
+  } | null>(null);
+  const [dragOverKey, setDragOverKey] = useState<string | null>(null);
   const [openLayers, setOpenLayers] = useState<Record<string, boolean>>(() => {
     try {
       const raw = localStorage.getItem('noxchart_asterism_collapse_v1');
@@ -405,16 +418,72 @@ export function AsterismPanel({
                   : 'text-cyan-400/40'
                 : ui.textMuted;
 
+            const layerIdx = store.layers.findIndex((l) => l.id === layer.id);
             return (
               <div
                 key={layer.id}
+                draggable={store.layers.length > 1}
+                onDragStart={(e) => {
+                  e.stopPropagation();
+                  setDragState({ kind: 'layer', id: layer.id });
+                  e.dataTransfer.effectAllowed = 'move';
+                  e.dataTransfer.setData('text/plain', layer.id);
+                }}
+                onDragOver={(e) => {
+                  if (!dragState || dragState.kind !== 'layer' || dragState.id === layer.id) return;
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setDragOverKey(`layer:${layer.id}`);
+                }}
+                onDragLeave={() => {
+                  if (dragOverKey === `layer:${layer.id}`) setDragOverKey(null);
+                }}
+                onDrop={(e) => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  if (dragState && dragState.kind === 'layer' && dragState.id !== layer.id) {
+                    onReorderLayers(dragState.id, layer.id);
+                  }
+                  setDragState(null);
+                  setDragOverKey(null);
+                }}
+                onDragEnd={() => {
+                  setDragState(null);
+                  setDragOverKey(null);
+                }}
                 className={`border transition-colors ${
                   isActiveLayer ? ui.border : `${ui.border} opacity-95`
-                } ${ui.panelMuted}`}
+                } ${ui.panelMuted} ${
+                  dragOverKey === `layer:${layer.id}` ? 'ring-1 ring-cyan-400' : ''
+                }`}
                 style={{ borderRadius: '6px' }}
               >
                 {/* Level 1: Group (Layer) Row */}
                 <div className="px-2 py-1.5 flex items-center gap-1">
+                  {store.layers.length > 1 && (
+                    <div className="flex flex-col shrink-0 -ml-0.5">
+                      <button
+                        type="button"
+                        disabled={layerIdx <= 0}
+                        onClick={() => onReorderLayers(layer.id, store.layers[layerIdx - 1].id)}
+                        title="그룹 위로 이동"
+                        aria-label={`${layer.name} 위로 이동`}
+                        className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                      >
+                        <ChevronUp className="w-2.5 h-2.5" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={layerIdx >= store.layers.length - 1}
+                        onClick={() => onReorderLayers(layer.id, store.layers[layerIdx + 1].id)}
+                        title="그룹 아래로 이동"
+                        aria-label={`${layer.name} 아래로 이동`}
+                        className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                      >
+                        <ChevronDown className="w-2.5 h-2.5" />
+                      </button>
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() =>
@@ -545,7 +614,7 @@ export function AsterismPanel({
                 {/* Level 2: Asterisms inside this Group */}
                 {!isLayerCollapsed && layerAsterisms.length > 0 && (
                   <div className={`border-t p-1.5 space-y-1.5 ${ui.divider}`}>
-                    {layerAsterisms.map((grp) => {
+                    {layerAsterisms.map((grp, grpIdx) => {
                       const shapes = store.objects.filter((o) => o.asterismId === grp.id);
                       const isActiveGrp = store.activeAsterismId === grp.id;
                       const isGrpCollapsed = !openAsterisms[grp.id];
@@ -554,13 +623,92 @@ export function AsterismPanel({
                       return (
                         <div
                           key={grp.id}
+                          draggable={layerAsterisms.length > 1}
+                          onDragStart={(e) => {
+                            e.stopPropagation();
+                            setDragState({ kind: 'asterism', parentId: layer.id, id: grp.id });
+                            e.dataTransfer.effectAllowed = 'move';
+                            e.dataTransfer.setData('text/plain', grp.id);
+                          }}
+                          onDragOver={(e) => {
+                            if (
+                              !dragState ||
+                              dragState.kind !== 'asterism' ||
+                              dragState.parentId !== layer.id ||
+                              dragState.id === grp.id
+                            ) {
+                              return;
+                            }
+                            e.preventDefault();
+                            e.stopPropagation();
+                            setDragOverKey(`asterism:${grp.id}`);
+                          }}
+                          onDragLeave={() => {
+                            if (dragOverKey === `asterism:${grp.id}`) setDragOverKey(null);
+                          }}
+                          onDrop={(e) => {
+                            e.preventDefault();
+                            e.stopPropagation();
+                            if (
+                              dragState &&
+                              dragState.kind === 'asterism' &&
+                              dragState.parentId === layer.id &&
+                              dragState.id !== grp.id
+                            ) {
+                              onReorderAsterismGroups(layer.id, dragState.id, grp.id);
+                            }
+                            setDragState(null);
+                            setDragOverKey(null);
+                          }}
+                          onDragEnd={() => {
+                            setDragState(null);
+                            setDragOverKey(null);
+                          }}
                           className={`border transition-colors overflow-hidden ${asterismRowTone(
                             isActiveGrp
-                          )}`}
+                          )} ${
+                            dragOverKey === `asterism:${grp.id}` ? 'ring-1 ring-cyan-400' : ''
+                          }`}
                           style={{ borderRadius: '5px' }}
                         >
                           {/* Asterism Header Row (Warm Amber Color) — HAS Quick-Jump Navigation Icon! */}
                           <div className="px-1.5 py-1.5 flex items-center gap-1">
+                            {layerAsterisms.length > 1 && (
+                              <div className="flex flex-col shrink-0">
+                                <button
+                                  type="button"
+                                  disabled={grpIdx === 0}
+                                  onClick={() =>
+                                    onReorderAsterismGroups(
+                                      layer.id,
+                                      grp.id,
+                                      layerAsterisms[grpIdx - 1].id
+                                    )
+                                  }
+                                  title="성군 위로 이동"
+                                  aria-label={`${grp.name} 위로 이동`}
+                                  className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                >
+                                  <ChevronUp className="w-2.5 h-2.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={grpIdx === layerAsterisms.length - 1}
+                                  onClick={() =>
+                                    onReorderAsterismGroups(
+                                      layer.id,
+                                      grp.id,
+                                      layerAsterisms[grpIdx + 1].id
+                                    )
+                                  }
+                                  title="성군 아래로 이동"
+                                  aria-label={`${grp.name} 아래로 이동`}
+                                  className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                >
+                                  <ChevronDown className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                            )}
                             <button
                               type="button"
                               onClick={() =>
@@ -722,7 +870,7 @@ export function AsterismPanel({
                                   등록된 도형이 없습니다.
                                 </div>
                               ) : (
-                                shapes.map((obj) => {
+                                shapes.map((obj, shapeIdx) => {
                                   const isSelected = obj.id === selectedObjectId;
                                   const isExpanded = Boolean(expandedShapeIds[obj.id]);
                                   const hasVerticesDetail =
@@ -730,15 +878,104 @@ export function AsterismPanel({
                                   return (
                                     <div
                                       key={obj.id}
+                                      draggable={shapes.length > 1}
+                                      onDragStart={(e) => {
+                                        e.stopPropagation();
+                                        setDragState({
+                                          kind: 'shape',
+                                          parentId: grp.id,
+                                          id: obj.id,
+                                        });
+                                        e.dataTransfer.effectAllowed = 'move';
+                                        e.dataTransfer.setData('text/plain', obj.id);
+                                      }}
+                                      onDragOver={(e) => {
+                                        if (
+                                          !dragState ||
+                                          dragState.kind !== 'shape' ||
+                                          dragState.parentId !== grp.id ||
+                                          dragState.id === obj.id
+                                        ) {
+                                          return;
+                                        }
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setDragOverKey(`shape:${obj.id}`);
+                                      }}
+                                      onDragLeave={() => {
+                                        if (dragOverKey === `shape:${obj.id}`) setDragOverKey(null);
+                                      }}
+                                      onDrop={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        if (
+                                          dragState &&
+                                          dragState.kind === 'shape' &&
+                                          dragState.parentId === grp.id &&
+                                          dragState.id !== obj.id
+                                        ) {
+                                          onReorderAsterismObjects(grp.id, dragState.id, obj.id);
+                                        }
+                                        setDragState(null);
+                                        setDragOverKey(null);
+                                      }}
+                                      onDragEnd={() => {
+                                        setDragState(null);
+                                        setDragOverKey(null);
+                                      }}
                                       className={`border transition-colors ${shapeRowTone(
                                         isSelected
-                                      )}`}
+                                      )} ${
+                                        dragOverKey === `shape:${obj.id}`
+                                          ? 'ring-1 ring-cyan-400'
+                                          : ''
+                                      }`}
                                       style={{ borderRadius: '4px' }}
                                     >
                                       <div
-                                        className="px-1.5 py-1 flex items-center gap-1.5 text-[10px]"
+                                        className="px-1.5 py-1 flex items-center gap-1 text-[10px]"
                                         onDoubleClick={() => onOpenShapeProperties(grp.id, obj.id)}
                                       >
+                                        {shapes.length > 1 && (
+                                          <div className="flex flex-col shrink-0">
+                                            <button
+                                              type="button"
+                                              disabled={shapeIdx === 0}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                onReorderAsterismObjects(
+                                                  grp.id,
+                                                  obj.id,
+                                                  shapes[shapeIdx - 1].id
+                                                );
+                                              }}
+                                              onDoubleClick={(e) => e.stopPropagation()}
+                                              title="도형 위로 이동"
+                                              aria-label="도형 위로 이동"
+                                              className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                            >
+                                              <ChevronUp className="w-2.5 h-2.5" />
+                                            </button>
+                                            <button
+                                              type="button"
+                                              disabled={shapeIdx === shapes.length - 1}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                onReorderAsterismObjects(
+                                                  grp.id,
+                                                  obj.id,
+                                                  shapes[shapeIdx + 1].id
+                                                );
+                                              }}
+                                              onDoubleClick={(e) => e.stopPropagation()}
+                                              title="도형 아래로 이동"
+                                              aria-label="도형 아래로 이동"
+                                              className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                            >
+                                              <ChevronDown className="w-2.5 h-2.5" />
+                                            </button>
+                                          </div>
+                                        )}
                                         {hasVerticesDetail && (
                                           <button
                                             type="button"

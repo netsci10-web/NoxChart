@@ -25,6 +25,7 @@ import {
   RotateCcw,
   Save,
   Search,
+  Shuffle,
   SlidersHorizontal,
   Sparkles,
   Square,
@@ -95,6 +96,8 @@ interface ChallengePanelProps {
   onDeleteTrack: (trackId: string) => void;
   onResetBuiltInTrack: (trackId: string) => void;
   onImportTracks: (tracks: ChallengeTrack[]) => { addedCount: number; updatedCount: number };
+  onReorderTracks: (fromId: string, toId: string) => void;
+  onReorderCheckpoints: (trackId: string, fromId: string, toId: string) => void;
   // Guided Auto-Tour ("오늘의 투어" & Challenge Track Auto-Tour)
   tourState: GuidedTourState;
   tonightTourStops: TourStop[];
@@ -164,13 +167,13 @@ export function ChallengePanel({
   onDeleteTrack,
   onResetBuiltInTrack,
   onImportTracks,
+  onReorderTracks,
+  onReorderCheckpoints,
   tourState,
-  tonightTourStops,
   onStartTonightTour,
   onStartChallengeTour,
   onToggleTourPlay,
   onStopTour,
-  onJumpTourStop,
   onChangeTourDwellSec,
 }: ChallengePanelProps) {
   const ui = getUiTheme(theme);
@@ -183,6 +186,10 @@ export function ChallengePanel({
   const [expandedCpId, setExpandedCpId] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<ChallengeTrack | null>(null);
+  const [dragTrackId, setDragTrackId] = useState<string | null>(null);
+  const [dragOverTrackId, setDragOverTrackId] = useState<string | null>(null);
+  const [dragCpId, setDragCpId] = useState<string | null>(null);
+  const [dragOverCpId, setDragOverCpId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(() => {
     try {
       const raw = localStorage.getItem('noxchart_challenge_collapse_v1');
@@ -195,48 +202,16 @@ export function ChallengePanel({
     }
     return false;
   });
-  const [tourListExpanded, setTourListExpanded] = useState<boolean>(() => {
-    try {
-      const raw = localStorage.getItem('noxchart_challenge_collapse_v1');
-      if (raw) {
-        const parsed = JSON.parse(raw) as Record<string, unknown>;
-        if (typeof parsed.tourListExpanded === 'boolean') return parsed.tourListExpanded;
-      }
-    } catch {
-      // Ignore storage parse failure
-    }
-    return false;
-  });
-
   useEffect(() => {
     try {
       localStorage.setItem(
         'noxchart_challenge_collapse_v1',
-        JSON.stringify({ settingsOpen, tourListExpanded })
+        JSON.stringify({ settingsOpen })
       );
     } catch {
       // Ignore storage write failure
     }
-  }, [settingsOpen, tourListExpanded]);
-  const [excludedTourStopIds, setExcludedTourStopIds] = useState<Set<string>>(() => new Set());
-
-  const selectedTonightStops = useMemo(
-    () => tonightTourStops.filter((s) => !excludedTourStopIds.has(s.id)),
-    [tonightTourStops, excludedTourStopIds]
-  );
-
-  const toggleTonightStopSelection = (stopId: string) => {
-    setExcludedTourStopIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(stopId)) next.delete(stopId);
-      else next.add(stopId);
-      return next;
-    });
-  };
-
-  const selectAllTonightStops = () => setExcludedTourStopIds(new Set());
-  const clearAllTonightStops = () =>
-    setExcludedTourStopIds(new Set(tonightTourStops.map((s) => s.id)));
+  }, [settingsOpen]);
 
   useEffect(() => {
     if (!deleteTarget) return;
@@ -1473,13 +1448,14 @@ export function ChallengePanel({
                   </span>
                 </div>
                 <div className={`divide-y ${stageDividerTone}`}>
-                  {group.items.map((cp) => {
+                  {group.items.map((cp, idxInGroup) => {
                     const expanded = expandedCpId === cp.id;
                     const coords = resolveCheckpointCoords(cp);
                     const hz = coords
                       ? equatorialToHorizontal(coords.ra, coords.dec, lstDeg, observer.lat)
                       : null;
                     const isBelowHorizon = hz !== null && hz.altDeg < 0;
+                    const canReorderCp = filterStatus === 'all' && group.items.length > 1;
                     const cpRowHover = isBelowHorizon
                       ? theme === 'white'
                         ? 'bg-slate-100/80 opacity-70'
@@ -1494,9 +1470,38 @@ export function ChallengePanel({
                     return (
                       <div
                         key={cp.id}
-                        className={`p-1.5 space-y-1 transition-colors ${cpRowHover}`}
+                        draggable={canReorderCp}
+                        onDragStart={(e) => {
+                          if (!canReorderCp) return;
+                          setDragCpId(cp.id);
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', cp.id);
+                        }}
+                        onDragOver={(e) => {
+                          if (!canReorderCp || !dragCpId || dragCpId === cp.id) return;
+                          e.preventDefault();
+                          setDragOverCpId(cp.id);
+                        }}
+                        onDragLeave={() => {
+                          if (dragOverCpId === cp.id) setDragOverCpId(null);
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (canReorderCp && dragCpId && dragCpId !== cp.id) {
+                            onReorderCheckpoints(selectedTrack.id, dragCpId, cp.id);
+                          }
+                          setDragCpId(null);
+                          setDragOverCpId(null);
+                        }}
+                        onDragEnd={() => {
+                          setDragCpId(null);
+                          setDragOverCpId(null);
+                        }}
+                        className={`p-1.5 space-y-1 transition-colors ${cpRowHover} ${
+                          dragOverCpId === cp.id ? 'ring-1 ring-inset ring-cyan-400' : ''
+                        }`}
                       >
-                        <div className="flex items-start gap-1.5">
+                        <div className="flex items-start gap-1">
                           <button
                             type="button"
                             onClick={() => onToggleCheckpoint(selectedTrack.id, cp.id)}
@@ -1563,6 +1568,42 @@ export function ChallengePanel({
                                 .join(' · ')}
                             </div>
                           </button>
+                          {canReorderCp && (
+                            <div className="flex flex-col shrink-0">
+                              <button
+                                type="button"
+                                disabled={idxInGroup === 0}
+                                onClick={() =>
+                                  onReorderCheckpoints(
+                                    selectedTrack.id,
+                                    cp.id,
+                                    group.items[idxInGroup - 1].id
+                                  )
+                                }
+                                title="위로 이동"
+                                aria-label="위로 이동"
+                                className={`p-0.5 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                              >
+                                <ChevronUp className="w-2.5 h-2.5" />
+                              </button>
+                              <button
+                                type="button"
+                                disabled={idxInGroup === group.items.length - 1}
+                                onClick={() =>
+                                  onReorderCheckpoints(
+                                    selectedTrack.id,
+                                    cp.id,
+                                    group.items[idxInGroup + 1].id
+                                  )
+                                }
+                                title="아래로 이동"
+                                aria-label="아래로 이동"
+                                className={`p-0.5 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                              >
+                                <ChevronDown className="w-2.5 h-2.5" />
+                              </button>
+                            </div>
+                          )}
                           <button
                             type="button"
                             onClick={() => setExpandedCpId(expanded ? null : cp.id)}
@@ -1613,23 +1654,27 @@ export function ChallengePanel({
 
   // =================== LIST VIEW ===================
   const activeCount = tracks.filter((t) => t.activeOnChart).length;
-  const isTonightTourActive = tourState.active && tourState.trackId === null;
+  const playableTracks = tracks.filter((t) => t.checkpoints.length > 0);
+  const isAnyTourActive = tourState.active;
+  const activeTourTrack = tourState.trackId
+    ? tracks.find((t) => t.id === tourState.trackId) ?? null
+    : null;
   const tourCardTone =
     theme === 'white'
-      ? isTonightTourActive
+      ? isAnyTourActive
         ? 'border-blue-500 bg-blue-50/70'
         : 'border-blue-300/80 bg-gradient-to-br from-blue-50/80 to-indigo-50/50'
       : theme === 'red'
-      ? isTonightTourActive
+      ? isAnyTourActive
         ? 'border-[#EF4444] bg-[#220404]'
         : 'border-[#7F1D1D] bg-[#160202]'
-      : isTonightTourActive
+      : isAnyTourActive
       ? 'border-cyan-400/70 bg-cyan-950/35'
       : 'border-cyan-500/35 bg-gradient-to-br from-[#0B1B2E] to-[#0A1322]';
 
   return (
     <div className="space-y-2.5">
-      {/* Tonight's Guided Auto-Tour Card */}
+      {/* Tonight's Random Challenge Auto-Tour Card */}
       <div
         className={`border p-2.5 space-y-2 transition-colors ${tourCardTone}`}
         style={{ borderRadius: '7px' }}
@@ -1643,37 +1688,25 @@ export function ChallengePanel({
               </span>
               <span
                 className={`px-1 py-[1px] border text-[8.5px] font-mono leading-tight ${
-                  isTonightTourActive ? ui.buttonActive : `${ui.border} ${ui.textMuted}`
+                  isAnyTourActive ? ui.buttonActive : `${ui.border} ${ui.textMuted}`
                 }`}
                 style={{ borderRadius: '3px' }}
               >
-                {isTonightTourActive
+                {isAnyTourActive
                   ? tourState.completed
                     ? '완주'
                     : tourState.playing
                     ? `순회 ${tourState.currentIndex + 1}/${tourState.stops.length}`
                     : '일시정지'
-                  : `자동 가이드`}
+                  : '랜덤 추천'}
               </span>
             </div>
             <p className={`text-[9.5px] leading-snug break-keep ${ui.textSecondary}`}>
-              현재 관측지·시각의 주요 천체 {tonightTourStops.length}개를 시야각 자동 조정으로
-              순차 안내합니다.
+              {isAnyTourActive && activeTourTrack
+                ? `진행 중: ${activeTourTrack.title} (${activeTourTrack.checkpoints.length}개 대상)`
+                : `아래 챌린지 목록(${playableTracks.length}개) 중 하나를 랜덤으로 선택해 자동 투어를 진행합니다.`}
             </p>
           </div>
-          <button
-            type="button"
-            onClick={() => setTourListExpanded((v) => !v)}
-            title={tourListExpanded ? '오늘의 코스 접기' : '오늘의 코스 목록 보기'}
-            className={`p-1 border shrink-0 ${ui.buttonIdle}`}
-            style={{ borderRadius: '4px' }}
-          >
-            {tourListExpanded ? (
-              <ChevronUp className="w-3 h-3" />
-            ) : (
-              <ChevronDown className="w-3 h-3" />
-            )}
-          </button>
         </div>
 
         {/* Dwell interval selector */}
@@ -1699,9 +1732,9 @@ export function ChallengePanel({
           </div>
         </div>
 
-        {/* Primary Play / Pause / Stop Controls */}
+        {/* Primary Play / Pause / Random Reroll / Stop Controls */}
         <div className="flex items-center gap-1">
-          {isTonightTourActive ? (
+          {isAnyTourActive ? (
             <>
               <button
                 type="button"
@@ -1712,7 +1745,7 @@ export function ChallengePanel({
                 {tourState.completed ? (
                   <>
                     <RotateCcw className="w-3.5 h-3.5 shrink-0" />
-                    <span>처음부터 다시 투어</span>
+                    <span>다시 투어</span>
                   </>
                 ) : tourState.playing ? (
                   <>
@@ -1728,9 +1761,20 @@ export function ChallengePanel({
               </button>
               <button
                 type="button"
+                disabled={playableTracks.length <= 1}
+                onClick={() => onStartTonightTour(0)}
+                title="다른 챌린지를 랜덤 선택해 투어 시작"
+                className={`py-1.5 px-2 border text-[10px] font-medium flex items-center gap-1 disabled:opacity-40 ${ui.buttonIdle}`}
+                style={{ borderRadius: '5px' }}
+              >
+                <Shuffle className="w-3 h-3 shrink-0" />
+                <span>다른 코스</span>
+              </button>
+              <button
+                type="button"
                 onClick={onStopTour}
-                title="오늘의 투어 종료"
-                className={`py-1.5 px-2.5 border text-[10px] font-medium flex items-center gap-1 ${ui.buttonIdle}`}
+                title="투어 종료"
+                className={`py-1.5 px-2 border text-[10px] font-medium flex items-center gap-1 ${ui.buttonIdle}`}
                 style={{ borderRadius: '5px' }}
               >
                 <Square className="w-3 h-3 shrink-0" />
@@ -1740,165 +1784,16 @@ export function ChallengePanel({
           ) : (
             <button
               type="button"
-              disabled={selectedTonightStops.length === 0}
-              onClick={() =>
-                onStartTonightTour(
-                  0,
-                  selectedTonightStops.map((s) => s.id)
-                )
-              }
+              disabled={playableTracks.length === 0}
+              onClick={() => onStartTonightTour(0)}
               className={`w-full py-1.5 px-2 border text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 ${ui.buttonActive}`}
               style={{ borderRadius: '5px' }}
             >
-              <Play className="w-3.5 h-3.5 shrink-0" />
-              <span>
-                오늘의 투어 시작 ({selectedTonightStops.length}/{tonightTourStops.length}개 선택)
-              </span>
+              <Shuffle className="w-3.5 h-3.5 shrink-0" />
+              <span>오늘의 투어 시작 (랜덤 선택)</span>
             </button>
           )}
         </div>
-
-        {/* Compact Preview Strip when collapsed */}
-        {!tourListExpanded && tonightTourStops.length > 0 && (
-          <div className={`text-[9px] font-mono truncate ${ui.textMuted}`}>
-            {selectedTonightStops.length > 0
-              ? selectedTonightStops
-                  .slice(0, 6)
-                  .map((s) => (s.kind === 'planet' ? s.title.split(' (')[0] : s.code))
-                  .join(' → ') + (selectedTonightStops.length > 6 ? ' …' : '')
-              : '선택된 투어 대상이 없습니다.'}
-          </div>
-        )}
-
-        {/* Expandable Selectable Tonight's Stop List */}
-        {tourListExpanded && tonightTourStops.length > 0 && (
-          <div className="space-y-1">
-            <div className="flex items-center justify-between gap-1 text-[9.5px]">
-              <span className={`font-medium ${ui.textSecondary}`}>
-                투어 대상 선택 ({selectedTonightStops.length}/{tonightTourStops.length})
-              </span>
-              <div className="flex items-center gap-1">
-                <button
-                  type="button"
-                  onClick={selectAllTonightStops}
-                  disabled={selectedTonightStops.length === tonightTourStops.length}
-                  className={`px-1.5 py-0.5 border text-[9px] disabled:opacity-40 ${ui.buttonIdle}`}
-                  style={{ borderRadius: '3px' }}
-                >
-                  전체 선택
-                </button>
-                <button
-                  type="button"
-                  onClick={clearAllTonightStops}
-                  disabled={selectedTonightStops.length === 0}
-                  className={`px-1.5 py-0.5 border text-[9px] disabled:opacity-40 ${ui.buttonIdle}`}
-                  style={{ borderRadius: '3px' }}
-                >
-                  전체 해제
-                </button>
-              </div>
-            </div>
-            <div
-              className={`border divide-y max-h-[210px] overflow-y-auto astro-scroll ${ui.border} ${ui.divider}`}
-              style={{ borderRadius: '5px' }}
-            >
-              {tonightTourStops.map((stop, idx) => {
-                const isChecked = !excludedTourStopIds.has(stop.id);
-                const activeStopIdx = isTonightTourActive
-                  ? tourState.stops.findIndex((s) => s.id === stop.id)
-                  : -1;
-                const isCurrent =
-                  isTonightTourActive &&
-                  activeStopIdx >= 0 &&
-                  tourState.currentIndex === activeStopIdx;
-                return (
-                  <div
-                    key={stop.id}
-                    className={`px-2 py-1.5 flex items-center justify-between gap-1.5 transition-colors ${
-                      isCurrent
-                        ? theme === 'white'
-                          ? 'bg-blue-100/90'
-                          : theme === 'red'
-                          ? 'bg-[#2C0606]'
-                          : 'bg-cyan-500/20'
-                        : theme === 'white'
-                        ? 'hover:bg-slate-100/80'
-                        : theme === 'red'
-                        ? 'hover:bg-[#1E0404]'
-                        : 'hover:bg-slate-800/50'
-                    }`}
-                  >
-                    <label className="flex items-center gap-1.5 min-w-0 flex-1 cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={isChecked}
-                        onChange={() => toggleTonightStopSelection(stop.id)}
-                        className="w-3.5 h-3.5 shrink-0 cursor-pointer accent-cyan-400"
-                        aria-label={`${stop.title} 투어 포함`}
-                      />
-                      <div className={`min-w-0 flex-1 ${isChecked ? '' : 'opacity-45'}`}>
-                        <div className="flex items-center gap-1 min-w-0">
-                          <span
-                            className={`text-[9px] font-mono font-bold shrink-0 ${
-                              isCurrent ? ui.accentText : ui.textMuted
-                            }`}
-                          >
-                            {String(idx + 1).padStart(2, '0')}
-                          </span>
-                          <span
-                            className={`text-[9.5px] font-mono font-semibold shrink-0 ${ui.accentText}`}
-                          >
-                            {stop.code}
-                          </span>
-                          <span className={`text-[10px] font-medium truncate ${ui.textPrimary}`}>
-                            {stop.title}
-                          </span>
-                        </div>
-                        <div
-                          className={`text-[8.5px] font-mono tabular-nums truncate ${ui.textMuted}`}
-                        >
-                          고도 {stop.altDeg.toFixed(0)}°({stop.compass}) · 자동 화각{' '}
-                          {formatFovLabel(stop.recommendedFovDeg)}
-                        </div>
-                      </div>
-                    </label>
-                    <button
-                      type="button"
-                      title={`${stop.title} 위치로 바로 이동 / 투어 시작`}
-                      onClick={() => {
-                        if (isTonightTourActive && activeStopIdx >= 0) {
-                          onJumpTourStop(activeStopIdx);
-                        } else {
-                          const targetIds = isChecked
-                            ? selectedTonightStops.map((s) => s.id)
-                            : [...selectedTonightStops.map((s) => s.id), stop.id];
-                          if (!isChecked) {
-                            setExcludedTourStopIds((prev) => {
-                              const next = new Set(prev);
-                              next.delete(stop.id);
-                              return next;
-                            });
-                          }
-                          const orderedIds = tonightTourStops
-                            .filter((s) => targetIds.includes(s.id))
-                            .map((s) => s.id);
-                          const startIdx = Math.max(0, orderedIds.indexOf(stop.id));
-                          onStartTonightTour(startIdx, orderedIds);
-                        }
-                      }}
-                      className={`p-1 border shrink-0 transition-colors ${
-                        isCurrent ? ui.buttonActive : ui.buttonIdle
-                      }`}
-                      style={{ borderRadius: '4px' }}
-                    >
-                      <Play className="w-2.5 h-2.5 shrink-0" />
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
       </div>
 
       {renderChallengeSettings()}
@@ -1990,7 +1885,7 @@ export function ChallengePanel({
 
       {/* Track Cards */}
       <div className="space-y-2">
-        {tracks.map((track) => {
+        {tracks.map((track, trackIdx) => {
           const total = track.checkpoints.length;
           const done = track.checkpoints.filter((c) => c.observed).length;
           const pct = total > 0 ? Math.round((done / total) * 100) : 0;
@@ -2000,6 +1895,32 @@ export function ChallengePanel({
           return (
             <div
               key={track.id}
+              draggable={tracks.length > 1}
+              onDragStart={(e) => {
+                setDragTrackId(track.id);
+                e.dataTransfer.effectAllowed = 'move';
+                e.dataTransfer.setData('text/plain', track.id);
+              }}
+              onDragOver={(e) => {
+                if (!dragTrackId || dragTrackId === track.id) return;
+                e.preventDefault();
+                setDragOverTrackId(track.id);
+              }}
+              onDragLeave={() => {
+                if (dragOverTrackId === track.id) setDragOverTrackId(null);
+              }}
+              onDrop={(e) => {
+                e.preventDefault();
+                if (dragTrackId && dragTrackId !== track.id) {
+                  onReorderTracks(dragTrackId, track.id);
+                }
+                setDragTrackId(null);
+                setDragOverTrackId(null);
+              }}
+              onDragEnd={() => {
+                setDragTrackId(null);
+                setDragOverTrackId(null);
+              }}
               className={`border p-2 space-y-1.5 transition-colors ${
                 track.activeOnChart
                   ? theme === 'white'
@@ -2012,10 +1933,34 @@ export function ChallengePanel({
                   : theme === 'red'
                   ? 'border-[#731834] bg-[#1B040D] hover:bg-[#240611]'
                   : 'border-violet-500/30 bg-violet-500/10 hover:bg-violet-500/15'
-              }`}
+              } ${dragOverTrackId === track.id ? 'ring-1 ring-cyan-400' : ''}`}
               style={{ borderRadius: '6px' }}
             >
-              <div className="flex items-start justify-between gap-1.5">
+              <div className="flex items-start justify-between gap-1">
+                {tracks.length > 1 && (
+                  <div className="flex flex-col shrink-0 -ml-0.5 mt-0.5">
+                    <button
+                      type="button"
+                      disabled={trackIdx === 0}
+                      onClick={() => onReorderTracks(track.id, tracks[trackIdx - 1].id)}
+                      title="위로 이동"
+                      aria-label={`${track.title} 위로 이동`}
+                      className={`p-0.5 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                    >
+                      <ChevronUp className="w-2.5 h-2.5" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={trackIdx === tracks.length - 1}
+                      onClick={() => onReorderTracks(track.id, tracks[trackIdx + 1].id)}
+                      title="아래로 이동"
+                      aria-label={`${track.title} 아래로 이동`}
+                      className={`p-0.5 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                    >
+                      <ChevronDown className="w-2.5 h-2.5" />
+                    </button>
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -2050,7 +1995,7 @@ export function ChallengePanel({
                   <button
                     type="button"
                     onClick={() => onToggleTrackOnChart(track.id)}
-                    title={track.activeOnChart ? '성도 오버레이 끄기' : '성도 위에 점선/황금선 노선 표시'}
+                    title={track.activeOnChart ? '성도 오버레이 끄기' : '성도 위에 점선/황금선 노선 표시 (단일 선택)'}
                     className={`px-1.5 py-0.5 border text-[9.5px] font-medium flex items-center gap-0.5 ${
                       track.activeOnChart ? ui.buttonActive : ui.buttonIdle
                     }`}

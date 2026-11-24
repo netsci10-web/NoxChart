@@ -8,6 +8,8 @@ import {
   Eye,
   Image,
   Layers,
+  LayoutGrid,
+  Link2,
   Map as MapIcon,
   MapPin,
   RotateCcw,
@@ -19,6 +21,8 @@ import {
 } from 'lucide-react';
 import { CatalogSnapshot, searchHipparcosCatalog } from '../data/catalogLoader';
 import {
+  getSmartTelescopeMosaicMaxScale,
+  isSmartTelescopeMosaicSupported,
   isSmartTelescopeRotatable,
   normalizeTelescopeOpticalType,
   SMART_TELESCOPE_PRESETS,
@@ -258,6 +262,21 @@ export function ControlSidebar({
       : null;
     return activeCam?.isSmartTelescope ? 'smart' : 'combo';
   });
+  const [presetMosaicOverrides, setPresetMosaicOverrides] = useState<Record<string, boolean>>(() => {
+    try {
+      const raw = localStorage.getItem('noxchart_smart_mosaic_presets_v1');
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          return parsed as Record<string, boolean>;
+        }
+      }
+    } catch {
+      // Ignore storage read failure
+    }
+    return {};
+  });
+  const [mosaicScaleLinked, setMosaicScaleLinked] = useState(true);
   const [query, setQuery] = useState('');
   const [remoteHipHits, setRemoteHipHits] = useState<Star[]>([]);
   const [activeConAbbr, setActiveConAbbr] = useState<string | null>(null);
@@ -278,6 +297,17 @@ export function ControlSidebar({
       // Ignore storage write failure
     }
   }, [openSections]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        'noxchart_smart_mosaic_presets_v1',
+        JSON.stringify(presetMosaicOverrides)
+      );
+    } catch {
+      // Ignore storage write failure
+    }
+  }, [presetMosaicOverrides]);
 
   // Live full-sky Hipparcos (118,216 stars) lookup when user searches a HIP number
   useEffect(() => {
@@ -3361,8 +3391,14 @@ export function ControlSidebar({
                       aria-hidden="true"
                     />
                     <span className={`truncate tracking-[-0.05em] ${ui.textSecondary}`}>
-                      촬영 센서 화각 프레임 ({optics.sensorWidthDeg.toFixed(2)}°×
-                      {optics.sensorHeightDeg.toFixed(2)}°)
+                      {(() => {
+                        const mOn = Boolean(optics.sensorMosaicSupported);
+                        const sw = mOn ? Math.max(1, optics.sensorMosaicScaleW ?? 1) : 1;
+                        const sh = mOn ? Math.max(1, optics.sensorMosaicScaleH ?? 1) : 1;
+                        const ew = optics.sensorWidthDeg * sw;
+                        const eh = optics.sensorHeightDeg * sh;
+                        return `촬영 센서 화각 프레임 (${ew.toFixed(2)}°×${eh.toFixed(2)}°)`;
+                      })()}
                     </span>
                   </span>
                   <input
@@ -3482,715 +3518,6 @@ export function ControlSidebar({
                 onImportLocker={onImportEquipmentLocker}
               />
             </div>
-
-            {/* Astrophotography Sensor Frame (내 장비 조합 + 스마트망원경 바로 적용) */}
-            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
-              <button
-                type="button"
-                onClick={() => toggleSection('optics_sensor')}
-                aria-expanded={isSectionOpen('optics_sensor')}
-                className="w-full flex items-center justify-between gap-1.5 text-left hover:opacity-80 transition-opacity cursor-pointer"
-              >
-                <span
-                  className={`flex items-center gap-1 min-w-0 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
-                >
-                  <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                      isSectionOpen('optics_sensor') ? '' : '-rotate-90'
-                    }`}
-                  />
-                  <span>촬영 센서 화각 프레임</span>
-                </span>
-                <span className={`font-mono text-[9.5px] tabular-nums shrink-0 ${ui.textMuted}`}>
-                  {optics.sensorWidthDeg.toFixed(2)}°×{optics.sensorHeightDeg.toFixed(2)}°
-                </span>
-              </button>
-
-              {isSectionOpen('optics_sensor') && (
-              <div className="space-y-2">
-
-              {/* 2-Mode Switcher: 장비 조합 vs 스마트망원경 바로 적용 */}
-              <div
-                className={`grid grid-cols-2 gap-0.5 p-0.5 rounded-md border ${
-                  theme === 'white'
-                    ? 'bg-slate-100 border-slate-300'
-                    : theme === 'red'
-                    ? 'bg-[#120101] border-[#420C0C]'
-                    : 'bg-[#0B1220] border-[#25334D]'
-                }`}
-              >
-                <button
-                  type="button"
-                  onClick={() => setSensorFrameMode('combo')}
-                  className={`py-1 px-1 rounded text-[10px] font-semibold tracking-[-0.06em] whitespace-nowrap transition-colors ${
-                    sensorFrameMode === 'combo' ? ui.buttonActive : `${ui.textMuted} hover:opacity-100`
-                  }`}
-                >
-                  장비 조합
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSensorFrameMode('smart')}
-                  className={`py-1 px-1 rounded text-[10px] font-semibold tracking-[-0.06em] whitespace-nowrap transition-colors ${
-                    sensorFrameMode === 'smart' ? ui.buttonActive : `${ui.textMuted} hover:opacity-100`
-                  }`}
-                >
-                  스마트망원경
-                </button>
-              </div>
-
-              {sensorFrameMode === 'combo' ? (
-                (() => {
-                  const scopes = equipmentLocker.items.filter(
-                    (it) => it.category === 'telescope'
-                  );
-                  const barlows = equipmentLocker.items.filter(
-                    (it) => it.category === 'barlow'
-                  );
-                  const cameras = equipmentLocker.items.filter(
-                    (it) => it.category === 'camera'
-                  );
-                  const activeScope = scopes.find(
-                    (s) => s.id === equipmentLocker.activeIds.telescope
-                  );
-                  const activeBarlow = barlows.find(
-                    (b) => b.id === equipmentLocker.activeIds.barlow
-                  );
-                  const activeCam = cameras.find(
-                    (c) => c.id === equipmentLocker.activeIds.camera
-                  );
-                  const isSmartCam = Boolean(
-                    activeCam?.isSmartTelescope && activeCam.focalLengthMm
-                  );
-                  const factor =
-                    activeBarlow?.factor && activeBarlow.factor > 0
-                      ? activeBarlow.factor
-                      : 1;
-                  const effFl = isSmartCam
-                    ? activeCam!.focalLengthMm!
-                    : activeScope?.focalLengthMm
-                    ? activeScope.focalLengthMm * factor
-                    : null;
-                  const fovW =
-                    effFl && activeCam?.sensorWidthMm
-                      ? 2 * Math.atan(activeCam.sensorWidthMm / (2 * effFl)) * RAD2DEG
-                      : null;
-                  const fovH =
-                    effFl && activeCam?.sensorHeightMm
-                      ? 2 * Math.atan(activeCam.sensorHeightMm / (2 * effFl)) * RAD2DEG
-                      : null;
-                  const pixelScale =
-                    effFl && activeCam?.pixelSizeUm
-                      ? (activeCam.pixelSizeUm / effFl) * 206.265
-                      : null;
-
-                  return (
-                    <div className="space-y-2">
-                      <div>
-                        <label
-                          className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
-                        >
-                          카메라 / 스마트망원경 선택
-                        </label>
-                        <select
-                          value={equipmentLocker.activeIds.camera ?? ''}
-                          onChange={(e) =>
-                            onSelectActiveEquipment('camera', e.target.value || null)
-                          }
-                          className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
-                          style={{ borderRadius: '5px' }}
-                        >
-                          <option value="">카메라 선택 안함</option>
-                          {cameras.map((cam) => (
-                            <option key={cam.id} value={cam.id}>
-                              {cam.isSmartTelescope ? `[스마트] ${cam.name}` : cam.name}
-                            </option>
-                          ))}
-                        </select>
-                      </div>
-
-                      {!isSmartCam && (
-                        <>
-                          <div>
-                            <label
-                              className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
-                            >
-                              경통 선택
-                            </label>
-                            <select
-                              value={equipmentLocker.activeIds.telescope ?? ''}
-                              onChange={(e) =>
-                                onSelectActiveEquipment('telescope', e.target.value || null)
-                              }
-                              className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
-                              style={{ borderRadius: '5px' }}
-                            >
-                              <option value="">경통 선택 안함</option>
-                              {scopes.map((sc) => (
-                                <option key={sc.id} value={sc.id}>
-                                  {sc.name}
-                                  {sc.focalLengthMm ? ` (${sc.focalLengthMm}mm)` : ''}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-
-                          <div>
-                            <label
-                              className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
-                            >
-                              리듀서 / 바로우
-                            </label>
-                            <select
-                              value={equipmentLocker.activeIds.barlow ?? ''}
-                              onChange={(e) =>
-                                onSelectActiveEquipment('barlow', e.target.value || null)
-                              }
-                              className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
-                              style={{ borderRadius: '5px' }}
-                            >
-                              <option value="">사용 안함 (1×)</option>
-                              {barlows.map((b) => (
-                                <option key={b.id} value={b.id}>
-                                  {b.name}
-                                  {b.factor ? ` (${b.factor}×)` : ''}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        </>
-                      )}
-
-                      {effFl && fovW && fovH ? (
-                        <div
-                          className={`rounded-md border px-2.5 py-2 space-y-1 text-[10.5px] ${cardIdleCls}`}
-                        >
-                          <div className="flex items-center justify-between">
-                            <span className={ui.textMuted}>
-                              {isSmartCam ? '내장 초점거리 :' : '유효 초점거리 :'}
-                            </span>
-                            <span className={`font-mono font-semibold tabular-nums ${ui.textPrimary}`}>
-                              {Math.round(effFl)}mm
-                              {!isSmartCam && factor !== 1 ? ` (${factor}×)` : ''}
-                            </span>
-                          </div>
-                          <div className="flex items-center justify-between">
-                            <span className={ui.textMuted}>센서 화각 :</span>
-                            <span className={`font-mono font-bold tabular-nums ${ui.accentText}`}>
-                              {fovW.toFixed(2)}° × {fovH.toFixed(2)}°
-                            </span>
-                          </div>
-                          {pixelScale && (
-                            <div className="flex items-center justify-between">
-                              <span className={ui.textMuted}>픽셀 스케일 :</span>
-                              <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
-                                {pixelScale.toFixed(2)}″/px
-                              </span>
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <div
-                          className={`px-2 py-2 border rounded text-[10px] leading-snug ${cardIdleCls} ${ui.textMuted}`}
-                        >
-                          {cameras.length === 0
-                            ? '위 내 장비함의 카메라 탭에서 카메라 또는 스마트망원경을 등록해 주세요.'
-                            : '카메라와 경통을 선택하면 화각 프레임이 자동 계산되어 성도에 표시됩니다.'}
-                        </div>
-                      )}
-                    </div>
-                  );
-                })()
-              ) : (
-                (() => {
-                  const mySmartScopes = equipmentLocker.items.filter(
-                    (it) =>
-                      it.category === 'camera' &&
-                      it.isSmartTelescope &&
-                      it.focalLengthMm &&
-                      it.sensorWidthMm &&
-                      it.sensorHeightMm
-                  );
-                  return (
-                    <div className="space-y-1.5">
-                      {mySmartScopes.length > 0 && (
-                        <div className="space-y-1">
-                          <div className={`text-[9.5px] font-semibold ${ui.textMuted}`}>
-                            내 장비함 등록 스마트망원경
-                          </div>
-                          {mySmartScopes.map((sc) => {
-                            const w = Number(
-                              (
-                                2 *
-                                Math.atan(sc.sensorWidthMm! / (2 * sc.focalLengthMm!)) *
-                                RAD2DEG
-                              ).toFixed(2)
-                            );
-                            const h = Number(
-                              (
-                                2 *
-                                Math.atan(sc.sensorHeightMm! / (2 * sc.focalLengthMm!)) *
-                                RAD2DEG
-                              ).toFixed(2)
-                            );
-                            const isApplied =
-                              optics.showSensorBox &&
-                              Math.abs(optics.sensorWidthDeg - w) < 0.02 &&
-                              Math.abs(optics.sensorHeightDeg - h) < 0.02;
-                            const canRot = isSmartTelescopeRotatable(sc);
-                            return (
-                              <button
-                                key={sc.id}
-                                type="button"
-                                onClick={() => onSelectActiveEquipment('camera', sc.id)}
-                                className={`w-full text-left px-2 py-1.5 border flex items-center justify-between gap-1 text-[10px] tracking-[-0.05em] ${
-                                  isApplied ? ui.buttonActive : ui.buttonIdle
-                                }`}
-                                style={{ borderRadius: '4px' }}
-                              >
-                                <span className="truncate font-medium">
-                                  {sc.name}
-                                  {canRot ? ' · 회전' : ''}
-                                </span>
-                                <span className="font-mono tabular-nums whitespace-nowrap shrink-0">
-                                  {w.toFixed(2)}°×{h.toFixed(2)}°
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      )}
-
-                      <div className="space-y-1">
-                        <div className={`text-[9.5px] font-semibold ${ui.textMuted}`}>
-                          주요 스마트망원경 바로 적용
-                        </div>
-                        <div className="space-y-1 max-h-48 overflow-y-auto astro-scroll pr-0.5">
-                          {SMART_TELESCOPE_PRESETS.map((sp) => {
-                            const w = Number(
-                              (
-                                2 *
-                                Math.atan(
-                                  (sp.sensorWidthMm ?? 5.6) / (2 * (sp.focalLengthMm ?? 150))
-                                ) *
-                                RAD2DEG
-                              ).toFixed(2)
-                            );
-                            const h = Number(
-                              (
-                                2 *
-                                Math.atan(
-                                  (sp.sensorHeightMm ?? 3.1) / (2 * (sp.focalLengthMm ?? 150))
-                                ) *
-                                RAD2DEG
-                              ).toFixed(2)
-                            );
-                            const canRot = isSmartTelescopeRotatable(sp);
-                            const isApplied =
-                              optics.showSensorBox &&
-                              Math.abs(optics.sensorWidthDeg - w) < 0.02 &&
-                              Math.abs(optics.sensorHeightDeg - h) < 0.02 &&
-                              (!optics.sensorEquipmentLabel ||
-                                optics.sensorEquipmentLabel === sp.name);
-                            return (
-                              <button
-                                key={sp.id}
-                                type="button"
-                                onClick={() =>
-                                  onChangeOptics((p) => ({
-                                    ...p,
-                                    showSensorBox: true,
-                                    sensorWidthDeg: w,
-                                    sensorHeightDeg: h,
-                                    sensorEquipmentLabel: sp.name,
-                                    sensorRotationLocked: !canRot,
-                                    sensorRotationDeg: canRot ? p.sensorRotationDeg : 0,
-                                  }))
-                                }
-                                className={`w-full text-left px-2 py-1.5 border flex items-center justify-between gap-1 text-[10px] tracking-[-0.05em] ${
-                                  isApplied ? ui.buttonActive : ui.buttonIdle
-                                }`}
-                                style={{ borderRadius: '4px' }}
-                              >
-                                <span className="truncate">
-                                  {sp.name} · {sp.focalLengthMm}mm
-                                  {canRot ? ' · 회전' : ''}
-                                </span>
-                                <span className="font-mono tabular-nums whitespace-nowrap shrink-0">
-                                  {w.toFixed(2)}°×{h.toFixed(2)}°
-                                </span>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })()
-              )}
-
-              {/* 촬영 센서 화각 프레임 회전 (스마트망원경 중 Draco 등 회전 가능 기종 제외 시 회전 잠금) */}
-              {(() => {
-                const activeCam = equipmentLocker.activeIds.camera
-                  ? equipmentLocker.items.find(
-                      (it) => it.id === equipmentLocker.activeIds.camera && it.category === 'camera'
-                    )
-                  : undefined;
-                const lockedByActiveCam =
-                  Boolean(activeCam?.isSmartTelescope) &&
-                  !isSmartTelescopeRotatable(activeCam) &&
-                  (!optics.sensorEquipmentLabel ||
-                    optics.sensorEquipmentLabel === activeCam?.name);
-                const sensorCanRotate = !optics.sensorRotationLocked && !lockedByActiveCam;
-                const effectiveRot = sensorCanRotate ? optics.sensorRotationDeg ?? 0 : 0;
-                const canInteract = optics.showSensorBox && sensorCanRotate;
-
-                return (
-                  <div className={`pt-2.5 mt-1 border-t ${ui.divider} space-y-1.5`}>
-                    <div className="flex items-center justify-between gap-1 text-[10.5px]">
-                      <span
-                        className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
-                      >
-                        촬영 센서 화각 회전 (지평)
-                      </span>
-                      <div className="flex items-center gap-1.5 shrink-0">
-                        {!sensorCanRotate ? (
-                          <span
-                            className={`text-[9.5px] font-medium tracking-[-0.05em] whitespace-nowrap ${ui.textMuted}`}
-                          >
-                            고정 (0°)
-                          </span>
-                        ) : optics.showSensorBox ? (
-                          <>
-                            {effectiveRot !== 0 && (
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  onChangeOptics((p) => ({ ...p, sensorRotationDeg: 0 }))
-                                }
-                                className={`text-[9.5px] tracking-[-0.05em] opacity-80 hover:opacity-100 ${ui.accentText}`}
-                              >
-                                0° 초기화
-                              </button>
-                            )}
-                            <span
-                              className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}
-                            >
-                              {Math.round(effectiveRot)}°
-                            </span>
-                          </>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onChangeOptics((p) => ({ ...p, showSensorBox: true }))
-                            }
-                            className={`text-[9.5px] tracking-[-0.05em] underline underline-offset-2 ${ui.accentText}`}
-                          >
-                            화각 켜기
-                          </button>
-                        )}
-                      </div>
-                    </div>
-
-                    <input
-                      type="range"
-                      min={0}
-                      max={360}
-                      step={1}
-                      disabled={!canInteract}
-                      value={effectiveRot}
-                      onChange={(e) =>
-                        onChangeOptics((p) => ({
-                          ...p,
-                          sensorRotationDeg: Number(e.target.value),
-                        }))
-                      }
-                      aria-label="촬영 센서 화각 프레임 회전 각도"
-                      className={`w-full h-1.5 ${
-                        theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
-                      } ${canInteract ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'}`}
-                    />
-
-                    <div className="grid grid-cols-4 gap-1">
-                      {[0, 90, 180, 270].map((deg) => (
-                        <button
-                          key={deg}
-                          type="button"
-                          disabled={!canInteract}
-                          onClick={() =>
-                            onChangeOptics((p) => ({ ...p, sensorRotationDeg: deg }))
-                          }
-                          className={`py-1 border text-[10px] font-mono tabular-nums transition-colors ${
-                            canInteract && Math.round(effectiveRot) % 360 === deg
-                              ? ui.buttonActive
-                              : ui.buttonIdle
-                          } ${!canInteract ? 'opacity-45 cursor-not-allowed' : ''}`}
-                          style={{ borderRadius: '4px' }}
-                        >
-                          {deg}°
-                        </button>
-                      ))}
-                    </div>
-
-                    {!sensorCanRotate ? (
-                      <p
-                        className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
-                      >
-                        지상 지평선 기준으로 시간에 따라 시야가 회전하며, 현재 스마트 망원경은
-                        로테이터를 지원하지 않아 지평 0°로 고정됩니다. (DWARFLAB Draco 등 회전 지원 모델은 회전 가능)
-                      </p>
-                    ) : (
-                      <p
-                        className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
-                      >
-                        지상(지평좌표계) 기준으로 시간에 따라 프레임 각도가 회전합니다.
-                      </p>
-                    )}
-                  </div>
-                );
-              })()}
-              </div>
-              )}
-            </div>
-
-            {/* Sensor FOV PNG Footer Caption Settings */}
-            {(() => {
-              const captionCfg: SensorExportCaptionConfig = {
-                ...DEFAULT_SENSOR_EXPORT_CAPTION,
-                ...(optics.sensorExportCaption ?? {}),
-              };
-              const updateCaption = (patch: Partial<SensorExportCaptionConfig>) => {
-                onChangeOptics((prev) => ({
-                  ...prev,
-                  sensorExportCaption: {
-                    ...DEFAULT_SENSOR_EXPORT_CAPTION,
-                    ...(prev.sensorExportCaption ?? {}),
-                    ...patch,
-                  },
-                }));
-              };
-              const toggleItems: {
-                key: Exclude<keyof SensorExportCaptionConfig, 'customNote'>;
-                label: string;
-              }[] = [
-                { key: 'showTargetName', label: '중심 천체명' },
-                { key: 'showCoordinates', label: '적경·적위 좌표' },
-                { key: 'showDateTime', label: '관측 일시' },
-                { key: 'showLocation', label: '관측지 이름' },
-                { key: 'showConstellation', label: '별자리명' },
-                { key: 'showEquipmentFov', label: '장비·센서 화각' },
-                { key: 'showRotation', label: '좌표계·회전각' },
-                { key: 'showNoxChartBrand', label: 'NoxChart 표기' },
-              ];
-              const enabledCount = toggleItems.filter((item) => captionCfg[item.key]).length;
-              const isModified =
-                toggleItems.some(
-                  (item) => captionCfg[item.key] !== DEFAULT_SENSOR_EXPORT_CAPTION[item.key]
-                ) || captionCfg.customNote.length > 0;
-
-              // Build compact live preview matching exportSensorFovPng layout
-              const previewEquip =
-                optics.sensorEquipmentLabel && !optics.sensorEquipmentLabel.startsWith('FOV_')
-                  ? optics.sensorEquipmentLabel
-                  : '촬영 센서';
-              const previewFov = `${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°`;
-              const previewRow1Left = captionCfg.showTargetName
-                ? captionCfg.showCoordinates
-                  ? 'M42 오리온 대성운 (RA 05h 35m, Dec -05° 23′)'
-                  : 'M42 오리온 대성운'
-                : captionCfg.showCoordinates
-                ? 'RA 05h 35m · Dec -05° 23′'
-                : '';
-              const previewDate = new Date(observer.timestampMs);
-              const previewDateStr = `${previewDate.getFullYear()}-${String(
-                previewDate.getMonth() + 1
-              ).padStart(2, '0')}-${String(previewDate.getDate()).padStart(2, '0')} ${String(
-                previewDate.getHours()
-              ).padStart(2, '0')}:${String(previewDate.getMinutes()).padStart(2, '0')}`;
-              const previewRow1Right = [
-                captionCfg.showLocation && observer.name.trim() ? observer.name.trim() : '',
-                captionCfg.showDateTime ? previewDateStr : '',
-              ]
-                .filter(Boolean)
-                .join(' · ');
-              const previewRow2Left = [
-                captionCfg.showConstellation ? '오리온자리 (Ori)' : '',
-                captionCfg.showEquipmentFov ? `${previewEquip} (${previewFov})` : '',
-                captionCfg.customNote.trim(),
-              ]
-                .filter(Boolean)
-                .join(' / ');
-              const normRot = optics.sensorRotationLocked
-                ? 0
-                : ((optics.sensorRotationDeg % 360) + 360) % 360;
-              const previewRot = captionCfg.showRotation
-                ? normRot > 0.05 && normRot < 359.95
-                  ? `J2000 · 지평 회전 ${Math.round(normRot)}°`
-                  : 'J2000 적도좌표'
-                : '';
-              const hasPreviewRow1 = Boolean(previewRow1Left || previewRow1Right);
-              const hasPreviewRow2 = Boolean(
-                previewRow2Left || previewRot || captionCfg.showNoxChartBrand
-              );
-
-              return (
-                <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
-                  <div className="flex items-center justify-between gap-1.5">
-                    <button
-                      type="button"
-                      onClick={() => toggleSection('optics_sensor_caption')}
-                      aria-expanded={isSectionOpen('optics_sensor_caption')}
-                      className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
-                    >
-                      <ChevronDown
-                        className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
-                          isSectionOpen('optics_sensor_caption') ? '' : '-rotate-90'
-                        }`}
-                      />
-                      <Image className="w-3.5 h-3.5 shrink-0" />
-                      <span>촬영센서 PNG 하단 설명</span>
-                    </button>
-                    <div className="flex items-center gap-1.5 shrink-0">
-                      {isModified && (
-                        <button
-                          type="button"
-                          onClick={() =>
-                            updateCaption({ ...DEFAULT_SENSOR_EXPORT_CAPTION })
-                          }
-                          title="하단 설명 항목을 기본값으로 되돌립니다"
-                          className={`inline-flex items-center gap-0.5 text-[9.5px] tracking-[-0.04em] underline underline-offset-2 ${ui.accentText} hover:opacity-80`}
-                        >
-                          <RotateCcw className="w-2.5 h-2.5" />
-                          <span>기본값</span>
-                        </button>
-                      )}
-                      <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
-                        {enabledCount}/{toggleItems.length}
-                      </span>
-                    </div>
-                  </div>
-
-                  {isSectionOpen('optics_sensor_caption') && (
-                    <div className="space-y-2">
-                      <p
-                        className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
-                      >
-                        촬영센서 화각 PNG 저장 시 사진 하단 여백에 포함할 설명 항목을 선택합니다.
-                      </p>
-
-                      {/* 2-Column Checkbox Grid */}
-                      <div className="grid grid-cols-2 gap-x-2 gap-y-1">
-                        {toggleItems.map((item) => (
-                          <label
-                            key={item.key}
-                            className={`flex items-center justify-between gap-1.5 px-2 py-1 border rounded text-[10.5px] cursor-pointer select-none transition-colors ${
-                              captionCfg[item.key] ? ui.panelMuted : ui.panel
-                            } ${ui.border}`}
-                          >
-                            <span
-                              className={`truncate tracking-[-0.04em] ${
-                                captionCfg[item.key] ? ui.textPrimary : ui.textMuted
-                              }`}
-                            >
-                              {item.label}
-                            </span>
-                            <input
-                              type="checkbox"
-                              checked={captionCfg[item.key]}
-                              onChange={(e) =>
-                                updateCaption({ [item.key]: e.target.checked })
-                              }
-                              className={`w-3.5 h-3.5 shrink-0 cursor-pointer ${
-                                theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
-                              }`}
-                            />
-                          </label>
-                        ))}
-                      </div>
-
-                      {/* Custom Note / Photographer Input */}
-                      <div className="space-y-1">
-                        <div className="flex items-center justify-between gap-1">
-                          <label
-                            htmlFor="sensor-caption-custom-note"
-                            className={`text-[10px] font-medium tracking-[-0.04em] ${ui.textSecondary}`}
-                          >
-                            추가 메모 · 촬영자 표기
-                          </label>
-                          {captionCfg.customNote.length > 0 && (
-                            <button
-                              type="button"
-                              onClick={() => updateCaption({ customNote: '' })}
-                              className={`text-[9.5px] tracking-[-0.04em] underline underline-offset-2 ${ui.textMuted} hover:opacity-80`}
-                            >
-                              지우기
-                            </button>
-                          )}
-                        </div>
-                        <input
-                          id="sensor-caption-custom-note"
-                          type="text"
-                          maxLength={80}
-                          value={captionCfg.customNote}
-                          onChange={(e) => updateCaption({ customNote: e.target.value })}
-                          placeholder="예: 촬영자 홍길동 · 듀얼밴드 필터"
-                          className={`w-full px-2 py-1.5 text-[10.5px] border rounded focus:outline-none ${ui.input}`}
-                        />
-                      </div>
-
-                      {/* Live Mini Preview of PNG Footer Bar */}
-                      <div className="space-y-1">
-                        <div className={`text-[9.5px] font-medium tracking-[-0.04em] ${ui.textMuted}`}>
-                          하단 설명 미리보기
-                        </div>
-                        {hasPreviewRow1 || hasPreviewRow2 ? (
-                          <div className="rounded border border-slate-300 bg-white px-2 py-1.5 text-slate-900 space-y-0.5 shadow-inner">
-                            {hasPreviewRow1 && (
-                              <div className="flex items-baseline justify-between gap-2 text-[9px] leading-tight">
-                                <span className="font-bold text-slate-900 truncate">
-                                  {previewRow1Left}
-                                </span>
-                                {previewRow1Right && (
-                                  <span className="font-mono text-[8.5px] text-slate-600 shrink-0 truncate max-w-[48%]">
-                                    {previewRow1Right}
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                            {hasPreviewRow2 && (
-                              <div className="flex items-baseline justify-between gap-2 text-[8.5px] leading-tight">
-                                <span className="text-slate-600 truncate">
-                                  {previewRow2Left}
-                                </span>
-                                {(previewRot || captionCfg.showNoxChartBrand) && (
-                                  <span className="shrink-0 whitespace-nowrap text-[8px] text-slate-500">
-                                    {previewRot}
-                                    {previewRot && captionCfg.showNoxChartBrand ? ' · ' : ''}
-                                    {captionCfg.showNoxChartBrand && (
-                                      <>
-                                        <span>Created with </span>
-                                        <span className="font-bold text-slate-900">NoxChart</span>
-                                      </>
-                                    )}
-                                  </span>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        ) : (
-                          <div
-                            className={`rounded border border-dashed px-2 py-1.5 text-center text-[9.5px] ${ui.border} ${ui.textMuted}`}
-                          >
-                            하단 설명 없음 (천체 사진만 저장)
-                          </div>
-                        )}
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })()}
 
             {/* Eyepiece TFOV Settings (내 장비 조합 / 시야각 직접 입력 / 수치 계산) */}
             <div className={`pt-3 border-t ${ui.divider} space-y-2.5`}>
@@ -4685,6 +4012,1045 @@ export function ControlSidebar({
               </div>
               )}
             </div>
+
+            {/* Astrophotography Sensor Frame (내 장비 조합 + 스마트망원경 바로 적용 + 모자이크 화각 + 회전) */}
+            <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+              <button
+                type="button"
+                onClick={() => toggleSection('optics_sensor')}
+                aria-expanded={isSectionOpen('optics_sensor')}
+                className="w-full flex items-center justify-between gap-1.5 text-left hover:opacity-80 transition-opacity cursor-pointer"
+              >
+                <span
+                  className={`flex items-center gap-1 min-w-0 font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                      isSectionOpen('optics_sensor') ? '' : '-rotate-90'
+                    }`}
+                  />
+                  <span>촬영 센서 화각 프레임</span>
+                </span>
+                <span className={`font-mono text-[9.5px] tabular-nums shrink-0 ${ui.textMuted}`}>
+                  {(() => {
+                    const mOn = Boolean(optics.sensorMosaicSupported);
+                    const sw = mOn ? Math.max(1, optics.sensorMosaicScaleW ?? 1) : 1;
+                    const sh = mOn ? Math.max(1, optics.sensorMosaicScaleH ?? 1) : 1;
+                    return `${(optics.sensorWidthDeg * sw).toFixed(2)}°×${(
+                      optics.sensorHeightDeg * sh
+                    ).toFixed(2)}°`;
+                  })()}
+                </span>
+              </button>
+
+              {isSectionOpen('optics_sensor') && (
+              <div className="space-y-2">
+
+              {/* 2-Mode Switcher: 장비 조합 vs 스마트망원경 바로 적용 */}
+              <div
+                className={`grid grid-cols-2 gap-0.5 p-0.5 rounded-md border ${
+                  theme === 'white'
+                    ? 'bg-slate-100 border-slate-300'
+                    : theme === 'red'
+                    ? 'bg-[#120101] border-[#420C0C]'
+                    : 'bg-[#0B1220] border-[#25334D]'
+                }`}
+              >
+                <button
+                  type="button"
+                  onClick={() => setSensorFrameMode('combo')}
+                  className={`py-1 px-1 rounded text-[10px] font-semibold tracking-[-0.06em] whitespace-nowrap transition-colors ${
+                    sensorFrameMode === 'combo' ? ui.buttonActive : `${ui.textMuted} hover:opacity-100`
+                  }`}
+                >
+                  장비 조합
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSensorFrameMode('smart')}
+                  className={`py-1 px-1 rounded text-[10px] font-semibold tracking-[-0.06em] whitespace-nowrap transition-colors ${
+                    sensorFrameMode === 'smart' ? ui.buttonActive : `${ui.textMuted} hover:opacity-100`
+                  }`}
+                >
+                  스마트망원경
+                </button>
+              </div>
+
+              {sensorFrameMode === 'combo' ? (
+                (() => {
+                  const scopes = equipmentLocker.items.filter(
+                    (it) => it.category === 'telescope'
+                  );
+                  const barlows = equipmentLocker.items.filter(
+                    (it) => it.category === 'barlow'
+                  );
+                  const cameras = equipmentLocker.items.filter(
+                    (it) => it.category === 'camera'
+                  );
+                  const activeScope = scopes.find(
+                    (s) => s.id === equipmentLocker.activeIds.telescope
+                  );
+                  const activeBarlow = barlows.find(
+                    (b) => b.id === equipmentLocker.activeIds.barlow
+                  );
+                  const activeCam = cameras.find(
+                    (c) => c.id === equipmentLocker.activeIds.camera
+                  );
+                  const isSmartCam = Boolean(
+                    activeCam?.isSmartTelescope && activeCam.focalLengthMm
+                  );
+                  const factor =
+                    activeBarlow?.factor && activeBarlow.factor > 0
+                      ? activeBarlow.factor
+                      : 1;
+                  const effFl = isSmartCam
+                    ? activeCam!.focalLengthMm!
+                    : activeScope?.focalLengthMm
+                    ? activeScope.focalLengthMm * factor
+                    : null;
+                  const fovW =
+                    effFl && activeCam?.sensorWidthMm
+                      ? 2 * Math.atan(activeCam.sensorWidthMm / (2 * effFl)) * RAD2DEG
+                      : null;
+                  const fovH =
+                    effFl && activeCam?.sensorHeightMm
+                      ? 2 * Math.atan(activeCam.sensorHeightMm / (2 * effFl)) * RAD2DEG
+                      : null;
+                  const pixelScale =
+                    effFl && activeCam?.pixelSizeUm
+                      ? (activeCam.pixelSizeUm / effFl) * 206.265
+                      : null;
+
+                  return (
+                    <div className="space-y-2">
+                      <div>
+                        <label
+                          className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
+                        >
+                          카메라 / 스마트망원경 선택
+                        </label>
+                        <select
+                          value={equipmentLocker.activeIds.camera ?? ''}
+                          onChange={(e) =>
+                            onSelectActiveEquipment('camera', e.target.value || null)
+                          }
+                          className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
+                          style={{ borderRadius: '5px' }}
+                        >
+                          <option value="">카메라 선택 안함</option>
+                          {cameras.map((cam) => (
+                            <option key={cam.id} value={cam.id}>
+                              {cam.isSmartTelescope ? `[스마트] ${cam.name}` : cam.name}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      {!isSmartCam && (
+                        <>
+                          <div>
+                            <label
+                              className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
+                            >
+                              경통 선택
+                            </label>
+                            <select
+                              value={equipmentLocker.activeIds.telescope ?? ''}
+                              onChange={(e) =>
+                                onSelectActiveEquipment('telescope', e.target.value || null)
+                              }
+                              className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
+                              style={{ borderRadius: '5px' }}
+                            >
+                              <option value="">경통 선택 안함</option>
+                              {scopes.map((sc) => (
+                                <option key={sc.id} value={sc.id}>
+                                  {sc.name}
+                                  {sc.focalLengthMm ? ` (${sc.focalLengthMm}mm)` : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+
+                          <div>
+                            <label
+                              className={`block mb-0.5 text-[10px] tracking-[-0.05em] ${ui.textMuted}`}
+                            >
+                              리듀서 / 바로우
+                            </label>
+                            <select
+                              value={equipmentLocker.activeIds.barlow ?? ''}
+                              onChange={(e) =>
+                                onSelectActiveEquipment('barlow', e.target.value || null)
+                              }
+                              className={`w-full px-2 py-1.5 border text-[10.5px] ${ui.input}`}
+                              style={{ borderRadius: '5px' }}
+                            >
+                              <option value="">사용 안함 (1×)</option>
+                              {barlows.map((b) => (
+                                <option key={b.id} value={b.id}>
+                                  {b.name}
+                                  {b.factor ? ` (${b.factor}×)` : ''}
+                                </option>
+                              ))}
+                            </select>
+                          </div>
+                        </>
+                      )}
+
+                      {effFl && fovW && fovH ? (
+                        <div
+                          className={`rounded-md border px-2.5 py-2 space-y-1 text-[10.5px] ${cardIdleCls}`}
+                        >
+                          <div className="flex items-center justify-between">
+                            <span className={ui.textMuted}>
+                              {isSmartCam ? '내장 초점거리 :' : '유효 초점거리 :'}
+                            </span>
+                            <span className={`font-mono font-semibold tabular-nums ${ui.textPrimary}`}>
+                              {Math.round(effFl)}mm
+                              {!isSmartCam && factor !== 1 ? ` (${factor}×)` : ''}
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between">
+                            <span className={ui.textMuted}>센서 화각 :</span>
+                            <span className={`font-mono font-bold tabular-nums ${ui.accentText}`}>
+                              {fovW.toFixed(2)}° × {fovH.toFixed(2)}°
+                            </span>
+                          </div>
+                          {pixelScale && (
+                            <div className="flex items-center justify-between">
+                              <span className={ui.textMuted}>픽셀 스케일 :</span>
+                              <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                                {pixelScale.toFixed(2)}″/px
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <div
+                          className={`px-2 py-2 border rounded text-[10px] leading-snug ${cardIdleCls} ${ui.textMuted}`}
+                        >
+                          {cameras.length === 0
+                            ? '위 내 장비함의 카메라 탭에서 카메라 또는 스마트망원경을 등록해 주세요.'
+                            : '카메라와 경통을 선택하면 화각 프레임이 자동 계산되어 성도에 표시됩니다.'}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()
+              ) : (
+                (() => {
+                  const mySmartScopes = equipmentLocker.items.filter(
+                    (it) =>
+                      it.category === 'camera' &&
+                      it.isSmartTelescope &&
+                      it.focalLengthMm &&
+                      it.sensorWidthMm &&
+                      it.sensorHeightMm
+                  );
+                  return (
+                    <div className="space-y-1.5">
+                      {mySmartScopes.length > 0 && (
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-1">
+                            <span className={`text-[9.5px] font-semibold ${ui.textMuted}`}>
+                              내 장비함 등록 스마트망원경
+                            </span>
+                            <span className={`text-[9px] tracking-[-0.04em] ${ui.textMuted}`}>
+                              모자이크 지원
+                            </span>
+                          </div>
+                          {mySmartScopes.map((sc) => {
+                            const w = Number(
+                              (
+                                2 *
+                                Math.atan(sc.sensorWidthMm! / (2 * sc.focalLengthMm!)) *
+                                RAD2DEG
+                              ).toFixed(2)
+                            );
+                            const h = Number(
+                              (
+                                2 *
+                                Math.atan(sc.sensorHeightMm! / (2 * sc.focalLengthMm!)) *
+                                RAD2DEG
+                              ).toFixed(2)
+                            );
+                            const isApplied =
+                              optics.showSensorBox &&
+                              Math.abs(optics.sensorWidthDeg - w) < 0.02 &&
+                              Math.abs(optics.sensorHeightDeg - h) < 0.02 &&
+                              (!optics.sensorEquipmentLabel ||
+                                optics.sensorEquipmentLabel === sc.name);
+                            const canRot = isSmartTelescopeRotatable(sc);
+                            const canMosaic = isSmartTelescopeMosaicSupported(sc);
+                            const maxMosaic = getSmartTelescopeMosaicMaxScale(sc);
+                            return (
+                              <div
+                                key={sc.id}
+                                className={`w-full px-1.5 py-1 border flex items-center gap-1 text-[10px] tracking-[-0.05em] ${
+                                  isApplied ? ui.buttonActive : ui.buttonIdle
+                                }`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() => onSelectActiveEquipment('camera', sc.id)}
+                                  className="flex-1 min-w-0 text-left flex items-center justify-between gap-1 cursor-pointer"
+                                >
+                                  <span className="truncate font-medium">
+                                    {sc.name}
+                                    {canRot ? ' · 회전' : ''}
+                                  </span>
+                                  <span className="font-mono tabular-nums whitespace-nowrap shrink-0 text-[9.5px]">
+                                    {w.toFixed(2)}°×{h.toFixed(2)}°
+                                  </span>
+                                </button>
+                                <label
+                                  title={`${sc.name} 모자이크 촬영 지원 체크`}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="flex items-center gap-0.5 pl-1 border-l border-current/20 shrink-0 cursor-pointer select-none"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={canMosaic}
+                                    onChange={(e) => {
+                                      const checked = e.target.checked;
+                                      onAddOrUpdateEquipment({
+                                        ...sc,
+                                        supportsMosaic: checked,
+                                        mosaicMaxScale: sc.mosaicMaxScale ?? maxMosaic,
+                                      });
+                                      if (isApplied) {
+                                        onChangeOptics((p) => ({
+                                          ...p,
+                                          sensorMosaicSupported: checked,
+                                          sensorMosaicMaxScale: maxMosaic,
+                                          sensorMosaicScaleW: checked
+                                            ? Math.min(maxMosaic, Math.max(1.0, p.sensorMosaicScaleW ?? 1.0))
+                                            : 1.0,
+                                          sensorMosaicScaleH: checked
+                                            ? Math.min(maxMosaic, Math.max(1.0, p.sensorMosaicScaleH ?? 1.0))
+                                            : 1.0,
+                                        }));
+                                      }
+                                    }}
+                                    className="w-3 h-3 shrink-0 accent-emerald-500 cursor-pointer"
+                                  />
+                                  <span className="text-[8.5px] opacity-85 whitespace-nowrap">
+                                    모자이크
+                                  </span>
+                                </label>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      )}
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <span className={`text-[9.5px] font-semibold ${ui.textMuted}`}>
+                            주요 스마트망원경 바로 적용
+                          </span>
+                          <span className={`text-[9px] tracking-[-0.04em] ${ui.textMuted}`}>
+                            모자이크 지원
+                          </span>
+                        </div>
+                        <div className="space-y-1 max-h-48 overflow-y-auto astro-scroll pr-0.5">
+                          {SMART_TELESCOPE_PRESETS.map((sp) => {
+                            const w = Number(
+                              (
+                                2 *
+                                Math.atan(
+                                  (sp.sensorWidthMm ?? 5.6) / (2 * (sp.focalLengthMm ?? 150))
+                                ) *
+                                RAD2DEG
+                              ).toFixed(2)
+                            );
+                            const h = Number(
+                              (
+                                2 *
+                                Math.atan(
+                                  (sp.sensorHeightMm ?? 3.1) / (2 * (sp.focalLengthMm ?? 150))
+                                ) *
+                                RAD2DEG
+                              ).toFixed(2)
+                            );
+                            const canRot = isSmartTelescopeRotatable(sp);
+                            const canMosaic =
+                              typeof presetMosaicOverrides[sp.id] === 'boolean'
+                                ? presetMosaicOverrides[sp.id]
+                                : isSmartTelescopeMosaicSupported(sp);
+                            const maxMosaic = getSmartTelescopeMosaicMaxScale(sp);
+                            const isApplied =
+                              optics.showSensorBox &&
+                              Math.abs(optics.sensorWidthDeg - w) < 0.02 &&
+                              Math.abs(optics.sensorHeightDeg - h) < 0.02 &&
+                              (!optics.sensorEquipmentLabel ||
+                                optics.sensorEquipmentLabel === sp.name);
+                            return (
+                              <div
+                                key={sp.id}
+                                className={`w-full px-1.5 py-1 border flex items-center gap-1 text-[10px] tracking-[-0.05em] ${
+                                  isApplied ? ui.buttonActive : ui.buttonIdle
+                                }`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onChangeOptics((p) => ({
+                                      ...p,
+                                      showSensorBox: true,
+                                      sensorWidthDeg: w,
+                                      sensorHeightDeg: h,
+                                      sensorEquipmentLabel: sp.name,
+                                      sensorRotationLocked: !canRot,
+                                      sensorRotationDeg: canRot ? p.sensorRotationDeg : 0,
+                                      sensorMosaicSupported: canMosaic,
+                                      sensorMosaicMaxScale: maxMosaic,
+                                      sensorMosaicScaleW: canMosaic
+                                        ? Math.min(maxMosaic, Math.max(1.0, p.sensorMosaicScaleW ?? 1.0))
+                                        : 1.0,
+                                      sensorMosaicScaleH: canMosaic
+                                        ? Math.min(maxMosaic, Math.max(1.0, p.sensorMosaicScaleH ?? 1.0))
+                                        : 1.0,
+                                    }))
+                                  }
+                                  className="flex-1 min-w-0 text-left flex items-center justify-between gap-1 cursor-pointer"
+                                >
+                                  <span className="truncate">
+                                    {sp.name} · {sp.focalLengthMm}mm
+                                    {canRot ? ' · 회전' : ''}
+                                  </span>
+                                  <span className="font-mono tabular-nums whitespace-nowrap shrink-0 text-[9.5px]">
+                                    {w.toFixed(2)}°×{h.toFixed(2)}°
+                                  </span>
+                                </button>
+                                <label
+                                  title={`${sp.name} 모자이크 촬영 지원 체크`}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="flex items-center gap-0.5 pl-1 border-l border-current/20 shrink-0 cursor-pointer select-none"
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={canMosaic}
+                                    onChange={(e) => {
+                                      const checked = e.target.checked;
+                                      setPresetMosaicOverrides((prev) => ({
+                                        ...prev,
+                                        [sp.id]: checked,
+                                      }));
+                                      if (isApplied) {
+                                        onChangeOptics((p) => ({
+                                          ...p,
+                                          sensorMosaicSupported: checked,
+                                          sensorMosaicMaxScale: maxMosaic,
+                                          sensorMosaicScaleW: checked
+                                            ? Math.min(maxMosaic, Math.max(1.0, p.sensorMosaicScaleW ?? 1.0))
+                                            : 1.0,
+                                          sensorMosaicScaleH: checked
+                                            ? Math.min(maxMosaic, Math.max(1.0, p.sensorMosaicScaleH ?? 1.0))
+                                            : 1.0,
+                                        }));
+                                      }
+                                    }}
+                                    className="w-3 h-3 shrink-0 accent-emerald-500 cursor-pointer"
+                                  />
+                                  <span className="text-[8.5px] opacity-85 whitespace-nowrap">
+                                    모자이크
+                                  </span>
+                                </label>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })()
+              )}
+
+              {/* 모자이크 촬영 화각 (촬영 센서 화각 회전 위 · 모자이크 지원 스마트 망원경 선택 시 활성화) */}
+              {(() => {
+                const mosaicEnabled = Boolean(optics.sensorMosaicSupported);
+                const maxScale = Math.max(1.2, Math.min(4.0, optics.sensorMosaicMaxScale ?? 2.0));
+                const scaleW = mosaicEnabled
+                  ? Math.max(1.0, Math.min(maxScale, optics.sensorMosaicScaleW ?? 1.0))
+                  : 1.0;
+                const scaleH = mosaicEnabled
+                  ? Math.max(1.0, Math.min(maxScale, optics.sensorMosaicScaleH ?? 1.0))
+                  : 1.0;
+                const isExpanded = mosaicEnabled && (scaleW > 1.001 || scaleH > 1.001);
+                const effW = optics.sensorWidthDeg * scaleW;
+                const effH = optics.sensorHeightDeg * scaleH;
+
+                const updateMosaicScale = (nextW: number, nextH: number) => {
+                  const clampedW = Number(Math.max(1.0, Math.min(maxScale, nextW)).toFixed(1));
+                  const clampedH = Number(Math.max(1.0, Math.min(maxScale, nextH)).toFixed(1));
+                  onChangeOptics((p) => ({
+                    ...p,
+                    showSensorBox: true,
+                    sensorMosaicScaleW: clampedW,
+                    sensorMosaicScaleH: clampedH,
+                  }));
+                };
+
+                const quickMultipliers = Array.from(
+                  new Set([1.0, 1.5, Math.min(2.0, maxScale), maxScale])
+                ).sort((a, b) => a - b);
+
+                return (
+                  <div className={`pt-2.5 mt-1 border-t ${ui.divider} space-y-2`}>
+                    <div className="flex items-center justify-between gap-1 text-[10.5px]">
+                      <span
+                        className={`flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] ${
+                          mosaicEnabled ? ui.textPrimary : ui.textMuted
+                        }`}
+                      >
+                        <LayoutGrid className="w-3.5 h-3.5 shrink-0" />
+                        <span>모자이크 촬영 화각</span>
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {mosaicEnabled ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => setMosaicScaleLinked((v) => !v)}
+                              title={
+                                mosaicScaleLinked
+                                  ? '가로·세로 배율 동시 조절 중 (클릭 시 개별 조절)'
+                                  : '가로·세로 개별 조절 중 (클릭 시 동시 조절)'
+                              }
+                              className={`inline-flex items-center gap-0.5 px-1 py-0.5 border text-[9px] tracking-[-0.04em] transition-colors ${
+                                mosaicScaleLinked ? ui.buttonActive : ui.buttonIdle
+                              }`}
+                              style={{ borderRadius: '4px' }}
+                            >
+                              <Link2 className="w-2.5 h-2.5" />
+                              <span>연동</span>
+                            </button>
+                            {isExpanded && (
+                              <button
+                                type="button"
+                                onClick={() => updateMosaicScale(1.0, 1.0)}
+                                className={`text-[9.5px] tracking-[-0.05em] opacity-80 hover:opacity-100 ${ui.accentText}`}
+                              >
+                                1.0×
+                              </button>
+                            )}
+                          </>
+                        ) : (
+                          <span className={`text-[9.5px] tracking-[-0.04em] ${ui.textMuted}`}>
+                            비활성
+                          </span>
+                        )}
+                      </div>
+                    </div>
+
+                    {mosaicEnabled ? (
+                      <div className="space-y-2">
+                        <div
+                          className={`rounded-md border px-2 py-1.5 space-y-0.5 text-[10px] ${cardIdleCls}`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <span className={ui.textMuted}>모자이크 화각 :</span>
+                            <span className={`font-mono font-bold tabular-nums ${ui.accentText}`}>
+                              {effW.toFixed(2)}° × {effH.toFixed(2)}°
+                            </span>
+                          </div>
+                          <div className="flex items-center justify-between gap-1 text-[9.5px]">
+                            <span className={ui.textMuted}>
+                              단일 {optics.sensorWidthDeg.toFixed(2)}°×{optics.sensorHeightDeg.toFixed(2)}°
+                            </span>
+                            <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                              {scaleW.toFixed(1)}× / {scaleH.toFixed(1)}× (최대 {maxScale.toFixed(1)}×)
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* Horizontal Scale Slider */}
+                        <div className="space-y-0.5">
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className={ui.textSecondary}>가로 화각 배율 (W)</span>
+                            <span className={`font-mono font-semibold tabular-nums ${ui.textPrimary}`}>
+                              {scaleW.toFixed(1)}배 ({effW.toFixed(2)}°)
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={1.0}
+                            max={maxScale}
+                            step={0.1}
+                            value={scaleW}
+                            onChange={(e) => {
+                              const next = Number(e.target.value);
+                              updateMosaicScale(next, mosaicScaleLinked ? next : scaleH);
+                            }}
+                            aria-label="모자이크 가로 화각 배율"
+                            className={`w-full h-1.5 cursor-pointer ${
+                              theme === 'red' ? 'accent-red-600' : 'accent-emerald-500'
+                            }`}
+                          />
+                        </div>
+
+                        {/* Vertical Scale Slider */}
+                        <div className="space-y-0.5">
+                          <div className="flex items-center justify-between text-[10px]">
+                            <span className={ui.textSecondary}>세로 화각 배율 (H)</span>
+                            <span className={`font-mono font-semibold tabular-nums ${ui.textPrimary}`}>
+                              {scaleH.toFixed(1)}배 ({effH.toFixed(2)}°)
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={1.0}
+                            max={maxScale}
+                            step={0.1}
+                            value={scaleH}
+                            onChange={(e) => {
+                              const next = Number(e.target.value);
+                              updateMosaicScale(mosaicScaleLinked ? next : scaleW, next);
+                            }}
+                            aria-label="모자이크 세로 화각 배율"
+                            className={`w-full h-1.5 cursor-pointer ${
+                              theme === 'red' ? 'accent-red-600' : 'accent-emerald-500'
+                            }`}
+                          />
+                        </div>
+
+                        {/* Quick Scale Presets */}
+                        <div className="grid grid-cols-4 gap-1">
+                          {quickMultipliers.map((mult) => {
+                            const active =
+                              Math.abs(scaleW - mult) < 0.05 && Math.abs(scaleH - mult) < 0.05;
+                            return (
+                              <button
+                                key={mult}
+                                type="button"
+                                onClick={() => updateMosaicScale(mult, mult)}
+                                className={`py-1 border text-[10px] font-mono tabular-nums transition-colors ${
+                                  active ? ui.buttonActive : ui.buttonIdle
+                                }`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                {mult.toFixed(1)}×
+                              </button>
+                            );
+                          })}
+                        </div>
+
+                        {/* Max Supported Mosaic Multiplier */}
+                        <div className="flex items-center justify-between gap-1 text-[9.5px]">
+                          <span className={ui.textMuted}>기기 최대 지원 배율</span>
+                          <div className="flex items-center gap-1">
+                            {[2.0, 2.5, 3.0].map((cap) => (
+                              <button
+                                key={cap}
+                                type="button"
+                                onClick={() =>
+                                  onChangeOptics((p) => ({
+                                    ...p,
+                                    sensorMosaicMaxScale: cap,
+                                    sensorMosaicScaleW: Math.min(cap, Math.max(1.0, p.sensorMosaicScaleW ?? 1.0)),
+                                    sensorMosaicScaleH: Math.min(cap, Math.max(1.0, p.sensorMosaicScaleH ?? 1.0)),
+                                  }))
+                                }
+                                className={`px-1.5 py-0.5 border font-mono text-[9px] tabular-nums transition-colors ${
+                                  Math.abs(maxScale - cap) < 0.05 ? ui.buttonActive : ui.buttonIdle
+                                }`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                {cap.toFixed(1)}×
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      </div>
+                    ) : (
+                      <p
+                        className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
+                      >
+                        스마트망원경 목록에서 ‘모자이크’가 체크된 망원경을 선택하면 가로·세로 1.0배부터
+                        지원 화각까지 넓게 표시할 수 있습니다.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+
+              {/* 촬영 센서 화각 프레임 회전 (스마트망원경 중 Draco 등 회전 가능 기종 제외 시 회전 잠금) */}
+              {(() => {
+                const activeCam = equipmentLocker.activeIds.camera
+                  ? equipmentLocker.items.find(
+                      (it) => it.id === equipmentLocker.activeIds.camera && it.category === 'camera'
+                    )
+                  : undefined;
+                const lockedByActiveCam =
+                  Boolean(activeCam?.isSmartTelescope) &&
+                  !isSmartTelescopeRotatable(activeCam) &&
+                  (!optics.sensorEquipmentLabel ||
+                    optics.sensorEquipmentLabel === activeCam?.name);
+                const sensorCanRotate = !optics.sensorRotationLocked && !lockedByActiveCam;
+                const effectiveRot = sensorCanRotate ? optics.sensorRotationDeg ?? 0 : 0;
+                const canInteract = optics.showSensorBox && sensorCanRotate;
+
+                return (
+                  <div className={`pt-2.5 mt-1 border-t ${ui.divider} space-y-1.5`}>
+                    <div className="flex items-center justify-between gap-1 text-[10.5px]">
+                      <span
+                        className={`font-semibold whitespace-nowrap tracking-[-0.05em] ${ui.textPrimary}`}
+                      >
+                        촬영 센서 화각 회전 (지평)
+                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {!sensorCanRotate ? (
+                          <span
+                            className={`text-[9.5px] font-medium tracking-[-0.05em] whitespace-nowrap ${ui.textMuted}`}
+                          >
+                            고정 (0°)
+                          </span>
+                        ) : optics.showSensorBox ? (
+                          <>
+                            {effectiveRot !== 0 && (
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onChangeOptics((p) => ({ ...p, sensorRotationDeg: 0 }))
+                                }
+                                className={`text-[9.5px] tracking-[-0.05em] opacity-80 hover:opacity-100 ${ui.accentText}`}
+                              >
+                                0° 초기화
+                              </button>
+                            )}
+                            <span
+                              className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}
+                            >
+                              {Math.round(effectiveRot)}°
+                            </span>
+                          </>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onChangeOptics((p) => ({ ...p, showSensorBox: true }))
+                            }
+                            className={`text-[9.5px] tracking-[-0.05em] underline underline-offset-2 ${ui.accentText}`}
+                          >
+                            화각 켜기
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <input
+                      type="range"
+                      min={0}
+                      max={360}
+                      step={1}
+                      disabled={!canInteract}
+                      value={effectiveRot}
+                      onChange={(e) =>
+                        onChangeOptics((p) => ({
+                          ...p,
+                          sensorRotationDeg: Number(e.target.value),
+                        }))
+                      }
+                      aria-label="촬영 센서 화각 프레임 회전 각도"
+                      className={`w-full h-1.5 ${
+                        theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
+                      } ${canInteract ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'}`}
+                    />
+
+                    <div className="grid grid-cols-4 gap-1">
+                      {[0, 90, 180, 270].map((deg) => (
+                        <button
+                          key={deg}
+                          type="button"
+                          disabled={!canInteract}
+                          onClick={() =>
+                            onChangeOptics((p) => ({ ...p, sensorRotationDeg: deg }))
+                          }
+                          className={`py-1 border text-[10px] font-mono tabular-nums transition-colors ${
+                            canInteract && Math.round(effectiveRot) % 360 === deg
+                              ? ui.buttonActive
+                              : ui.buttonIdle
+                          } ${!canInteract ? 'opacity-45 cursor-not-allowed' : ''}`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          {deg}°
+                        </button>
+                      ))}
+                    </div>
+
+                    {!sensorCanRotate ? (
+                      <p
+                        className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
+                      >
+                        지상 지평선 기준으로 시간에 따라 시야가 회전하며, 현재 스마트 망원경은
+                        로테이터를 지원하지 않아 지평 0°로 고정됩니다. (DWARFLAB Draco 등 회전 지원 모델은 회전 가능)
+                      </p>
+                    ) : (
+                      <p
+                        className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
+                      >
+                        지상(지평좌표계) 기준으로 시간에 따라 프레임 각도가 회전합니다.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+              </div>
+              )}
+            </div>
+
+            {/* Sensor FOV PNG Footer Caption Settings (제일 아래쪽 배치) */}
+            {(() => {
+              const captionCfg: SensorExportCaptionConfig = {
+                ...DEFAULT_SENSOR_EXPORT_CAPTION,
+                ...(optics.sensorExportCaption ?? {}),
+              };
+              const updateCaption = (patch: Partial<SensorExportCaptionConfig>) => {
+                onChangeOptics((prev) => ({
+                  ...prev,
+                  sensorExportCaption: {
+                    ...DEFAULT_SENSOR_EXPORT_CAPTION,
+                    ...(prev.sensorExportCaption ?? {}),
+                    ...patch,
+                  },
+                }));
+              };
+              const toggleItems: {
+                key: Exclude<keyof SensorExportCaptionConfig, 'customNote'>;
+                label: string;
+              }[] = [
+                { key: 'showTargetName', label: '중심 천체명' },
+                { key: 'showCoordinates', label: '적경·적위 좌표' },
+                { key: 'showDateTime', label: '관측 일시' },
+                { key: 'showLocation', label: '관측지 이름' },
+                { key: 'showConstellation', label: '별자리명' },
+                { key: 'showEquipmentFov', label: '장비·센서 화각' },
+                { key: 'showRotation', label: '좌표계·회전각' },
+                { key: 'showNoxChartBrand', label: 'NoxChart 표기' },
+              ];
+              const enabledCount = toggleItems.filter((item) => captionCfg[item.key]).length;
+              const isModified =
+                toggleItems.some(
+                  (item) => captionCfg[item.key] !== DEFAULT_SENSOR_EXPORT_CAPTION[item.key]
+                ) || captionCfg.customNote.length > 0;
+
+              // Build compact live preview matching exportSensorFovPng layout
+              const previewEquip =
+                optics.sensorEquipmentLabel && !optics.sensorEquipmentLabel.startsWith('FOV_')
+                  ? optics.sensorEquipmentLabel
+                  : '촬영 센서';
+              const mOn = Boolean(optics.sensorMosaicSupported);
+              const mSw = mOn ? Math.max(1, optics.sensorMosaicScaleW ?? 1) : 1;
+              const mSh = mOn ? Math.max(1, optics.sensorMosaicScaleH ?? 1) : 1;
+              const previewMosaicTag =
+                mOn && (mSw > 1.001 || mSh > 1.001)
+                  ? ` · 모자이크 ${mSw.toFixed(1)}×${mSh.toFixed(1)}`
+                  : '';
+              const previewFov = `${(optics.sensorWidthDeg * mSw).toFixed(2)}° × ${(
+                optics.sensorHeightDeg * mSh
+              ).toFixed(2)}°`;
+              const previewRow1Left = captionCfg.showTargetName
+                ? captionCfg.showCoordinates
+                  ? 'M42 오리온 대성운 (RA 05h 35m, Dec -05° 23′)'
+                  : 'M42 오리온 대성운'
+                : captionCfg.showCoordinates
+                ? 'RA 05h 35m · Dec -05° 23′'
+                : '';
+              const previewDate = new Date(observer.timestampMs);
+              const previewDateStr = `${previewDate.getFullYear()}-${String(
+                previewDate.getMonth() + 1
+              ).padStart(2, '0')}-${String(previewDate.getDate()).padStart(2, '0')} ${String(
+                previewDate.getHours()
+              ).padStart(2, '0')}:${String(previewDate.getMinutes()).padStart(2, '0')}`;
+              const previewRow1Right = [
+                captionCfg.showLocation && observer.name.trim() ? observer.name.trim() : '',
+                captionCfg.showDateTime ? previewDateStr : '',
+              ]
+                .filter(Boolean)
+                .join(' · ');
+              const previewRow2Left = [
+                captionCfg.showConstellation ? '오리온자리 (Ori)' : '',
+                captionCfg.showEquipmentFov
+                  ? `${previewEquip}${previewMosaicTag} (${previewFov})`
+                  : '',
+                captionCfg.customNote.trim(),
+              ]
+                .filter(Boolean)
+                .join(' / ');
+              const normRot = optics.sensorRotationLocked
+                ? 0
+                : ((optics.sensorRotationDeg % 360) + 360) % 360;
+              const previewRot = captionCfg.showRotation
+                ? normRot > 0.05 && normRot < 359.95
+                  ? `J2000 · 지평 회전 ${Math.round(normRot)}°`
+                  : 'J2000 적도좌표'
+                : '';
+              const hasPreviewRow1 = Boolean(previewRow1Left || previewRow1Right);
+              const hasPreviewRow2 = Boolean(
+                previewRow2Left || previewRot || captionCfg.showNoxChartBrand
+              );
+
+              return (
+                <div className={`pt-3 border-t ${ui.divider} space-y-2`}>
+                  <div className="flex items-center justify-between gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('optics_sensor_caption')}
+                      aria-expanded={isSectionOpen('optics_sensor_caption')}
+                      className={`flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] hover:opacity-80 transition-opacity cursor-pointer ${ui.textPrimary}`}
+                    >
+                      <ChevronDown
+                        className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                          isSectionOpen('optics_sensor_caption') ? '' : '-rotate-90'
+                        }`}
+                      />
+                      <Image className="w-3.5 h-3.5 shrink-0" />
+                      <span>촬영센서 PNG 하단 설명</span>
+                    </button>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                      {isModified && (
+                        <button
+                          type="button"
+                          onClick={() =>
+                            updateCaption({ ...DEFAULT_SENSOR_EXPORT_CAPTION })
+                          }
+                          title="하단 설명 항목을 기본값으로 되돌립니다"
+                          className={`inline-flex items-center gap-0.5 text-[9.5px] tracking-[-0.04em] underline underline-offset-2 ${ui.accentText} hover:opacity-80`}
+                        >
+                          <RotateCcw className="w-2.5 h-2.5" />
+                          <span>기본값</span>
+                        </button>
+                      )}
+                      <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
+                        {enabledCount}/{toggleItems.length}
+                      </span>
+                    </div>
+                  </div>
+
+                  {isSectionOpen('optics_sensor_caption') && (
+                    <div className="space-y-2">
+                      <p
+                        className={`text-[9.5px] leading-snug tracking-[-0.03em] break-keep ${ui.textMuted}`}
+                      >
+                        촬영센서 화각 PNG 저장 시 사진 하단 여백에 포함할 설명 항목을 선택합니다.
+                      </p>
+
+                      {/* 2-Column Checkbox Grid */}
+                      <div className="grid grid-cols-2 gap-x-2 gap-y-1">
+                        {toggleItems.map((item) => (
+                          <label
+                            key={item.key}
+                            className={`flex items-center justify-between gap-1.5 px-2 py-1 border rounded text-[10.5px] cursor-pointer select-none transition-colors ${
+                              captionCfg[item.key] ? ui.panelMuted : ui.panel
+                            } ${ui.border}`}
+                          >
+                            <span
+                              className={`truncate tracking-[-0.04em] ${
+                                captionCfg[item.key] ? ui.textPrimary : ui.textMuted
+                              }`}
+                            >
+                              {item.label}
+                            </span>
+                            <input
+                              type="checkbox"
+                              checked={captionCfg[item.key]}
+                              onChange={(e) =>
+                                updateCaption({ [item.key]: e.target.checked })
+                              }
+                              className={`w-3.5 h-3.5 shrink-0 cursor-pointer ${
+                                theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
+                              }`}
+                            />
+                          </label>
+                        ))}
+                      </div>
+
+                      {/* Custom Note / Photographer Input */}
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between gap-1">
+                          <label
+                            htmlFor="sensor-caption-custom-note"
+                            className={`text-[10px] font-medium tracking-[-0.04em] ${ui.textSecondary}`}
+                          >
+                            추가 메모 · 촬영자 표기
+                          </label>
+                          {captionCfg.customNote.length > 0 && (
+                            <button
+                              type="button"
+                              onClick={() => updateCaption({ customNote: '' })}
+                              className={`text-[9.5px] tracking-[-0.04em] underline underline-offset-2 ${ui.textMuted} hover:opacity-80`}
+                            >
+                              지우기
+                            </button>
+                          )}
+                        </div>
+                        <input
+                          id="sensor-caption-custom-note"
+                          type="text"
+                          maxLength={80}
+                          value={captionCfg.customNote}
+                          onChange={(e) => updateCaption({ customNote: e.target.value })}
+                          placeholder="예: 촬영자 홍길동 · 듀얼밴드 필터"
+                          className={`w-full px-2 py-1.5 text-[10.5px] border rounded focus:outline-none ${ui.input}`}
+                        />
+                      </div>
+
+                      {/* Live Mini Preview of PNG Footer Bar */}
+                      <div className="space-y-1">
+                        <div className={`text-[9.5px] font-medium tracking-[-0.04em] ${ui.textMuted}`}>
+                          하단 설명 미리보기
+                        </div>
+                        {hasPreviewRow1 || hasPreviewRow2 ? (
+                          <div className="rounded border border-slate-300 bg-white px-2 py-1.5 text-slate-900 space-y-0.5 shadow-inner">
+                            {hasPreviewRow1 && (
+                              <div className="flex items-baseline justify-between gap-2 text-[9px] leading-tight">
+                                <span className="font-bold text-slate-900 truncate">
+                                  {previewRow1Left}
+                                </span>
+                                {previewRow1Right && (
+                                  <span className="font-mono text-[8.5px] text-slate-600 shrink-0 truncate max-w-[48%]">
+                                    {previewRow1Right}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                            {hasPreviewRow2 && (
+                              <div className="flex items-baseline justify-between gap-2 text-[8.5px] leading-tight">
+                                <span className="text-slate-600 truncate">
+                                  {previewRow2Left}
+                                </span>
+                                {(previewRot || captionCfg.showNoxChartBrand) && (
+                                  <span className="shrink-0 whitespace-nowrap text-[8px] text-slate-500">
+                                    {previewRot}
+                                    {previewRot && captionCfg.showNoxChartBrand ? ' · ' : ''}
+                                    {captionCfg.showNoxChartBrand && (
+                                      <>
+                                        <span>Created with </span>
+                                        <span className="font-bold text-slate-900">NoxChart</span>
+                                      </>
+                                    )}
+                                  </span>
+                                )}
+                              </div>
+                            )}
+                          </div>
+                        ) : (
+                          <div
+                            className={`rounded border border-dashed px-2 py-1.5 text-center text-[9.5px] ${ui.border} ${ui.textMuted}`}
+                          >
+                            하단 설명 없음 (천체 사진만 저장)
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
           </>
         )}
 

@@ -62,6 +62,8 @@ export interface EquipmentPreset {
   pixelSizeUm?: number;
   isSmartTelescope?: boolean;
   supportsSensorRotation?: boolean;
+  supportsMosaic?: boolean;
+  mosaicMaxScale?: number;
 }
 
 export function isSmartTelescopeRotatable(
@@ -71,6 +73,41 @@ export function isSmartTelescopeRotatable(
   if (item.supportsSensorRotation) return true;
   if (item.name && /draco|드레이코/i.test(item.name)) return true;
   return false;
+}
+
+export function isSmartTelescopeMosaicSupported(
+  item?: {
+    isSmartTelescope?: boolean;
+    supportsMosaic?: boolean;
+    name?: string;
+  } | null
+): boolean {
+  if (!item || !item.isSmartTelescope) return false;
+  if (typeof item.supportsMosaic === 'boolean') return item.supportsMosaic;
+  if (item.name && /seestar|vespera|dwarf\s*3|dwarf\s*mini|draco/i.test(item.name)) {
+    return true;
+  }
+  return false;
+}
+
+export function getSmartTelescopeMosaicMaxScale(
+  item?: {
+    mosaicMaxScale?: number;
+    name?: string;
+  } | null
+): number {
+  if (
+    item &&
+    typeof item.mosaicMaxScale === 'number' &&
+    Number.isFinite(item.mosaicMaxScale) &&
+    item.mosaicMaxScale >= 1.2
+  ) {
+    return Math.min(4.0, Number(item.mosaicMaxScale.toFixed(1)));
+  }
+  if (item?.name && /vespera/i.test(item.name)) {
+    return 2.5;
+  }
+  return 2.0;
 }
 
 export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
@@ -933,6 +970,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     name: 'DWARFLAB Draco',
     isSmartTelescope: true,
     supportsSensorRotation: true,
+    supportsMosaic: true,
+    mosaicMaxScale: 2.0,
     apertureMm: 90,
     focalLengthMm: 340,
     sensorWidthMm: 9.79,
@@ -946,6 +985,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     name: 'DWARF Mini',
     isSmartTelescope: true,
     supportsSensorRotation: false,
+    supportsMosaic: true,
+    mosaicMaxScale: 2.0,
     apertureMm: 24,
     focalLengthMm: 150,
     sensorWidthMm: 5.63,
@@ -958,6 +999,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     brand: 'DWARFLAB',
     name: 'DWARF 3',
     isSmartTelescope: true,
+    supportsMosaic: true,
+    mosaicMaxScale: 2.0,
     apertureMm: 35,
     focalLengthMm: 150,
     sensorWidthMm: 7.68,
@@ -970,6 +1013,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     brand: 'DWARFLAB',
     name: 'DWARF II',
     isSmartTelescope: true,
+    supportsMosaic: false,
+    mosaicMaxScale: 2.0,
     apertureMm: 24,
     focalLengthMm: 100,
     sensorWidthMm: 5.57,
@@ -982,6 +1027,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     brand: 'ZWO',
     name: 'ZWO Seestar S50',
     isSmartTelescope: true,
+    supportsMosaic: true,
+    mosaicMaxScale: 2.0,
     apertureMm: 50,
     focalLengthMm: 250,
     sensorWidthMm: 5.57,
@@ -994,6 +1041,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     brand: 'ZWO',
     name: 'ZWO Seestar S30',
     isSmartTelescope: true,
+    supportsMosaic: true,
+    mosaicMaxScale: 2.0,
     apertureMm: 30,
     focalLengthMm: 150,
     sensorWidthMm: 5.57,
@@ -1006,6 +1055,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     brand: 'Vaonis',
     name: 'Vaonis Vespera II',
     isSmartTelescope: true,
+    supportsMosaic: true,
+    mosaicMaxScale: 2.5,
     apertureMm: 50,
     focalLengthMm: 250,
     sensorWidthMm: 11.13,
@@ -1018,6 +1069,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     brand: 'Vaonis',
     name: 'Vaonis Vespera Pro',
     isSmartTelescope: true,
+    supportsMosaic: true,
+    mosaicMaxScale: 2.5,
     apertureMm: 50,
     focalLengthMm: 250,
     sensorWidthMm: 7.1,
@@ -1030,6 +1083,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     brand: 'Celestron',
     name: 'Celestron Origin',
     isSmartTelescope: true,
+    supportsMosaic: false,
+    mosaicMaxScale: 2.0,
     apertureMm: 152,
     focalLengthMm: 335,
     sensorWidthMm: 7.4,
@@ -1042,6 +1097,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     brand: 'Unistellar',
     name: 'Unistellar Odyssey / Pro',
     isSmartTelescope: true,
+    supportsMosaic: false,
+    mosaicMaxScale: 2.0,
     apertureMm: 85,
     focalLengthMm: 320,
     sensorWidthMm: 4.54,
@@ -1054,6 +1111,8 @@ export const EQUIPMENT_PRESETS: EquipmentPreset[] = [
     brand: 'Unistellar',
     name: 'Unistellar eVscope 2',
     isSmartTelescope: true,
+    supportsMosaic: false,
+    mosaicMaxScale: 2.0,
     apertureMm: 114,
     focalLengthMm: 450,
     sensorWidthMm: 7.68,

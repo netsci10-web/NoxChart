@@ -719,29 +719,108 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
         const extPts = projectGreatCircleSegment(vB, target, projector);
         if (extPts.length >= 2) {
           ctx.save();
-          ctx.globalAlpha = effAlpha * 0.72;
+          ctx.globalAlpha = effAlpha * 0.78;
           ctx.setLineDash([3, 4]);
           ctx.lineWidth = Math.max(1, obj.lineWidth * 0.85);
           ctx.beginPath();
           ctx.moveTo(extPts[0].x, extPts[0].y);
           for (let k = 1; k < extPts.length; k++) ctx.lineTo(extPts[k].x, extPts[k].y);
           ctx.stroke();
+
+          // Draw perpendicular tick marks (마디선) and x2, x3... labels at each integer multiple (skip x1)
+          const maxIntMult = Math.floor(ext + 1e-6);
+          const tickHalfLen = 5.5 + Math.min(4, obj.lineWidth * 0.65);
+          const haloColor =
+            theme === 'white'
+              ? 'rgba(255,255,255,0.88)'
+              : theme === 'red'
+              ? 'rgba(10,0,0,0.85)'
+              : 'rgba(5,9,18,0.82)';
+
+          ctx.setLineDash([]);
+          ctx.lineWidth = Math.max(1.2, obj.lineWidth * 0.9);
+          ctx.font = '600 9.5px "IBM Plex Mono", monospace';
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+
+          for (let mult = 2; mult <= maxIntMult; mult++) {
+            const sepM = baseSep * mult;
+            const ptM = destinationPointSpherical(vA.raDeg, vA.decDeg, pa, sepM);
+            const projM = projector.project(ptM.raDeg, ptM.decDeg);
+            if (!projM) continue;
+
+            // Compute local screen tangent using a small step back along the great-circle ray
+            const stepBack = Math.min(baseSep * 0.12, 0.35);
+            const ptPrev = destinationPointSpherical(
+              vA.raDeg,
+              vA.decDeg,
+              pa,
+              Math.max(0, sepM - stepBack)
+            );
+            const projPrev = projector.project(ptPrev.raDeg, ptPrev.decDeg);
+            let tx = 1;
+            let ty = 0;
+            if (projPrev) {
+              const dx = projM.x - projPrev.x;
+              const dy = projM.y - projPrev.y;
+              const d = Math.hypot(dx, dy);
+              if (d > 1e-4) {
+                tx = dx / d;
+                ty = dy / d;
+              }
+            }
+            // Perpendicular unit vector (prefer upper/right side for label consistency)
+            let nx = -ty;
+            let ny = tx;
+            if (ny > 0.15) {
+              nx = -nx;
+              ny = -ny;
+            }
+
+            // Perpendicular tick line (마디선)
+            ctx.save();
+            ctx.globalAlpha = Math.min(1, effAlpha * 0.92);
+            ctx.strokeStyle = color;
+            ctx.beginPath();
+            ctx.moveTo(projM.x - nx * tickHalfLen, projM.y - ny * tickHalfLen);
+            ctx.lineTo(projM.x + nx * tickHalfLen, projM.y + ny * tickHalfLen);
+            ctx.stroke();
+
+            // Multiple text (x2, x3, ...)
+            const labelDist = tickHalfLen + 9;
+            const lx = projM.x + nx * labelDist;
+            const ly = projM.y + ny * labelDist;
+            const multLabel = `x${mult}`;
+            ctx.lineWidth = 3;
+            ctx.strokeStyle = haloColor;
+            ctx.strokeText(multLabel, lx, ly);
+            ctx.fillStyle = color;
+            ctx.fillText(multLabel, lx, ly);
+            ctx.restore();
+          }
+
           const tip = extPts[extPts.length - 1];
           drawArrowhead(ctx, extPts[extPts.length - 2], tip, 8 + Math.min(5, obj.lineWidth), color);
 
           ctx.setLineDash([]);
+          ctx.lineWidth = Math.max(1, obj.lineWidth * 0.85);
           ctx.beginPath();
           ctx.arc(tip.x, tip.y, 6, 0, Math.PI * 2);
           ctx.stroke();
           ctx.font = '600 9.5px "IBM Plex Mono", monospace';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'middle';
+          const isExactInt = Math.abs(ext - Math.round(ext)) < 0.05 && ext >= 2;
+          const tipText = isExactInt
+            ? formatAngularSeparation(baseSep * ext)
+            : `x${ext.toFixed(1)} (${formatAngularSeparation(baseSep * ext)})`;
+          ctx.save();
+          ctx.lineWidth = 3;
+          ctx.strokeStyle = haloColor;
+          ctx.strokeText(tipText, tip.x + 9, tip.y);
           ctx.fillStyle = color;
-          ctx.fillText(
-            `${ext.toFixed(1)}× (${formatAngularSeparation(baseSep * ext)})`,
-            tip.x + 9,
-            tip.y
-          );
+          ctx.fillText(tipText, tip.x + 9, tip.y);
+          ctx.restore();
           ctx.restore();
         }
       }

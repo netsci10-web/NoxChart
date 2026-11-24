@@ -3,6 +3,8 @@ import {
   BookOpen,
   Calendar,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Compass,
   Download,
   FileSpreadsheet,
@@ -74,6 +76,7 @@ interface ObservationLogPanelProps {
     addedLogs: number;
     updatedLogs: number;
   };
+  onReorderLogs: (orderedIds: string[]) => void;
 }
 
 interface LogFormDraft {
@@ -106,6 +109,7 @@ export function ObservationLogPanel({
   onToggleObservedStatus,
   onFocusTarget,
   onImportStore,
+  onReorderLogs,
 }: ObservationLogPanelProps) {
   const ui = getUiTheme(theme);
   const confirmDialog = useConfirmDialog();
@@ -113,10 +117,12 @@ export function ObservationLogPanel({
 
   const [subTab, setSubTab] = useState<'logs' | 'observed'>('logs');
   const [searchQuery, setSearchQuery] = useState('');
-  const [sortBy, setSortBy] = useState<'newest' | 'oldest' | 'rating' | 'name'>('newest');
+  const [sortBy, setSortBy] = useState<'custom' | 'newest' | 'oldest' | 'rating' | 'name'>('custom');
   const [locationFilter, setLocationFilter] = useState<string>('__all__');
   const [draft, setDraft] = useState<LogFormDraft | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [dragLogId, setDragLogId] = useState<string | null>(null);
+  const [dragOverLogId, setDragOverLogId] = useState<string | null>(null);
 
   const obsTimeMs = observer.useLiveTime ? Date.now() : observer.timestampMs;
   const activeEquipSummary = useMemo(
@@ -287,6 +293,7 @@ export function ObservationLogPanel({
         l.notes.toLowerCase().includes(q)
       );
     });
+    if (sortBy === 'custom') return list;
     return [...list].sort((a, b) => {
       if (sortBy === 'oldest') return a.observedAt - b.observedAt;
       if (sortBy === 'rating') return (b.rating ?? 0) - (a.rating ?? 0) || b.observedAt - a.observedAt;
@@ -294,6 +301,27 @@ export function ObservationLogPanel({
       return b.observedAt - a.observedAt;
     });
   }, [store.logs, searchQuery, locationFilter, sortBy]);
+
+  const handleReorderFilteredLogs = (fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    const baseOrder =
+      sortBy === 'custom'
+        ? store.logs.map((l) => l.id)
+        : [
+            ...filteredLogs.map((l) => l.id),
+            ...store.logs
+              .map((l) => l.id)
+              .filter((id) => !filteredLogs.some((fl) => fl.id === id)),
+          ];
+    const fromIdx = baseOrder.indexOf(fromId);
+    const toIdx = baseOrder.indexOf(toId);
+    if (fromIdx < 0 || toIdx < 0) return;
+    const nextOrder = [...baseOrder];
+    const [moved] = nextOrder.splice(fromIdx, 1);
+    nextOrder.splice(toIdx, 0, moved);
+    if (sortBy !== 'custom') setSortBy('custom');
+    onReorderLogs(nextOrder);
+  };
 
   const filteredObservedObjects = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
@@ -707,12 +735,13 @@ export function ObservationLogPanel({
             <select
               value={sortBy}
               onChange={(e) =>
-                setSortBy(e.target.value as 'newest' | 'oldest' | 'rating' | 'name')
+                setSortBy(e.target.value as 'custom' | 'newest' | 'oldest' | 'rating' | 'name')
               }
               aria-label="관측기록 정렬"
               className={`flex-1 min-w-0 px-1.5 py-1 border text-[10px] ${ui.input}`}
               style={{ borderRadius: '4px' }}
             >
+              <option value="custom">사용자 지정순</option>
               <option value="newest">최신 관측순</option>
               <option value="oldest">오래된순</option>
               <option value="rating">만족도순</option>
@@ -757,7 +786,7 @@ export function ObservationLogPanel({
           </div>
         ) : (
           <div className="space-y-2">
-            {filteredLogs.map((log) => {
+            {filteredLogs.map((log, logIdx) => {
               const seeingTxt = getSeeingLabel(log.seeing);
               const transpTxt = getSeeingLabel(log.transparency);
               const hasCoord =
@@ -767,11 +796,67 @@ export function ObservationLogPanel({
               return (
                 <div
                   key={log.id}
-                  className={`border p-2 space-y-1.5 ${ui.border}`}
+                  draggable={filteredLogs.length > 1}
+                  onDragStart={(e) => {
+                    setDragLogId(log.id);
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/plain', log.id);
+                  }}
+                  onDragOver={(e) => {
+                    if (!dragLogId || dragLogId === log.id) return;
+                    e.preventDefault();
+                    setDragOverLogId(log.id);
+                  }}
+                  onDragLeave={() => {
+                    if (dragOverLogId === log.id) setDragOverLogId(null);
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    if (dragLogId && dragLogId !== log.id) {
+                      handleReorderFilteredLogs(dragLogId, log.id);
+                    }
+                    setDragLogId(null);
+                    setDragOverLogId(null);
+                  }}
+                  onDragEnd={() => {
+                    setDragLogId(null);
+                    setDragOverLogId(null);
+                  }}
+                  className={`border p-2 space-y-1.5 transition-colors ${ui.border} ${
+                    dragOverLogId === log.id ? 'ring-1 ring-cyan-400' : ''
+                  }`}
                   style={{ borderRadius: '6px' }}
                 >
-                  {/* Header: Target Name & Rating */}
-                  <div className="flex items-start justify-between gap-1.5">
+                  {/* Header: Reorder + Target Name & Rating */}
+                  <div className="flex items-start justify-between gap-1">
+                    {filteredLogs.length > 1 && (
+                      <div className="flex flex-col shrink-0 -ml-0.5">
+                        <button
+                          type="button"
+                          disabled={logIdx === 0}
+                          onClick={() =>
+                            handleReorderFilteredLogs(log.id, filteredLogs[logIdx - 1].id)
+                          }
+                          title="위로 이동"
+                          aria-label={`${log.objectName} 기록 위로 이동`}
+                          className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                        >
+                          <ChevronUp className="w-2.5 h-2.5" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={logIdx === filteredLogs.length - 1}
+                          onClick={() =>
+                            handleReorderFilteredLogs(log.id, filteredLogs[logIdx + 1].id)
+                          }
+                          title="아래로 이동"
+                          aria-label={`${log.objectName} 기록 아래로 이동`}
+                          className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                        >
+                          <ChevronDown className="w-2.5 h-2.5" />
+                        </button>
+                      </div>
+                    )}
                     <button
                       type="button"
                       disabled={!hasCoord}

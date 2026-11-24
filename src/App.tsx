@@ -40,6 +40,8 @@ import {
   hydrateChallengeTracksWithCatalog,
 } from './data/challenges';
 import {
+  getSmartTelescopeMosaicMaxScale,
+  isSmartTelescopeMosaicSupported,
   isSmartTelescopeRotatable,
   normalizeTelescopeOpticalType,
   SMART_TELESCOPE_PRESETS,
@@ -329,6 +331,10 @@ const DEFAULT_OPTICS: OpticsSettings = {
   sensorRotationDeg: 0,
   sensorEquipmentLabel: undefined,
   sensorRotationLocked: false,
+  sensorMosaicSupported: false,
+  sensorMosaicMaxScale: 2.0,
+  sensorMosaicScaleW: 1.0,
+  sensorMosaicScaleH: 1.0,
   sensorExportCaption: { ...DEFAULT_SENSOR_EXPORT_CAPTION },
   showStarHop: false,
   showSelectionMark: true,
@@ -339,12 +345,27 @@ const DEFAULT_OBSERVER: ObserverConfig = {
   lat: 37.5665,
   lon: 126.978,
   timestampMs: Date.now(),
-  useLiveTime: true,
+  useLiveTime: false,
   isPlaying: false,
   timeRateSecPerSec: 1,
   minAltitudeDeg: -90,
   highlightAboveMinAlt: false,
 };
+
+function reorderItemsById<T extends { id: string }>(
+  items: T[],
+  fromId: string,
+  toId: string
+): T[] {
+  if (fromId === toId) return items;
+  const fromIdx = items.findIndex((item) => item.id === fromId);
+  const toIdx = items.findIndex((item) => item.id === toId);
+  if (fromIdx < 0 || toIdx < 0) return items;
+  const next = [...items];
+  const [moved] = next.splice(fromIdx, 1);
+  next.splice(toIdx, 0, moved);
+  return next;
+}
 
 function loadSavedAppPrefs(): SavedAppPrefs {
   try {
@@ -458,6 +479,10 @@ function loadSavedOpticsSettings(): OpticsSettings {
               ? parsed.sensorEquipmentLabel.trim()
               : undefined,
           sensorRotationLocked: boolOr('sensorRotationLocked', false),
+          sensorMosaicSupported: boolOr('sensorMosaicSupported', false),
+          sensorMosaicMaxScale: numOr('sensorMosaicMaxScale', 2.0, 1.2, 4.0),
+          sensorMosaicScaleW: numOr('sensorMosaicScaleW', 1.0, 1.0, 4.0),
+          sensorMosaicScaleH: numOr('sensorMosaicScaleH', 1.0, 1.0, 4.0),
           sensorExportCaption: (() => {
             const rawCap = parsed.sensorExportCaption;
             if (!rawCap || typeof rawCap !== 'object') {
@@ -733,6 +758,7 @@ export default function App() {
   );
 
   const emptySolarTrails = useMemo<Record<string, number>>(() => ({}), []);
+  const emptySessionIds = useMemo<Set<string>>(() => new Set<string>(), []);
 
   const [savedSites, setSavedSites] = useState<SavedObservingSite[]>(() => {
     try {
@@ -771,6 +797,7 @@ export default function App() {
   const pointerDownInRightRef = useRef(false);
   const nativePickerInLeftRef = useRef(false);
   const nativePickerInRightRef = useRef(false);
+  const draggingInRightRef = useRef(false);
   const siteMapOpenRef = useRef(siteMapOpen);
   siteMapOpenRef.current = siteMapOpen;
 
@@ -817,6 +844,7 @@ export default function App() {
           pointerInRightRef.current ||
           pointerDownInRightRef.current ||
           nativePickerInRightRef.current ||
+          draggingInRightRef.current ||
           confirmRequestRef.current
         ) {
           return;
@@ -842,6 +870,7 @@ export default function App() {
       pointerInRightRef.current = false;
       pointerDownInRightRef.current = false;
       nativePickerInRightRef.current = false;
+      draggingInRightRef.current = false;
     }
   }, [rightOpen, clearRightHideTimer]);
 
@@ -855,6 +884,14 @@ export default function App() {
       }
       if (pointerDownInRightRef.current) {
         pointerDownInRightRef.current = false;
+        if (!pointerInRightRef.current && !nativePickerInRightRef.current && !draggingInRightRef.current) {
+          scheduleRightHide(220);
+        }
+      }
+    };
+    const onWinDragEnd = () => {
+      if (draggingInRightRef.current) {
+        draggingInRightRef.current = false;
         if (!pointerInRightRef.current && !nativePickerInRightRef.current) {
           scheduleRightHide(220);
         }
@@ -876,10 +913,12 @@ export default function App() {
     };
     window.addEventListener('pointerup', onWinPointerUp);
     window.addEventListener('pointercancel', onWinPointerUp);
+    window.addEventListener('dragend', onWinDragEnd);
     window.addEventListener('focus', onWinFocus);
     return () => {
       window.removeEventListener('pointerup', onWinPointerUp);
       window.removeEventListener('pointercancel', onWinPointerUp);
+      window.removeEventListener('dragend', onWinDragEnd);
       window.removeEventListener('focus', onWinFocus);
       clearLeftHideTimer();
       clearRightHideTimer();
@@ -1192,6 +1231,9 @@ export default function App() {
             lists: validLists,
             tonightListId: hasTonight ? parsed.tonightListId! : null,
             tonightEntries: Array.isArray(parsed.tonightEntries) ? parsed.tonightEntries : [],
+            tonightOrder: Array.isArray(parsed.tonightOrder)
+              ? parsed.tonightOrder.filter((id): id is string => typeof id === 'string')
+              : undefined,
             tonightLinkedOverrides:
               parsed.tonightLinkedOverrides && typeof parsed.tonightLinkedOverrides === 'object'
                 ? parsed.tonightLinkedOverrides
@@ -1249,23 +1291,36 @@ export default function App() {
   const sessionPlan = useMemo(() => {
     const manual = observingListsState.tonightEntries;
     const manualIds = new Set(manual.map((e) => e.id));
-    if (!activeTonightList) return manual;
+    let combined: ObservingSessionEntry[] = manual;
 
-    const overrides = observingListsState.tonightLinkedOverrides ?? {};
-    const linkedProjected: ObservingSessionEntry[] = [];
-    for (const entry of activeTonightList.entries) {
-      if (manualIds.has(entry.id)) continue;
-      const ov = overrides[entry.id];
-      if (ov?.excluded) continue;
-      linkedProjected.push({
-        ...entry,
-        observed: ov?.observed !== undefined ? ov.observed : entry.observed,
-        notes: ov?.notes !== undefined ? ov.notes : entry.notes,
-      });
+    if (activeTonightList) {
+      const overrides = observingListsState.tonightLinkedOverrides ?? {};
+      const linkedProjected: ObservingSessionEntry[] = [];
+      for (const entry of activeTonightList.entries) {
+        if (manualIds.has(entry.id)) continue;
+        const ov = overrides[entry.id];
+        if (ov?.excluded) continue;
+        linkedProjected.push({
+          ...entry,
+          observed: ov?.observed !== undefined ? ov.observed : entry.observed,
+          notes: ov?.notes !== undefined ? ov.notes : entry.notes,
+        });
+      }
+      combined = [...manual, ...linkedProjected];
     }
-    return [...manual, ...linkedProjected];
+
+    const order = observingListsState.tonightOrder;
+    if (!order || order.length === 0) return combined;
+    const rank = new Map<string, number>();
+    order.forEach((id, i) => rank.set(id, i));
+    return [...combined].sort((a, b) => {
+      const ra = rank.has(a.id) ? rank.get(a.id)! : Number.MAX_SAFE_INTEGER;
+      const rb = rank.has(b.id) ? rank.get(b.id)! : Number.MAX_SAFE_INTEGER;
+      return ra - rb;
+    });
   }, [
     observingListsState.tonightEntries,
+    observingListsState.tonightOrder,
     observingListsState.tonightLinkedOverrides,
     activeTonightList,
   ]);
@@ -1477,16 +1532,8 @@ export default function App() {
     return () => window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
   }, []);
 
-  // Refresh live clock every 10s when live time is enabled (and not in time-lapse playback)
-  useEffect(() => {
-    if (!observer.useLiveTime || observer.isPlaying) return;
-    const id = window.setInterval(() => {
-      handleChangeObserver((p) =>
-        p.useLiveTime && !p.isPlaying ? { ...p, timestampMs: Date.now() } : p
-      );
-    }, 10000);
-    return () => window.clearInterval(id);
-  }, [observer.useLiveTime, observer.isPlaying, handleChangeObserver]);
+  // Time remains completely frozen whenever playback is paused (observer.isPlaying === false).
+  // Real-time 1x & time-lapse updates are handled exclusively by the playback ticker below.
 
   // Smooth time-lapse / real-time 1x simulation ticker when Play is active
   const isRealtimeRate = Math.abs(observer.timeRateSecPerSec) === 1;
@@ -1760,6 +1807,62 @@ export default function App() {
       ...prev,
       lists: prev.lists.map((l) => (l.id === listId ? { ...l, name: trimmed } : l)),
     }));
+  }, []);
+
+  const handleReorderObservingLists = useCallback((fromId: string, toId: string) => {
+    setObservingListsState((prev) => ({
+      ...prev,
+      lists: reorderItemsById(prev.lists, fromId, toId),
+    }));
+  }, []);
+
+  const handleReorderObservingListEntries = useCallback(
+    (listId: string, fromId: string, toId: string) => {
+      setObservingListsState((prev) => ({
+        ...prev,
+        lists: prev.lists.map((l) =>
+          l.id === listId ? { ...l, entries: reorderItemsById(l.entries, fromId, toId) } : l
+        ),
+      }));
+    },
+    []
+  );
+
+  const handleReorderTonightEntries = useCallback((fromId: string, toId: string) => {
+    if (fromId === toId) return;
+    setObservingListsState((prev) => {
+      const manual = prev.tonightEntries;
+      const manualIds = new Set(manual.map((e) => e.id));
+      const linkedList = prev.tonightListId
+        ? prev.lists.find((l) => l.id === prev.tonightListId) ?? null
+        : null;
+      const overrides = prev.tonightLinkedOverrides ?? {};
+      const allIds: string[] = [...manual.map((e) => e.id)];
+      if (linkedList) {
+        for (const e of linkedList.entries) {
+          if (manualIds.has(e.id) || overrides[e.id]?.excluded) continue;
+          allIds.push(e.id);
+        }
+      }
+      const existingOrder = prev.tonightOrder ?? [];
+      const rank = new Map<string, number>();
+      existingOrder.forEach((id, i) => rank.set(id, i));
+      const currentOrder = [...allIds].sort((a, b) => {
+        const ra = rank.has(a) ? rank.get(a)! : Number.MAX_SAFE_INTEGER;
+        const rb = rank.has(b) ? rank.get(b)! : Number.MAX_SAFE_INTEGER;
+        return ra - rb;
+      });
+      const fromIdx = currentOrder.indexOf(fromId);
+      const toIdx = currentOrder.indexOf(toId);
+      if (fromIdx < 0 || toIdx < 0) return prev;
+      const nextOrder = [...currentOrder];
+      const [moved] = nextOrder.splice(fromIdx, 1);
+      nextOrder.splice(toIdx, 0, moved);
+      return {
+        ...prev,
+        tonightOrder: nextOrder,
+      };
+    });
   }, []);
 
   const observingListsStateRef = useRef<ObservingListsState>(observingListsState);
@@ -2303,6 +2406,14 @@ export default function App() {
         const nextFinderCrosshair = Boolean(activeFinder?.finderCrosshair);
 
         const canRotateSensor = camera ? isSmartTelescopeRotatable(camera) : true;
+        const canMosaicSensor = camera ? isSmartTelescopeMosaicSupported(camera) : false;
+        const mosaicMaxScale = camera ? getSmartTelescopeMosaicMaxScale(camera) : 2.0;
+        const nextMosaicScaleW = canMosaicSensor
+          ? Math.max(1.0, Math.min(mosaicMaxScale, prev.sensorMosaicScaleW ?? 1.0))
+          : 1.0;
+        const nextMosaicScaleH = canMosaicSensor
+          ? Math.max(1.0, Math.min(mosaicMaxScale, prev.sensorMosaicScaleH ?? 1.0))
+          : 1.0;
         const sensorEquipLabel = camera
           ? camera.isSmartTelescope
             ? camera.name
@@ -2330,6 +2441,10 @@ export default function App() {
           sensorEquipmentLabel: sensorEquipLabel,
           sensorRotationLocked: !canRotateSensor,
           sensorRotationDeg: canRotateSensor ? prev.sensorRotationDeg : 0,
+          sensorMosaicSupported: canMosaicSensor,
+          sensorMosaicMaxScale: mosaicMaxScale,
+          sensorMosaicScaleW: nextMosaicScaleW,
+          sensorMosaicScaleH: nextMosaicScaleH,
           showSensorBox: shouldShowSensor,
         };
       });
@@ -2754,9 +2869,52 @@ export default function App() {
   }, []);
 
   const handleToggleChallengeOnChart = useCallback((trackId: string) => {
-    setChallenges((prev) =>
-      prev.map((t) => (t.id === trackId ? { ...t, activeOnChart: !t.activeOnChart } : t))
-    );
+    setChallenges((prev) => {
+      const target = prev.find((t) => t.id === trackId);
+      const nextActive = target ? !target.activeOnChart : false;
+      return prev.map((t) => ({
+        ...t,
+        activeOnChart: nextActive && t.id === trackId,
+      }));
+    });
+  }, []);
+
+  const handleReorderChallengeTracks = useCallback((fromId: string, toId: string) => {
+    setChallenges((prev) => reorderItemsById(prev, fromId, toId));
+  }, []);
+
+  const handleReorderChallengeCheckpoints = useCallback(
+    (trackId: string, fromId: string, toId: string) => {
+      setChallenges((prev) =>
+        prev.map((t) =>
+          t.id === trackId
+            ? { ...t, checkpoints: reorderItemsById(t.checkpoints, fromId, toId) }
+            : t
+        )
+      );
+    },
+    []
+  );
+
+  const handleReorderObservationLogs = useCallback((orderedIds: string[]) => {
+    setObservationLogStore((prev) => {
+      const byId = new Map(prev.logs.map((l) => [l.id, l]));
+      const nextLogs: ObservationLogEntry[] = [];
+      for (const id of orderedIds) {
+        const hit = byId.get(id);
+        if (hit) {
+          nextLogs.push(hit);
+          byId.delete(id);
+        }
+      }
+      for (const rest of byId.values()) {
+        nextLogs.push(rest);
+      }
+      return {
+        ...prev,
+        logs: nextLogs,
+      };
+    });
   }, []);
 
   const handleToggleChallengeCheckpoint = useCallback((trackId: string, checkpointId: string) => {
@@ -2799,7 +2957,10 @@ export default function App() {
   const handleSaveChallengeTrack = useCallback((track: ChallengeTrack) => {
     setChallenges((prev) => {
       const idx = prev.findIndex((t) => t.id === track.id);
-      const next = idx >= 0 ? prev.map((t) => (t.id === track.id ? track : t)) : [track, ...prev];
+      const base = idx >= 0 ? prev.map((t) => (t.id === track.id ? track : t)) : [track, ...prev];
+      const next = track.activeOnChart
+        ? base.map((t) => ({ ...t, activeOnChart: t.id === track.id }))
+        : base;
       challengesRef.current = next;
       return next;
     });
@@ -3422,16 +3583,23 @@ export default function App() {
   );
 
   const handleStartTonightTour = useCallback(
-    (startIndex = 0, selectedStopIds?: string[]) => {
-      const freshStops = buildTonightTourStops(observer, getCatalogSnapshot(), 10);
-      const filteredStops =
-        selectedStopIds && selectedStopIds.length > 0
-          ? freshStops.filter((s) => selectedStopIds.includes(s.id))
-          : freshStops;
-      if (filteredStops.length === 0) return;
-      navigateTourToStop(filteredStops, startIndex, true, {
-        title: '오늘의 투어',
-        trackId: null,
+    (startIndex = 0) => {
+      const playable = challengesRef.current.filter((t) => t.checkpoints.length > 0);
+      if (playable.length === 0) return;
+      const currentTrackId = tourStateRef.current.active ? tourStateRef.current.trackId : null;
+      const candidates =
+        playable.length > 1 && currentTrackId
+          ? playable.filter((t) => t.id !== currentTrackId)
+          : playable;
+      const picked = candidates[Math.floor(Math.random() * candidates.length)] ?? playable[0];
+      setChallenges((prev) =>
+        prev.map((t) => ({ ...t, activeOnChart: t.id === picked.id }))
+      );
+      const stops = buildChallengeTourStops(picked, observer, getCatalogSnapshot());
+      if (stops.length === 0) return;
+      navigateTourToStop(stops, startIndex, true, {
+        title: `오늘의 투어 · ${picked.title}`,
+        trackId: picked.id,
       });
     },
     [observer, navigateTourToStop]
@@ -3440,7 +3608,7 @@ export default function App() {
   const handleStartChallengeTour = useCallback(
     (track: ChallengeTrack, startIndex = 0) => {
       setChallenges((prev) =>
-        prev.map((t) => (t.id === track.id ? { ...t, activeOnChart: true } : t))
+        prev.map((t) => ({ ...t, activeOnChart: t.id === track.id }))
       );
       const stops = buildChallengeTourStops(track, observer, getCatalogSnapshot());
       if (stops.length === 0) return;
@@ -3719,16 +3887,101 @@ export default function App() {
     setResetCount((c) => c + 1);
   };
 
+  // Clicking "NoxChart" resets ONLY the camera/FOV back to initial view, keeping all settings intact
+  const handleResetViewOnly = useCallback(() => {
+    lockedHzRef.current = null;
+    centerLockedRef.current = false;
+    setCenterLocked(false);
+    canvasHandleRef.current?.cancelSmoothCenter();
+    const defaultHzCenter = getDefaultHorizontalCenter(observerRef.current);
+    handleChangeView((prev) => ({
+      ...prev,
+      ra: defaultHzCenter.ra,
+      dec: defaultHzCenter.dec,
+      fsz: DEFAULT_VIEW.fsz,
+      flipH: false,
+      flipV: false,
+    }));
+  }, [handleChangeView]);
+
   const isChallengePicking = Boolean(challengeDraft);
 
   const chartChallenges = useMemo(() => {
+    if (tourState.active) return [];
     if (!challengeDraft) return challenges;
     const draftOverlay: ChallengeTrack = { ...challengeDraft, activeOnChart: true };
     const exists = challenges.some((t) => t.id === challengeDraft.id);
     return exists
       ? challenges.map((t) => (t.id === challengeDraft.id ? draftOverlay : t))
       : [draftOverlay, ...challenges];
-  }, [challenges, challengeDraft]);
+  }, [challenges, challengeDraft, tourState.active]);
+
+  // During active tour: display ONLY constellation lines, solar system, star labels,
+  // DSO labels (no symbols), and hybrid real-sky background; hide all other clutter.
+  const tourAwareLayers = useMemo<LayerSettings>(() => {
+    if (!tourState.active) return effectiveLayers;
+    return {
+      ...effectiveLayers,
+      showConstellationLines: true,
+      showConstellationBoundaries: false,
+      showConstellationNames: false,
+      showSolarSystem: true,
+      showPlanetSurface: true,
+      showSolarSystemLabels: true,
+      showSolarSystemOrbits: false,
+      showStarLabels: true,
+      showProperStarNames: true,
+      showDso: true,
+      showMessierCatalog: true,
+      showCaldwellCatalog: true,
+      showDsoLabels: true,
+      hideDsoSymbols: true,
+      showDoubleStars: false,
+      showDoublePairs: false,
+      showMultipleStars: false,
+      showDoubleStarLabels: false,
+      showNebulaContours: false,
+      showMilkyWay: false,
+      showGridEq: false,
+      showGridAltAz: false,
+      showHorizon: false,
+      showTerrain: false,
+      showEcliptic: false,
+      showFieldStars: false,
+      highlightSessionPlan: false,
+    };
+  }, [tourState.active, effectiveLayers]);
+
+  const tourAwareHips = useMemo<HipsSettings>(() => {
+    if (!tourState.active) return effectiveHips;
+    return {
+      ...effectiveHips,
+      enabled: true,
+      opacity: Math.max(effectiveHips.opacity, 0.78),
+    };
+  }, [tourState.active, effectiveHips]);
+
+  const tourAwareOptics = useMemo<OpticsSettings>(() => {
+    if (!tourState.active) return optics;
+    return {
+      ...optics,
+      showCrosshair: false,
+      showTelrad: false,
+      showFinder7x50: false,
+      showEyepiece: false,
+      showSensorBox: false,
+      showStarHop: false,
+      showSelectionMark: false,
+    };
+  }, [tourState.active, optics]);
+
+  const tourAwareAsterismStore = useMemo<AsterismStoreState>(() => {
+    if (!tourState.active) return asterismStore;
+    return {
+      ...asterismStore,
+      objects: [],
+    };
+  }, [tourState.active, asterismStore]);
 
   // ---------------------------------------------------------------------------
   // Custom Asterism & Star Chain Drawing Handlers (Group > Asterism > Shape)
@@ -4788,6 +5041,54 @@ export default function App() {
     [handleToggleAsterismPreset, handleFocusAsterismGroup]
   );
 
+  const handleReorderAsterismLayers = useCallback(
+    (fromId: string, toId: string) => {
+      commitAsterismMutation((prev) => ({
+        ...prev,
+        layers: reorderItemsById(prev.layers, fromId, toId),
+      }));
+    },
+    [commitAsterismMutation]
+  );
+
+  const handleReorderAsterismGroups = useCallback(
+    (layerId: string, fromId: string, toId: string) => {
+      if (fromId === toId) return;
+      commitAsterismMutation((prev) => {
+        const inLayer = prev.asterisms.filter((g) => g.layerId === layerId);
+        const reordered = reorderItemsById(inLayer, fromId, toId);
+        let cursor = 0;
+        const nextAsterisms = prev.asterisms.map((g) =>
+          g.layerId === layerId ? reordered[cursor++] : g
+        );
+        return {
+          ...prev,
+          asterisms: nextAsterisms,
+        };
+      });
+    },
+    [commitAsterismMutation]
+  );
+
+  const handleReorderAsterismObjects = useCallback(
+    (asterismId: string, fromId: string, toId: string) => {
+      if (fromId === toId) return;
+      commitAsterismMutation((prev) => {
+        const inGrp = prev.objects.filter((o) => o.asterismId === asterismId);
+        const reordered = reorderItemsById(inGrp, fromId, toId);
+        let cursor = 0;
+        const nextObjects = prev.objects.map((o) =>
+          o.asterismId === asterismId ? reordered[cursor++] : o
+        );
+        return {
+          ...prev,
+          objects: nextObjects,
+        };
+      });
+    },
+    [commitAsterismMutation]
+  );
+
   const handleToggleAsterismMode = useCallback(() => {
     setAsterismMode((prev) => {
       setAsterismDraft(null);
@@ -4903,15 +5204,15 @@ export default function App() {
         <div className="flex items-center gap-2.5 shrink-0">
           <button
             type="button"
-            onClick={handleResetToDefaults}
-            title="초기값으로 되돌리기"
+            onClick={handleResetViewOnly}
+            title="초기 화각으로 되돌리기 (설정은 유지)"
             className="text-sm font-bold tracking-tight whitespace-nowrap shrink-0 cursor-pointer hover:opacity-80 transition-opacity"
           >
             NoxChart
           </button>
         </div>
 
-        {/* Center: Coordinate System Switcher, Cardinal Quick-Jump, Limiting Magnitude */}
+        {/* Center: Coordinate System Switcher, Terrain Toggle, Cardinal Quick-Jump, Limiting Magnitude */}
         <div className="flex items-center gap-2 shrink-0">
           {/* Equatorial vs Horizontal Coordinate System Icon-Only Switcher */}
           <div
@@ -4949,7 +5250,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => handleSelectCoordSystem('horizontal')}
-              title="지평좌표계 (Alt/Az · 관측지 지평선 수평)"
+              title="지평좌표계 (Alt/Az · 관측지 지평선 수평 · 지형 활성화)"
               aria-label="지평좌표계"
               className={`w-8 h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
                 view.coordSystem === 'horizontal'
@@ -4968,6 +5269,45 @@ export default function App() {
               <Mountain className="w-4 h-4" />
             </button>
           </div>
+
+          {/* Terrain Visibility Checkbox next to Horizontal Coordinate System */}
+          <label
+            title="지평선 아래 지형 실루엣 표시"
+            className={`h-8 px-2 rounded-lg border flex items-center gap-1.5 text-[11px] font-medium cursor-pointer select-none whitespace-nowrap shrink-0 transition-colors ${
+              layers.showTerrain
+                ? theme === 'white'
+                  ? 'bg-blue-50 border-blue-400 text-blue-800'
+                  : theme === 'red'
+                  ? 'bg-[#2A0505] border-[#B91C1C] text-[#FF6B6B]'
+                  : 'bg-cyan-500/15 border-cyan-400/55 text-cyan-200'
+                : theme === 'white'
+                ? 'bg-slate-100 border-slate-300 text-slate-600 hover:bg-white'
+                : theme === 'red'
+                ? 'bg-[#100101] border-[#420C0C] text-[#B83232] hover:bg-[#220404]'
+                : 'bg-[#0B1220] border-[#25334D] text-slate-400 hover:text-slate-200 hover:bg-[#182438]'
+            }`}
+          >
+            <input
+              type="checkbox"
+              checked={layers.showTerrain}
+              onChange={(e) => {
+                const checked = e.target.checked;
+                setLayers((prev) => ({
+                  ...prev,
+                  showTerrain: checked,
+                  showHorizon: checked ? true : prev.showHorizon,
+                }));
+              }}
+              className={`w-3.5 h-3.5 cursor-pointer ${
+                theme === 'white'
+                  ? 'accent-blue-600'
+                  : theme === 'red'
+                  ? 'accent-red-500'
+                  : 'accent-cyan-400'
+              }`}
+            />
+            <span>지형</span>
+          </label>
 
           {/* Cardinal Direction Quick-Jump Dropdown (Compass icon -> 동/서/남/북 downward) */}
           <div ref={cardinalMenuRef} className="relative shrink-0">
@@ -5528,7 +5868,18 @@ export default function App() {
             }}
             title={
               optics.showSensorBox
-                ? `사진 화각 영역만 PNG 저장 (${activeSensorEquipmentName} · ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°)`
+                ? (() => {
+                    const mActive = Boolean(optics.sensorMosaicSupported);
+                    const sw = mActive ? Math.max(1, optics.sensorMosaicScaleW ?? 1) : 1;
+                    const sh = mActive ? Math.max(1, optics.sensorMosaicScaleH ?? 1) : 1;
+                    const effW = optics.sensorWidthDeg * sw;
+                    const effH = optics.sensorHeightDeg * sh;
+                    const mTag =
+                      mActive && (sw > 1.001 || sh > 1.001)
+                        ? ` 모자이크 ${sw.toFixed(1)}×${sh.toFixed(1)}`
+                        : '';
+                    return `사진 화각 영역만 PNG 저장 (${activeSensorEquipmentName}${mTag} · ${effW.toFixed(2)}° × ${effH.toFixed(2)}°)`;
+                  })()
                 : '촬영 센서 프레임 켜기 (켠 후 다시 클릭하면 사진 화각 PNG 저장)'
             }
             aria-label="사진 화각 PNG 저장"
@@ -5628,19 +5979,21 @@ export default function App() {
               ref={canvasHandleRef}
               view={view}
               theme={theme}
-              layers={effectiveLayers}
-              optics={optics}
+              layers={tourAwareLayers}
+              optics={tourAwareOptics}
               observer={observer}
-              hips={effectiveHips}
+              hips={tourAwareHips}
               catalogs={catalogs}
               selected={selected}
               centerLocked={centerLocked}
-              solarTrails={tempHiddenLayers.solar ? emptySolarTrails : solarTrails}
-              sessionIds={sessionIds}
+              solarTrails={
+                tourState.active || tempHiddenLayers.solar ? emptySolarTrails : solarTrails
+              }
+              sessionIds={tourState.active ? emptySessionIds : sessionIds}
               sessionPlan={sessionPlan}
               challenges={chartChallenges}
               leftDrawerOpen={leftOpen}
-              rightDrawerOpen={false}
+              rightDrawerOpen={rightOpen}
               challengePickMode={isChallengePicking}
               challengePickAllowEmpty={challengePickAllowEmpty}
               challengeDraftCount={challengeDraft?.checkpoints.length ?? 0}
@@ -5651,7 +6004,7 @@ export default function App() {
               onChallengeChartPick={handleChallengeChartPick}
               onUndoChallengeCheckpoint={handleUndoChallengeCheckpoint}
               asterismMode={asterismMode}
-              asterismStore={asterismStore}
+              asterismStore={tourAwareAsterismStore}
               asterismTool={asterismTool}
               asterismPopover={asterismPopover}
               asterismSelectedId={asterismSelectedId}
@@ -5717,7 +6070,7 @@ export default function App() {
                   : undefined
               }
             />
-            {selected && detailWindowOpen && (
+            {selected && detailWindowOpen && !tourState.active && (
               <CelestialInfoWindow
                 selected={selected}
                 centerLocked={centerLocked}
@@ -5733,6 +6086,8 @@ export default function App() {
                 tonightListId={observingListsState.tonightListId}
                 observationLogStore={observationLogStore}
                 asterismMode={asterismMode}
+                leftDrawerOpen={leftOpen}
+                rightDrawerOpen={rightOpen}
                 onClose={() => setDetailWindowOpen(false)}
                 onToggleCenterLock={handleToggleCenterLock}
                 onToggleSolarTrail={handleToggleSolarTrail}
@@ -5833,6 +6188,19 @@ export default function App() {
           />
         </div>
 
+        {/* Left Screen-Edge Auto-Open Trigger Strip */}
+        {!leftOpen && (
+          <div
+            aria-hidden="true"
+            onMouseEnter={() => {
+              pointerInLeftRef.current = true;
+              clearLeftHideTimer();
+              setLeftOpen(true);
+            }}
+            className="no-print absolute inset-y-0 left-0 z-30 w-2.5"
+          />
+        )}
+
         {/* Left Edge Pull-Handle Tab */}
         <button
           type="button"
@@ -5843,6 +6211,7 @@ export default function App() {
           onMouseEnter={() => {
             pointerInLeftRef.current = true;
             clearLeftHideTimer();
+            if (!leftOpen) setLeftOpen(true);
           }}
           onMouseLeave={() => {
             pointerInLeftRef.current = false;
@@ -5850,7 +6219,13 @@ export default function App() {
           }}
           title={leftOpen ? '왼쪽 메뉴 접기' : '왼쪽 메뉴 펼치기'}
           aria-label={leftOpen ? '왼쪽 메뉴 접기' : '왼쪽 메뉴 펼치기'}
-          className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-14 w-5 border border-l-0 flex items-center justify-center transition-[left,background-color] duration-200 ease-out shadow-md ${ui.panel} hover:opacity-90`}
+          className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-16 w-5 border border-l-0 flex items-center justify-center transition-[left,background-color,box-shadow] duration-200 ease-out ${
+            theme === 'white'
+              ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-400 shadow-md'
+              : theme === 'red'
+              ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-[0_0_12px_rgba(239,68,68,0.45)]'
+              : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 border-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.45)]'
+          }`}
           style={{
             left: leftOpen ? '270px' : '0px',
             borderTopRightRadius: '6px',
@@ -5858,9 +6233,9 @@ export default function App() {
           }}
         >
           {leftOpen ? (
-            <ChevronLeft className="w-3.5 h-3.5" />
+            <ChevronLeft className="w-3.5 h-3.5 stroke-[2.5]" />
           ) : (
-            <ChevronRight className="w-3.5 h-3.5" />
+            <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
           )}
         </button>
 
@@ -5873,6 +6248,16 @@ export default function App() {
           onMouseLeave={() => {
             pointerInRightRef.current = false;
             if (rightOpen) scheduleRightHide(260);
+          }}
+          onDragStartCapture={() => {
+            draggingInRightRef.current = true;
+            clearRightHideTimer();
+          }}
+          onDragEndCapture={() => {
+            draggingInRightRef.current = false;
+            if (!pointerInRightRef.current && rightOpen) {
+              scheduleRightHide(260);
+            }
           }}
           onPointerDownCapture={(e) => {
             pointerDownInRightRef.current = true;
@@ -5932,6 +6317,9 @@ export default function App() {
             onToggleObserved={handleToggleObserved}
             onUpdateNotes={handleUpdateNotes}
             onAddRecommendedTonight={handleAddRecommendedTonight}
+            onReorderTonightEntries={handleReorderTonightEntries}
+            onReorderObservingLists={handleReorderObservingLists}
+            onReorderObservingListEntries={handleReorderObservingListEntries}
             onImportSkylist={handleImportSkylistSession}
             onExportSkylist={handleExportSkylistSession}
             challengeOpacity={layers.challengeOpacity}
@@ -5963,6 +6351,8 @@ export default function App() {
             onDeleteChallengeTrack={handleDeleteChallengeTrack}
             onResetBuiltInChallenge={handleResetBuiltInChallenge}
             onImportChallenges={handleImportChallenges}
+            onReorderChallengeTracks={handleReorderChallengeTracks}
+            onReorderChallengeCheckpoints={handleReorderChallengeCheckpoints}
             tourState={tourState}
             tonightTourStops={tonightTourStops}
             onStartTonightTour={handleStartTonightTour}
@@ -5991,6 +6381,9 @@ export default function App() {
             onDeleteAsterismGroup={handleDeleteAsterismGroup}
             onToggleAsterismGroupVisible={handleToggleAsterismGroupVisible}
             onFocusAsterismGroup={handleFocusAsterismGroup}
+            onReorderAsterismLayers={handleReorderAsterismLayers}
+            onReorderAsterismGroups={handleReorderAsterismGroups}
+            onReorderAsterismObjects={handleReorderAsterismObjects}
             onLoadAsterismPresets={handleLoadAsterismPresets}
             onToggleAsterismPreset={handleToggleAsterismPreset}
             onFocusAsterismPreset={handleFocusAsterismPreset}
@@ -6001,8 +6394,22 @@ export default function App() {
             onToggleObjectObserved={handleToggleObjectObserved}
             onFocusObservationTarget={handleFocusObservationTarget}
             onImportObservationLogs={handleImportObservationLogs}
+            onReorderObservationLogs={handleReorderObservationLogs}
           />
         </div>
+
+        {/* Right Screen-Edge Auto-Open Trigger Strip */}
+        {!rightOpen && (
+          <div
+            aria-hidden="true"
+            onMouseEnter={() => {
+              pointerInRightRef.current = true;
+              clearRightHideTimer();
+              setRightOpen(true);
+            }}
+            className="no-print absolute inset-y-0 right-0 z-30 w-2.5"
+          />
+        )}
 
         {/* Right Edge Pull-Handle Tab */}
         <button
@@ -6014,6 +6421,7 @@ export default function App() {
           onMouseEnter={() => {
             pointerInRightRef.current = true;
             clearRightHideTimer();
+            if (!rightOpen) setRightOpen(true);
           }}
           onMouseLeave={() => {
             pointerInRightRef.current = false;
@@ -6021,7 +6429,13 @@ export default function App() {
           }}
           title={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
           aria-label={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
-          className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-14 w-5 border border-r-0 flex items-center justify-center transition-[right,background-color] duration-200 ease-out shadow-md ${ui.panel} hover:opacity-90`}
+          className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-16 w-5 border border-r-0 flex items-center justify-center transition-[right,background-color,box-shadow] duration-200 ease-out ${
+            theme === 'white'
+              ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-400 shadow-md'
+              : theme === 'red'
+              ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-[0_0_12px_rgba(239,68,68,0.45)]'
+              : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 border-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.45)]'
+          }`}
           style={{
             right: rightOpen ? '292px' : '0px',
             borderTopLeftRadius: '6px',
@@ -6029,9 +6443,9 @@ export default function App() {
           }}
         >
           {rightOpen ? (
-            <ChevronRight className="w-3.5 h-3.5" />
+            <ChevronRight className="w-3.5 h-3.5 stroke-[2.5]" />
           ) : (
-            <ChevronLeft className="w-3.5 h-3.5" />
+            <ChevronLeft className="w-3.5 h-3.5 stroke-[2.5]" />
           )}
         </button>
       </main>

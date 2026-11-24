@@ -5,6 +5,7 @@ import {
   CheckSquare,
   ChevronDown,
   ChevronRight,
+  ChevronUp,
   Circle,
   Download,
   FolderPlus,
@@ -81,6 +82,9 @@ interface ObjectInspectorProps {
   onToggleObserved: (id: string, targetListId?: string) => void;
   onUpdateNotes: (id: string, notes: string, targetListId?: string) => void;
   onAddRecommendedTonight: (items: SelectedItem[]) => void;
+  onReorderTonightEntries: (fromId: string, toId: string) => void;
+  onReorderObservingLists: (fromId: string, toId: string) => void;
+  onReorderObservingListEntries: (listId: string, fromId: string, toId: string) => void;
   onImportSkylist: (
     text: string,
     options?: { fileName?: string; targetListId?: string; makeTonight?: boolean }
@@ -118,6 +122,8 @@ interface ObjectInspectorProps {
   onDeleteChallengeTrack: (trackId: string) => void;
   onResetBuiltInChallenge: (trackId: string) => void;
   onImportChallenges: (tracks: ChallengeTrack[]) => { addedCount: number; updatedCount: number };
+  onReorderChallengeTracks: (fromId: string, toId: string) => void;
+  onReorderChallengeCheckpoints: (trackId: string, fromId: string, toId: string) => void;
   // Guided Auto-Tour ("오늘의 투어" & Challenge Track Auto-Tour)
   tourState: GuidedTourState;
   tonightTourStops: TourStop[];
@@ -148,6 +154,9 @@ interface ObjectInspectorProps {
   onDeleteAsterismGroup: (asterismId: string) => void;
   onToggleAsterismGroupVisible: (asterismId: string) => void;
   onFocusAsterismGroup: (grp: AsterismGroup) => void;
+  onReorderAsterismLayers: (fromId: string, toId: string) => void;
+  onReorderAsterismGroups: (layerId: string, fromId: string, toId: string) => void;
+  onReorderAsterismObjects: (asterismId: string, fromId: string, toId: string) => void;
   onLoadAsterismPresets: () => number;
   onToggleAsterismPreset: (preset: BuiltInAsterismPreset) => boolean;
   onFocusAsterismPreset: (preset: BuiltInAsterismPreset) => void;
@@ -181,6 +190,7 @@ interface ObjectInspectorProps {
     addedLogs: number;
     updatedLogs: number;
   };
+  onReorderObservationLogs: (orderedIds: string[]) => void;
 }
 
 export function ObjectInspector({
@@ -209,6 +219,9 @@ export function ObjectInspector({
   onToggleObserved,
   onUpdateNotes,
   onAddRecommendedTonight,
+  onReorderTonightEntries,
+  onReorderObservingLists,
+  onReorderObservingListEntries,
   onImportSkylist,
   onExportSkylist,
   challengeOpacity,
@@ -236,6 +249,8 @@ export function ObjectInspector({
   onDeleteChallengeTrack,
   onResetBuiltInChallenge,
   onImportChallenges,
+  onReorderChallengeTracks,
+  onReorderChallengeCheckpoints,
   tourState,
   tonightTourStops,
   onStartTonightTour,
@@ -264,6 +279,9 @@ export function ObjectInspector({
   onDeleteAsterismGroup,
   onToggleAsterismGroupVisible,
   onFocusAsterismGroup,
+  onReorderAsterismLayers,
+  onReorderAsterismGroups,
+  onReorderAsterismObjects,
   onLoadAsterismPresets,
   onToggleAsterismPreset,
   onFocusAsterismPreset,
@@ -274,6 +292,7 @@ export function ObjectInspector({
   onToggleObjectObserved,
   onFocusObservationTarget,
   onImportObservationLogs,
+  onReorderObservationLogs,
 }: ObjectInspectorProps) {
   const ui = getUiTheme(theme);
   const confirmDialog = useConfirmDialog();
@@ -285,6 +304,12 @@ export function ObjectInspector({
   const [newListName, setNewListName] = useState('');
   const [renamingListId, setRenamingListId] = useState<string | null>(null);
   const [renameDraft, setRenameDraft] = useState('');
+  const [dragSessionState, setDragSessionState] = useState<{
+    kind: 'tonight' | 'list' | 'listEntry';
+    listId?: string;
+    id: string;
+  } | null>(null);
+  const [dragOverSessionKey, setDragOverSessionKey] = useState<string | null>(null);
   const [expandedListIds, setExpandedListIds] = useState<Record<string, boolean>>(() => {
     try {
       const raw = localStorage.getItem('noxchart_observing_lists_collapse_v1');
@@ -588,6 +613,8 @@ export function ObjectInspector({
             onDeleteTrack={onDeleteChallengeTrack}
             onResetBuiltInTrack={onResetBuiltInChallenge}
             onImportTracks={onImportChallenges}
+            onReorderTracks={onReorderChallengeTracks}
+            onReorderCheckpoints={onReorderChallengeCheckpoints}
             tourState={tourState}
             tonightTourStops={tonightTourStops}
             onStartTonightTour={onStartTonightTour}
@@ -620,6 +647,9 @@ export function ObjectInspector({
             onDeleteAsterismGroup={onDeleteAsterismGroup}
             onToggleAsterismGroupVisible={onToggleAsterismGroupVisible}
             onFocusAsterismGroup={onFocusAsterismGroup}
+            onReorderLayers={onReorderAsterismLayers}
+            onReorderAsterismGroups={onReorderAsterismGroups}
+            onReorderAsterismObjects={onReorderAsterismObjects}
             onImportBundle={onImportAsterismBundle}
           />
         ) : activeTab === 'log' ? (
@@ -636,6 +666,7 @@ export function ObjectInspector({
             onToggleObservedStatus={onToggleObjectObserved}
             onFocusTarget={onFocusObservationTarget}
             onImportStore={onImportObservationLogs}
+            onReorderLogs={onReorderObservationLogs}
           />
         ) : (
           /* Observing Session Plan Tab: 오늘 밤 관측목록 / 목록관리 */
@@ -886,11 +917,96 @@ export function ObjectInspector({
                         : 'text-slate-600'
                       : ui.textMuted;
 
+                    const reorderIdx = !recommend25Active
+                      ? resolvedSessionItems.findIndex((r) => r.entry.id === entry.id)
+                      : -1;
+                    const canReorderTonight =
+                      !recommend25Active && resolvedSessionItems.length > 1 && reorderIdx >= 0;
+
                     return (
                       <div
                         key={entry.id}
-                        className={`p-2 flex items-start gap-1.5 transition-colors ${rowBgClass}`}
+                        draggable={canReorderTonight}
+                        onDragStart={(e) => {
+                          if (!canReorderTonight) return;
+                          setDragSessionState({ kind: 'tonight', id: entry.id });
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', entry.id);
+                        }}
+                        onDragOver={(e) => {
+                          if (
+                            !canReorderTonight ||
+                            !dragSessionState ||
+                            dragSessionState.kind !== 'tonight' ||
+                            dragSessionState.id === entry.id
+                          ) {
+                            return;
+                          }
+                          e.preventDefault();
+                          setDragOverSessionKey(`tonight:${entry.id}`);
+                        }}
+                        onDragLeave={() => {
+                          if (dragOverSessionKey === `tonight:${entry.id}`) {
+                            setDragOverSessionKey(null);
+                          }
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          if (
+                            canReorderTonight &&
+                            dragSessionState &&
+                            dragSessionState.kind === 'tonight' &&
+                            dragSessionState.id !== entry.id
+                          ) {
+                            onReorderTonightEntries(dragSessionState.id, entry.id);
+                          }
+                          setDragSessionState(null);
+                          setDragOverSessionKey(null);
+                        }}
+                        onDragEnd={() => {
+                          setDragSessionState(null);
+                          setDragOverSessionKey(null);
+                        }}
+                        className={`p-2 flex items-start gap-1.5 transition-colors ${rowBgClass} ${
+                          dragOverSessionKey === `tonight:${entry.id}`
+                            ? 'ring-1 ring-inset ring-cyan-400'
+                            : ''
+                        }`}
                       >
+                        {canReorderTonight && (
+                          <div className="flex flex-col shrink-0 -ml-0.5 mt-0.5">
+                            <button
+                              type="button"
+                              disabled={reorderIdx === 0}
+                              onClick={() =>
+                                onReorderTonightEntries(
+                                  entry.id,
+                                  resolvedSessionItems[reorderIdx - 1].entry.id
+                                )
+                              }
+                              title="위로 이동"
+                              aria-label={`${title} 위로 이동`}
+                              className={`p-0 leading-none disabled:opacity-25 ${metaColorClass} hover:opacity-100`}
+                            >
+                              <ChevronUp className="w-2.5 h-2.5" />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={reorderIdx === resolvedSessionItems.length - 1}
+                              onClick={() =>
+                                onReorderTonightEntries(
+                                  entry.id,
+                                  resolvedSessionItems[reorderIdx + 1].entry.id
+                                )
+                              }
+                              title="아래로 이동"
+                              aria-label={`${title} 아래로 이동`}
+                              className={`p-0 leading-none disabled:opacity-25 ${metaColorClass} hover:opacity-100`}
+                            >
+                              <ChevronDown className="w-2.5 h-2.5" />
+                            </button>
+                          </div>
+                        )}
                         <button
                           type="button"
                           onClick={() => onToggleObserved(entry.id, '__tonight__')}
@@ -1203,7 +1319,7 @@ export function ObjectInspector({
                   </div>
                 ) : (
                 <div className="space-y-2">
-                  {observingLists.map((list) => {
+                  {observingLists.map((list, listIdx) => {
                     const isTonight = list.id === tonightListId;
                     const isRenaming = renamingListId === list.id;
                     const isExpanded = Boolean(expandedListIds[list.id]);
@@ -1212,6 +1328,47 @@ export function ObjectInspector({
                     return (
                       <div
                         key={list.id}
+                        draggable={observingLists.length > 1}
+                        onDragStart={(e) => {
+                          e.stopPropagation();
+                          setDragSessionState({ kind: 'list', id: list.id });
+                          e.dataTransfer.effectAllowed = 'move';
+                          e.dataTransfer.setData('text/plain', list.id);
+                        }}
+                        onDragOver={(e) => {
+                          if (
+                            !dragSessionState ||
+                            dragSessionState.kind !== 'list' ||
+                            dragSessionState.id === list.id
+                          ) {
+                            return;
+                          }
+                          e.preventDefault();
+                          e.stopPropagation();
+                          setDragOverSessionKey(`list:${list.id}`);
+                        }}
+                        onDragLeave={() => {
+                          if (dragOverSessionKey === `list:${list.id}`) {
+                            setDragOverSessionKey(null);
+                          }
+                        }}
+                        onDrop={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          if (
+                            dragSessionState &&
+                            dragSessionState.kind === 'list' &&
+                            dragSessionState.id !== list.id
+                          ) {
+                            onReorderObservingLists(dragSessionState.id, list.id);
+                          }
+                          setDragSessionState(null);
+                          setDragOverSessionKey(null);
+                        }}
+                        onDragEnd={() => {
+                          setDragSessionState(null);
+                          setDragOverSessionKey(null);
+                        }}
                         className={`border transition-colors overflow-hidden ${
                           isTonight
                             ? theme === 'white'
@@ -1224,12 +1381,42 @@ export function ObjectInspector({
                             : theme === 'red'
                             ? 'border-[#6E1620] bg-[#1A0507] hover:bg-[#23070A]'
                             : 'border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15'
+                        } ${
+                          dragOverSessionKey === `list:${list.id}` ? 'ring-1 ring-cyan-400' : ''
                         }`}
                         style={{ borderRadius: '6px' }}
                       >
                         <div className="p-2 space-y-1.5">
-                          {/* Row 1: Single Tonight Toggle Check + List Name / Inline Rename */}
-                          <div className="flex items-center gap-1.5 min-w-0">
+                          {/* Row 1: Reorder + Single Tonight Toggle Check + List Name / Inline Rename */}
+                          <div className="flex items-center gap-1 min-w-0">
+                            {observingLists.length > 1 && (
+                              <div className="flex flex-col shrink-0 -ml-0.5">
+                                <button
+                                  type="button"
+                                  disabled={listIdx === 0}
+                                  onClick={() =>
+                                    onReorderObservingLists(list.id, observingLists[listIdx - 1].id)
+                                  }
+                                  title="목록 위로 이동"
+                                  aria-label={`${list.name} 위로 이동`}
+                                  className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                >
+                                  <ChevronUp className="w-2.5 h-2.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={listIdx === observingLists.length - 1}
+                                  onClick={() =>
+                                    onReorderObservingLists(list.id, observingLists[listIdx + 1].id)
+                                  }
+                                  title="목록 아래로 이동"
+                                  aria-label={`${list.name} 아래로 이동`}
+                                  className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                >
+                                  <ChevronDown className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                            )}
                             <button
                               type="button"
                               onClick={() => onSetTonightList(list.id)}
@@ -1409,7 +1596,7 @@ export function ObjectInspector({
                               </div>
                             ) : (
                               <div className={`divide-y max-h-[200px] overflow-y-auto astro-scroll ${ui.divider}`}>
-                                {previewItems.map(({ entry, item, hz }) => {
+                                {previewItems.map(({ entry, item, hz }, entryIdx) => {
                                   const isBelowHorizon = hz.altDeg < 0;
                                   const title =
                                     item.kind === 'dso'
@@ -1461,8 +1648,99 @@ export function ObjectInspector({
                                   return (
                                     <div
                                       key={entry.id}
-                                      className={`px-2 py-1.5 flex items-center gap-1.5 ${rowBgClass}`}
+                                      draggable={previewItems.length > 1}
+                                      onDragStart={(e) => {
+                                        e.stopPropagation();
+                                        setDragSessionState({
+                                          kind: 'listEntry',
+                                          listId: list.id,
+                                          id: entry.id,
+                                        });
+                                        e.dataTransfer.effectAllowed = 'move';
+                                        e.dataTransfer.setData('text/plain', entry.id);
+                                      }}
+                                      onDragOver={(e) => {
+                                        if (
+                                          !dragSessionState ||
+                                          dragSessionState.kind !== 'listEntry' ||
+                                          dragSessionState.listId !== list.id ||
+                                          dragSessionState.id === entry.id
+                                        ) {
+                                          return;
+                                        }
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        setDragOverSessionKey(`entry:${list.id}:${entry.id}`);
+                                      }}
+                                      onDragLeave={() => {
+                                        if (dragOverSessionKey === `entry:${list.id}:${entry.id}`) {
+                                          setDragOverSessionKey(null);
+                                        }
+                                      }}
+                                      onDrop={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        if (
+                                          dragSessionState &&
+                                          dragSessionState.kind === 'listEntry' &&
+                                          dragSessionState.listId === list.id &&
+                                          dragSessionState.id !== entry.id
+                                        ) {
+                                          onReorderObservingListEntries(
+                                            list.id,
+                                            dragSessionState.id,
+                                            entry.id
+                                          );
+                                        }
+                                        setDragSessionState(null);
+                                        setDragOverSessionKey(null);
+                                      }}
+                                      onDragEnd={() => {
+                                        setDragSessionState(null);
+                                        setDragOverSessionKey(null);
+                                      }}
+                                      className={`px-2 py-1.5 flex items-center gap-1 ${rowBgClass} ${
+                                        dragOverSessionKey === `entry:${list.id}:${entry.id}`
+                                          ? 'ring-1 ring-inset ring-cyan-400'
+                                          : ''
+                                      }`}
                                     >
+                                      {previewItems.length > 1 && (
+                                        <div className="flex flex-col shrink-0 -ml-0.5">
+                                          <button
+                                            type="button"
+                                            disabled={entryIdx === 0}
+                                            onClick={() =>
+                                              onReorderObservingListEntries(
+                                                list.id,
+                                                entry.id,
+                                                previewItems[entryIdx - 1].entry.id
+                                              )
+                                            }
+                                            title="위로 이동"
+                                            aria-label={`${title} 위로 이동`}
+                                            className={`p-0 leading-none disabled:opacity-25 ${metaColorClass} hover:opacity-100`}
+                                          >
+                                            <ChevronUp className="w-2.5 h-2.5" />
+                                          </button>
+                                          <button
+                                            type="button"
+                                            disabled={entryIdx === previewItems.length - 1}
+                                            onClick={() =>
+                                              onReorderObservingListEntries(
+                                                list.id,
+                                                entry.id,
+                                                previewItems[entryIdx + 1].entry.id
+                                              )
+                                            }
+                                            title="아래로 이동"
+                                            aria-label={`${title} 아래로 이동`}
+                                            className={`p-0 leading-none disabled:opacity-25 ${metaColorClass} hover:opacity-100`}
+                                          >
+                                            <ChevronDown className="w-2.5 h-2.5" />
+                                          </button>
+                                        </div>
+                                      )}
                                       <button
                                         type="button"
                                         onClick={() => onToggleObserved(entry.id, list.id)}

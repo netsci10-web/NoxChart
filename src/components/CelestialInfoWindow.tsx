@@ -5,6 +5,8 @@ import {
   BookOpen,
   Calendar,
   CheckCircle2,
+  ChevronLeft,
+  ChevronRight,
   Circle,
   Crosshair,
   MapPin,
@@ -49,8 +51,11 @@ import {
 import {
   formatCatalogCode,
   formatObjectDisplayName,
+  getCatalogDesignationPriority,
   getSecondaryDesignations,
+  getStarExtraDesignations,
   normalizeCatalogToken,
+  sortCatalogDesignations,
 } from '../utils/catalogNames';
 import {
   buildActiveEquipmentSummary,
@@ -80,6 +85,8 @@ export interface CelestialInfoWindowProps {
   tonightListId: string | null;
   observationLogStore: ObservationLogStoreState;
   asterismMode: boolean;
+  leftDrawerOpen: boolean;
+  rightDrawerOpen: boolean;
   onClose: () => void;
   onToggleCenterLock: () => void;
   onToggleSolarTrail: (bodyId: string) => void;
@@ -118,6 +125,8 @@ export function CelestialInfoWindow({
   tonightListId,
   observationLogStore,
   asterismMode,
+  leftDrawerOpen,
+  rightDrawerOpen,
   onClose,
   onToggleCenterLock,
   onToggleSolarTrail,
@@ -131,6 +140,7 @@ export function CelestialInfoWindow({
   onOpenObservationLogsTab,
 }: CelestialInfoWindowProps) {
   const ui = getUiTheme(theme);
+  const [dockSide, setDockSide] = useState<'left' | 'right'>('right');
   const [detailTargetListId, setDetailTargetListId] = useState<string>('__tonight__');
   const [detailLogDraft, setDetailLogDraft] = useState<{
     id: string | null;
@@ -243,10 +253,10 @@ export function CelestialInfoWindow({
       ? sessionPlan.find((e) => e.id === selected.data.id)
       : detailTargetList?.entries.find((e) => e.id === selected.data.id);
 
-  // Collect ALL names & cross-catalog designations (Korean, English, Messier, Caldwell, NGC/IC, Bayer, HIP, Gaia, WDS, etc.)
+  // Collect ALL names & cross-catalog designations (Messier & Caldwell ALWAYS prioritized first)
   const objectNamesSummary = useMemo(() => {
     const names: string[] = [];
-    const designations: string[] = [];
+    const rawDesignations: string[] = [];
     const seenNames = new Set<string>();
     const seenDesigs = new Set<string>();
 
@@ -263,9 +273,9 @@ export function CelestialInfoWindow({
       const formatted = formatCatalogCode(raw) || raw?.trim() || '';
       if (!formatted) return;
       const norm = normalizeCatalogToken(formatted);
-      if (!norm || seenDesigs.has(norm) || seenNames.has(formatted.toLowerCase())) return;
+      if (!norm || seenDesigs.has(norm)) return;
       seenDesigs.add(norm);
-      designations.push(formatted);
+      rawDesignations.push(formatted);
     };
 
     let conAbbr = '';
@@ -282,19 +292,25 @@ export function CelestialInfoWindow({
         pushDesig(sec);
       }
 
-      // Cross-match Caldwell & other DSO tables to pull every alias & common name
-      const baseTokens = new Set<string>(
-        [dso.id, dso.altId, ...designations]
-          .map((t) => normalizeCatalogToken(t))
-          .filter(Boolean)
-      );
+      // Cross-match Caldwell & all DSO catalogs (by token OR close coordinates) to pull every catalog number
+      const collectBaseTokens = () =>
+        new Set<string>(
+          [dso.id, dso.altId, ...rawDesignations]
+            .map((t) => normalizeCatalogToken(t))
+            .filter(Boolean)
+        );
+      let baseTokens = collectBaseTokens();
+
       for (const c of catalogs.caldwell) {
         const cTokens = [
           normalizeCatalogToken(c.caldwellId),
           normalizeCatalogToken(c.id),
           normalizeCatalogToken(c.altId),
         ].filter(Boolean);
-        if (cTokens.some((t) => baseTokens.has(t))) {
+        const posMatch =
+          Math.abs(c.dec - dso.dec) < 0.05 &&
+          angularDistanceDeg(c.ra, c.dec, dso.ra, dso.dec) < 0.035;
+        if (cTokens.some((t) => baseTokens.has(t)) || posMatch) {
           pushDesig(c.caldwellId);
           pushDesig(c.id);
           pushDesig(c.altId);
@@ -305,12 +321,23 @@ export function CelestialInfoWindow({
           pushName(c.name);
         }
       }
-      for (const other of [...catalogs.dsosBright, ...catalogs.darkNebulae]) {
+
+      baseTokens = collectBaseTokens();
+      for (const other of [
+        ...catalogs.dsosBright,
+        ...catalogs.darkNebulae,
+        ...catalogs.dsosDeep,
+      ]) {
         const oTokens = [
           normalizeCatalogToken(other.id),
           normalizeCatalogToken(other.altId),
         ].filter(Boolean);
-        if (oTokens.some((t) => baseTokens.has(t))) {
+        const tokenMatch = oTokens.some((t) => baseTokens.has(t));
+        const posMatch =
+          !tokenMatch &&
+          Math.abs(other.dec - dso.dec) < 0.025 &&
+          angularDistanceDeg(other.ra, other.dec, dso.ra, dso.dec) < 0.015;
+        if (tokenMatch || posMatch) {
           pushDesig(other.id);
           pushDesig(other.altId);
           for (const sec of getSecondaryDesignations(other.id, other.altId)) {
@@ -320,24 +347,79 @@ export function CelestialInfoWindow({
           pushName(other.name);
         }
       }
+
+      // Second pass over EXTRA_KNOWN_ALIASES for any newly discovered Messier/Caldwell/NGC IDs
+      for (const code of [...rawDesignations]) {
+        for (const sec of getSecondaryDesignations(code)) {
+          pushDesig(sec);
+        }
+      }
     } else if (selected.kind === 'star') {
       const st = selected.data;
       conAbbr = st.con || '';
       pushName(st.koName);
       pushName(st.name);
       pushDesig(st.bayer);
-      if (st.hip) pushDesig(`HIP ${st.hip}`);
-      if (st.gaiaId) pushDesig(`Gaia DR3 ${st.gaiaId}`);
-      pushDesig(st.id);
 
-      // Cross-match bright star record (e.g., if picked from deep/gaia layer with same HIP)
+      let matchedHip = st.hip;
       if (st.hip) {
-        const matchBright = catalogs.brightStars.find((b) => b.hip === st.hip);
-        if (matchBright) {
-          pushName(matchBright.koName);
-          pushName(matchBright.name);
-          pushDesig(matchBright.bayer);
-          pushDesig(matchBright.id);
+        pushDesig(`HIP ${st.hip}`);
+        for (const extra of getStarExtraDesignations(st.hip)) {
+          pushDesig(extra);
+        }
+      }
+      if (st.gaiaId) pushDesig(`Gaia DR3 ${st.gaiaId}`);
+      if (st.id && normalizeCatalogToken(st.id) !== normalizeCatalogToken(st.name)) {
+        pushDesig(st.id);
+      }
+
+      // Cross-match bright star record (by HIP or close coordinates if picked from Gaia/deep layer)
+      const matchBright = st.hip
+        ? catalogs.brightStars.find((b) => b.hip === st.hip)
+        : catalogs.brightStars.find(
+            (b) =>
+              Math.abs(b.dec - st.dec) < 0.015 &&
+              angularDistanceDeg(b.ra, b.dec, st.ra, st.dec) < 0.008
+          );
+      if (matchBright) {
+        if (!conAbbr && matchBright.con) conAbbr = matchBright.con;
+        pushName(matchBright.koName);
+        pushName(matchBright.name);
+        pushDesig(matchBright.bayer);
+        if (matchBright.hip) {
+          matchedHip = matchBright.hip;
+          pushDesig(`HIP ${matchBright.hip}`);
+          for (const extra of getStarExtraDesignations(matchBright.hip)) {
+            pushDesig(extra);
+          }
+        }
+      }
+
+      // Cross-match deep Hipparcos record when picked from Gaia layer without HIP
+      if (!matchedHip) {
+        const matchDeep = catalogs.deepStars.find(
+          (d) =>
+            Math.abs(d.dec - st.dec) < 0.012 &&
+            angularDistanceDeg(d.ra, d.dec, st.ra, st.dec) < 0.006
+        );
+        if (matchDeep?.hip) {
+          pushDesig(`HIP ${matchDeep.hip}`);
+          for (const extra of getStarExtraDesignations(matchDeep.hip)) {
+            pushDesig(extra);
+          }
+        }
+      }
+
+      // Cross-match loaded Gaia DR3 star at the same position
+      if (!st.gaiaId && catalogs.gaiaStars.length > 0) {
+        const matchGaia = catalogs.gaiaStars.find(
+          (g) =>
+            g.gaiaId &&
+            Math.abs(g.dec - st.dec) < 0.01 &&
+            angularDistanceDeg(g.ra, g.dec, st.ra, st.dec) < 0.005
+        );
+        if (matchGaia?.gaiaId) {
+          pushDesig(`Gaia DR3 ${matchGaia.gaiaId}`);
         }
       }
 
@@ -347,6 +429,7 @@ export function CelestialInfoWindow({
           Math.abs(dbl.dec - st.dec) < 0.03 &&
           angularDistanceDeg(dbl.ra, dbl.dec, st.ra, st.dec) < 0.015
         ) {
+          if (!conAbbr && dbl.con) conAbbr = dbl.con;
           pushName(dbl.koName);
           pushName(dbl.name);
           pushDesig(dbl.bayer);
@@ -373,18 +456,36 @@ export function CelestialInfoWindow({
         }
       }
 
-      // Cross-match bright star record at same position for HIP/Bayer/proper names
+      // Cross-match bright star record at same position for HIP/HR/HD/SAO/Flamsteed/Bayer/proper names
       for (const st of catalogs.brightStars) {
         if (
           Math.abs(st.dec - dbl.dec) < 0.03 &&
           angularDistanceDeg(st.ra, st.dec, dbl.ra, dbl.dec) < 0.015
         ) {
+          if (!conAbbr && st.con) conAbbr = st.con;
           pushName(st.koName);
           pushName(st.name);
           pushDesig(st.bayer);
-          if (st.hip) pushDesig(`HIP ${st.hip}`);
-          pushDesig(st.id);
+          if (st.hip) {
+            pushDesig(`HIP ${st.hip}`);
+            for (const extra of getStarExtraDesignations(st.hip)) {
+              pushDesig(extra);
+            }
+          }
           break;
+        }
+      }
+
+      // Cross-match Gaia DR3 star if loaded
+      if (catalogs.gaiaStars.length > 0) {
+        const matchGaia = catalogs.gaiaStars.find(
+          (g) =>
+            g.gaiaId &&
+            Math.abs(g.dec - dbl.dec) < 0.012 &&
+            angularDistanceDeg(g.ra, g.dec, dbl.ra, dbl.dec) < 0.008
+        );
+        if (matchGaia?.gaiaId) {
+          pushDesig(`Gaia DR3 ${matchGaia.gaiaId}`);
         }
       }
     } else {
@@ -394,6 +495,11 @@ export function CelestialInfoWindow({
       pushDesig(pl.id);
     }
 
+    // Remove designations that duplicate a proper name verbatim, then sort with Messier & Caldwell ALWAYS first
+    const designations = sortCatalogDesignations(
+      rawDesignations.filter((d) => !seenNames.has(d.toLowerCase().replace(/\s+/g, ' ')))
+    );
+
     const constellation = conAbbr
       ? catalogs.constellations.find((c) => c.abbr.toLowerCase() === conAbbr.toLowerCase())
       : undefined;
@@ -401,34 +507,29 @@ export function CelestialInfoWindow({
       ? `${constellation.koName} (${constellation.abbr})`
       : conAbbr;
 
-    const primaryTitle =
-      selected.kind === 'dso'
-        ? formatObjectDisplayName(
-            selected.data.koName,
-            selected.data.name,
-            formatCatalogCode(selected.data.id) || selected.data.id
-          )
+    const topFallbackCode =
+      designations[0] ||
+      (selected.kind === 'dso'
+        ? formatCatalogCode(selected.data.id) || selected.data.id
         : selected.kind === 'planet'
-        ? formatObjectDisplayName(
-            selected.data.koName,
-            selected.data.name,
-            selected.data.id
-          )
+        ? selected.data.id
         : selected.kind === 'double'
-        ? formatObjectDisplayName(
-            selected.data.koName,
-            selected.data.name,
-            selected.data.bayer || selected.data.disc
-          )
-        : formatObjectDisplayName(
-            selected.data.koName,
-            selected.data.name,
-            selected.data.bayer || selected.data.id
-          );
+        ? selected.data.bayer || selected.data.disc
+        : selected.data.bayer || selected.data.id);
+
+    const primaryTitle = formatObjectDisplayName(
+      names[0] && /[가-힣]/.test(names[0]) ? names[0] : selected.data.koName,
+      names.find((n) => !/[가-힣]/.test(n)) || selected.data.name,
+      topFallbackCode
+    );
+
+    // Header designation summary: Messier / Caldwell always first, alongside secondary NGC/IC/HD/HIP numbers
+    const headerDesignations = designations.slice(0, 3);
 
     const allLabels: string[] = [];
     const seenAll = new Set<string>();
-    for (const item of [...names, ...designations]) {
+    // Put sorted catalog designations FIRST (Messier -> Caldwell -> NGC -> IC -> Bayer/Flamsteed -> HR -> HD -> HIP...), then alternate names
+    for (const item of [...designations, ...names]) {
       const k = item.toLowerCase().replace(/\s+/g, ' ');
       if (!seenAll.has(k)) {
         seenAll.add(k);
@@ -440,10 +541,22 @@ export function CelestialInfoWindow({
       primaryTitle,
       names,
       designations,
+      headerDesignations,
       allLabels,
       conLabel,
     };
-  }, [selected, catalogs.caldwell, catalogs.dsosBright, catalogs.darkNebulae, catalogs.brightStars, catalogs.doubleStars, catalogs.constellations]);
+  }, [
+    selected,
+    catalogs.caldwell,
+    catalogs.dsosBright,
+    catalogs.dsosDeep,
+    catalogs.darkNebulae,
+    catalogs.brightStars,
+    catalogs.deepStars,
+    catalogs.gaiaStars,
+    catalogs.doubleStars,
+    catalogs.constellations,
+  ]);
 
   // Compact SVG polyline for 24h altitude curve
   const svgW = 230;
@@ -539,19 +652,49 @@ export function CelestialInfoWindow({
       aria-label="천체 정보"
       onPointerDown={(e) => e.stopPropagation()}
       onWheel={(e) => e.stopPropagation()}
-      className={`no-print absolute z-20 top-14 w-[286px] max-h-[calc(100%-68px)] border shadow-2xl backdrop-blur-md flex flex-col overflow-hidden transition-[right] duration-200 ${ui.panel}`}
+      className={`no-print absolute z-20 top-14 w-[286px] max-h-[calc(100%-68px)] border shadow-2xl backdrop-blur-md flex flex-col overflow-hidden transition-[left,right] duration-200 ${ui.panel}`}
       style={{
-        right: asterismMode ? '84px' : '12px',
+        ...(dockSide === 'left'
+          ? { left: `${leftDrawerOpen ? 282 : 12}px` }
+          : { right: `${(rightDrawerOpen ? 292 : 0) + (asterismMode ? 84 : 12)}px` }),
         borderRadius: '8px',
       }}
     >
       {/* Window Header */}
-      <div className={`flex items-center justify-between gap-2 px-2.5 py-1.5 border-b shrink-0 ${ui.divider}`}>
+      <div className={`flex items-center justify-between gap-1.5 px-2.5 py-1.5 border-b shrink-0 ${ui.divider}`}>
         <div className="flex items-center gap-1.5 min-w-0">
           <Target className={`w-3.5 h-3.5 shrink-0 ${ui.accentText}`} />
           <span className={`text-[11px] font-semibold tracking-[-0.04em] truncate ${ui.textPrimary}`}>
             천체 정보
           </span>
+          <div className="flex items-center gap-0.5 ml-1 shrink-0" role="group" aria-label="천체 정보 표시 위치">
+            <button
+              type="button"
+              onClick={() => setDockSide('left')}
+              title="천체 정보를 왼쪽에 표시"
+              aria-label="왼쪽에 표시"
+              aria-pressed={dockSide === 'left'}
+              className={`p-0.5 border transition-colors ${
+                dockSide === 'left' ? ui.buttonActive : ui.buttonIdle
+              }`}
+              style={{ borderRadius: '4px' }}
+            >
+              <ChevronLeft className="w-3 h-3" />
+            </button>
+            <button
+              type="button"
+              onClick={() => setDockSide('right')}
+              title="천체 정보를 오른쪽에 표시"
+              aria-label="오른쪽에 표시"
+              aria-pressed={dockSide === 'right'}
+              className={`p-0.5 border transition-colors ${
+                dockSide === 'right' ? ui.buttonActive : ui.buttonIdle
+              }`}
+              style={{ borderRadius: '4px' }}
+            >
+              <ChevronRight className="w-3 h-3" />
+            </button>
+          </div>
         </div>
         <button
           type="button"
@@ -573,7 +716,7 @@ export function CelestialInfoWindow({
             {selected.kind === 'planet'
               ? `${selected.data.symbol} 태양계 · ${selected.data.category}`
               : [
-                  objectNamesSummary.designations[0],
+                  ...objectNamesSummary.headerDesignations,
                   objectNamesSummary.conLabel,
                 ]
                   .filter(Boolean)
@@ -595,17 +738,25 @@ export function CelestialInfoWindow({
                 : '이중성 (Double Star · 2구성성)'
               : '항성 (Fixed Star)'}
           </div>
-          {objectNamesSummary.allLabels.length > 1 && (
+          {objectNamesSummary.allLabels.length > 0 && (
             <div className="pt-1 flex flex-wrap gap-1">
-              {objectNamesSummary.allLabels.map((lbl) => (
-                <span
-                  key={lbl}
-                  className={`px-1.5 py-0.5 border font-mono text-[9.5px] leading-tight tracking-[-0.03em] break-all ${ui.border} ${ui.panelMuted} ${ui.textSecondary}`}
-                  style={{ borderRadius: '4px' }}
-                >
-                  {lbl}
-                </span>
-              ))}
+              {objectNamesSummary.allLabels.map((lbl) => {
+                const prio = getCatalogDesignationPriority(lbl);
+                const isMessierOrCaldwell = prio === 0 || prio === 1;
+                return (
+                  <span
+                    key={lbl}
+                    className={`px-1.5 py-0.5 border font-mono text-[9.5px] leading-tight tracking-[-0.03em] break-all ${
+                      isMessierOrCaldwell
+                        ? `${ui.buttonActive} font-semibold`
+                        : `${ui.border} ${ui.panelMuted} ${ui.textSecondary}`
+                    }`}
+                    style={{ borderRadius: '4px' }}
+                  >
+                    {lbl}
+                  </span>
+                );
+              })}
             </div>
           )}
         </div>

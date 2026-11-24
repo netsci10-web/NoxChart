@@ -1155,8 +1155,23 @@ function drawOpticalReticles(
   }
 
   if (optics.showSensorBox) {
-    const wPx = stereoRadiusPx(optics.sensorWidthDeg) * 2;
-    const hPx = stereoRadiusPx(optics.sensorHeightDeg) * 2;
+    const mosaicSupported = Boolean(optics.sensorMosaicSupported);
+    const mosaicMax = Math.max(1.2, Math.min(4.0, optics.sensorMosaicMaxScale ?? 2.0));
+    const scaleW = mosaicSupported
+      ? Math.max(1.0, Math.min(mosaicMax, optics.sensorMosaicScaleW ?? 1.0))
+      : 1.0;
+    const scaleH = mosaicSupported
+      ? Math.max(1.0, Math.min(mosaicMax, optics.sensorMosaicScaleH ?? 1.0))
+      : 1.0;
+    const isMosaicExpanded = mosaicSupported && (scaleW > 1.001 || scaleH > 1.001);
+    const effW = optics.sensorWidthDeg * scaleW;
+    const effH = optics.sensorHeightDeg * scaleH;
+
+    const wPx = stereoRadiusPx(effW) * 2;
+    const hPx = stereoRadiusPx(effH) * 2;
+    const baseWPx = stereoRadiusPx(optics.sensorWidthDeg) * 2;
+    const baseHPx = stereoRadiusPx(optics.sensorHeightDeg) * 2;
+
     if (wPx >= 6 && hPx >= 6) {
       const rawSensorRot = optics.sensorRotationLocked ? 0 : (optics.sensorRotationDeg ?? 0);
       const normSensorRot = ((rawSensorRot % 360) + 360) % 360;
@@ -1175,9 +1190,47 @@ function drawOpticalReticles(
       if (screenRotActive) {
         ctx.rotate(screenSensorRotDeg * DEG2RAD);
       }
+
+      // Inner single-frame reference rectangle when mosaic is expanded
+      if (isMosaicExpanded && baseWPx >= 4 && baseHPx >= 4) {
+        ctx.save();
+        ctx.strokeStyle = palette.reticleSensor;
+        ctx.globalAlpha = 0.45;
+        ctx.lineWidth = 1.0;
+        ctx.setLineDash([4, 3]);
+        ctx.strokeRect(-baseWPx / 2, -baseHPx / 2, baseWPx, baseHPx);
+        ctx.restore();
+      }
+
+      // Outer active sensor / mosaic frame
       ctx.strokeStyle = palette.reticleSensor;
-      ctx.lineWidth = 1.3;
+      ctx.lineWidth = isMosaicExpanded ? 1.6 : 1.3;
       ctx.strokeRect(-wPx / 2, -hPx / 2, wPx, hPx);
+
+      // Corner ticks for mosaic frame readability
+      if (isMosaicExpanded && wPx >= 24 && hPx >= 24) {
+        const tick = Math.min(10, wPx * 0.12, hPx * 0.12);
+        ctx.lineWidth = 2.0;
+        ctx.beginPath();
+        // TL
+        ctx.moveTo(-wPx / 2, -hPx / 2 + tick);
+        ctx.lineTo(-wPx / 2, -hPx / 2);
+        ctx.lineTo(-wPx / 2 + tick, -hPx / 2);
+        // TR
+        ctx.moveTo(wPx / 2 - tick, -hPx / 2);
+        ctx.lineTo(wPx / 2, -hPx / 2);
+        ctx.lineTo(wPx / 2, -hPx / 2 + tick);
+        // BL
+        ctx.moveTo(-wPx / 2, hPx / 2 - tick);
+        ctx.lineTo(-wPx / 2, hPx / 2);
+        ctx.lineTo(-wPx / 2 + tick, hPx / 2);
+        // BR
+        ctx.moveTo(wPx / 2 - tick, hPx / 2);
+        ctx.lineTo(wPx / 2, hPx / 2);
+        ctx.lineTo(wPx / 2, hPx / 2 - tick);
+        ctx.stroke();
+      }
+
       if ((screenRotActive || sensorRotActive) && hPx >= 14) {
         ctx.lineWidth = 1.6;
         ctx.beginPath();
@@ -1191,11 +1244,10 @@ function drawOpticalReticles(
         sensorRotActive || view.coordSystem === 'equatorial'
           ? ` · 지평 ${Math.round(normSensorRot)}°`
           : '';
-      ctx.fillText(
-        `FOV ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°${rotTag}`,
-        -wPx / 2,
-        -hPx / 2 - 5
-      );
+      const frameLabel = isMosaicExpanded
+        ? `모자이크 ${effW.toFixed(2)}° × ${effH.toFixed(2)}° (${scaleW.toFixed(1)}×${scaleH.toFixed(1)})${rotTag}`
+        : `FOV ${optics.sensorWidthDeg.toFixed(2)}° × ${optics.sensorHeightDeg.toFixed(2)}°${rotTag}`;
+      ctx.fillText(frameLabel, -wPx / 2, -hPx / 2 - 5);
       ctx.restore();
     }
   }
@@ -1969,10 +2021,12 @@ function renderStarChartPass(
       const { dso, pt, belowMinAlt, isSelected, isOnScreen, isKnownForced, labelPrefix } = entry;
 
       visibleDsoCount++;
-      const hideSelectedOverlay = !isSensorPhoto && isSelected && !optics.showSelectionMark;
-      let symR = isSensorPhoto ? 6 : 10;
+      const hideDsoSymbol = Boolean(layers.hideDsoSymbols) || isSensorPhoto;
+      const hideSelectedOverlay =
+        !isSensorPhoto && !layers.hideDsoSymbols && isSelected && !optics.showSelectionMark;
+      let symR = hideDsoSymbol ? 6 : 10;
 
-      if (!hideSelectedOverlay && !isSensorPhoto) {
+      if (!hideSelectedOverlay && !hideDsoSymbol) {
         const symColor = palette.dsoColor[dso.type] ?? palette.dsoLabel;
         symR = drawDsoSymbol(
           ctx,
@@ -2011,7 +2065,12 @@ function renderStarChartPass(
         item: { kind: 'dso', data: dso },
       });
 
-      if ((layers.showDsoLabels || isKnownForced) && !belowMinAlt && isOnScreen && !hideSelectedOverlay) {
+      if (
+        (layers.showDsoLabels || isKnownForced) &&
+        !belowMinAlt &&
+        isOnScreen &&
+        (!hideSelectedOverlay || Boolean(layers.hideDsoSymbols))
+      ) {
         const showCommon = view.fsz < 42 && dso.koName;
         const primaryCode = labelPrefix && labelPrefix !== dso.id ? labelPrefix : dso.id;
         const text = showCommon ? `${primaryCode} ${dso.koName}` : primaryCode;

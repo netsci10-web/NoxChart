@@ -839,8 +839,18 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         ) {
           return;
         }
-        const sensorW = Math.max(0.05, optics.sensorWidthDeg);
-        const sensorH = Math.max(0.05, optics.sensorHeightDeg);
+        const mosaicSupported = Boolean(optics.sensorMosaicSupported);
+        const mosaicMax = Math.max(1.2, Math.min(4.0, optics.sensorMosaicMaxScale ?? 2.0));
+        const mosaicScaleW = mosaicSupported
+          ? Math.max(1.0, Math.min(mosaicMax, optics.sensorMosaicScaleW ?? 1.0))
+          : 1.0;
+        const mosaicScaleH = mosaicSupported
+          ? Math.max(1.0, Math.min(mosaicMax, optics.sensorMosaicScaleH ?? 1.0))
+          : 1.0;
+        const isMosaicExpanded =
+          mosaicSupported && (mosaicScaleW > 1.001 || mosaicScaleH > 1.001);
+        const sensorW = Math.max(0.05, optics.sensorWidthDeg * mosaicScaleW);
+        const sensorH = Math.max(0.05, optics.sensorHeightDeg * mosaicScaleH);
         const tanW = Math.tan((sensorW * DEG2RAD) / 4);
         const tanH = Math.tan((sensorH * DEG2RAD) / 4);
         const LONG_SIDE = 1800;
@@ -916,7 +926,10 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           row2LeftParts.push(constellationLabel);
         }
         if (captionCfg.showEquipmentFov) {
-          row2LeftParts.push(`${equipDisplayName} (${fovSizeText})`);
+          const mosaicSuffix = isMosaicExpanded
+            ? ` · 모자이크 ${mosaicScaleW.toFixed(1)}×${mosaicScaleH.toFixed(1)}`
+            : '';
+          row2LeftParts.push(`${equipDisplayName}${mosaicSuffix} (${fovSizeText})`);
         }
         if (customNoteText) {
           row2LeftParts.push(customNoteText);

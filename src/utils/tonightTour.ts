@@ -394,29 +394,49 @@ const CURATED_TONIGHT_SPECS: CuratedTargetSpec[] = [
   },
 ];
 
-export function computeRecommendedFov(item: SelectedItem): number {
+export function computeRecommendedFov(item: SelectedItem, tightDso = false): number {
   if (item.kind === 'planet') {
     const id = item.data.id;
-    if (id === 'Moon') return 2.2;
-    if (id === 'Sun') return 2.5;
-    if (id === 'Jupiter') return 0.35;
-    if (id === 'Saturn') return 0.18;
-    if (id === 'Mars' || id === 'Venus' || id === 'Mercury') return 0.14;
-    if (item.data.group === 'moon') return 0.25;
-    return 1.5;
+    if (id === 'Moon') return 1.8;
+    if (id === 'Sun') return 2.0;
+    if (id === 'Jupiter') return 0.25;
+    if (id === 'Saturn') return 0.14;
+    if (id === 'Mars' || id === 'Venus' || id === 'Mercury') return 0.11;
+    if (item.data.group === 'moon') return 0.2;
+    return 1.2;
   }
   if (item.kind === 'double') {
-    return Math.max(0.25, Math.min(2.2, (item.data.sep / 3600) * 65));
+    return Math.max(0.18, Math.min(1.6, (item.data.sep / 3600) * 55));
   }
   if (item.kind === 'star') {
-    return 18;
+    return 14;
   }
   // DSO: scale FOV cleanly to object angular diameter (majAx in arcminutes)
+  if (tightDso) {
+    const fallbackArcminByType: Record<string, number> = {
+      PN: 1.5,
+      GC: 8.5,
+      G: 7.0,
+      OC: 18.0,
+      EN: 26.0,
+      RN: 18.0,
+      DN: 24.0,
+      SNR: 28.0,
+      DARK: 25.0,
+    };
+    const majArcmin =
+      item.data.majAx && item.data.majAx > 0
+        ? item.data.majAx
+        : fallbackArcminByType[item.data.type] ?? 10;
+    const majDeg = majArcmin / 60;
+    // Frame DSO generously to fill most of the viewport (~60% of frame diameter)
+    return Math.max(0.06, Math.min(3.6, majDeg * 1.65));
+  }
   const majDeg = Math.max(0.02, (item.data.majAx || 10) / 60);
   if (item.data.type === 'PN' && majDeg < 0.08) {
-    return 1.1;
+    return 0.45;
   }
-  return Math.max(1.4, Math.min(8.5, majDeg * 4.2));
+  return Math.max(0.35, Math.min(6.5, majDeg * 2.6));
 }
 
 function resolveCuratedTarget(
@@ -787,7 +807,10 @@ export function buildChallengeTourStops(
       altDeg: hz.altDeg,
       azDeg: hz.azDeg,
       compass: getCompassDirection(hz.azDeg),
-      recommendedFovDeg: curatedSpec?.fovOverrideDeg ?? computeRecommendedFov(item),
+      recommendedFovDeg:
+        item.kind === 'dso'
+          ? computeRecommendedFov(item, true)
+          : curatedSpec?.fovOverrideDeg ?? computeRecommendedFov(item, true),
       guideText: cp.guideNote || curatedSpec?.guide || fallbackGuide,
       checkpointId: cp.id,
     });

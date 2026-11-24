@@ -135,6 +135,7 @@ export interface LayerSettings {
   showMessierCatalog: boolean; // 알려진 심우주 천체: 메시에 (M1-M110) 독립 표시
   showCaldwellCatalog: boolean; // 알려진 심우주 천체: 콜드웰 (C1-C109) 독립 표시
   dsoSymbolDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to render)
+  hideDsoSymbols?: boolean; // Runtime override: hide DSO symbols/rings while preserving DSO labels (e.g. during guided tour)
   showDsoLabels: boolean;
   dsoLabelDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to label)
   dsoOpacity: number; // 0.05..1.0 심우주 천체 심볼 · 라벨 진하기
@@ -209,6 +210,10 @@ export interface OpticsSettings {
   sensorRotationDeg: number; // Clockwise rotation angle (0..360°) of camera sensor framing box
   sensorEquipmentLabel?: string; // Active camera / telescope / smart scope label for sensor frame export
   sensorRotationLocked?: boolean; // True when a non-rotatable smart telescope is active
+  sensorMosaicSupported?: boolean; // True when a mosaic-capable smart telescope is active
+  sensorMosaicMaxScale?: number; // Max mosaic scale multiplier supported by active smart telescope (e.g., 2.0, 2.5)
+  sensorMosaicScaleW?: number; // Horizontal mosaic multiplier (1.0 .. maxScale)
+  sensorMosaicScaleH?: number; // Vertical mosaic multiplier (1.0 .. maxScale)
   sensorExportCaption?: SensorExportCaptionConfig; // 촬영센서 화각 PNG 저장 시 하단 설명 설정
   showStarHop: boolean;
   showSelectionMark: boolean; // 선택 천체 타겟 마크 표시 여부
@@ -280,6 +285,7 @@ export interface ObservingListsState {
   lists: ObservingListGroup[];
   tonightListId: string | null;
   tonightEntries: ObservingSessionEntry[];
+  tonightOrder?: string[];
   tonightLinkedOverrides?: Record<
     string,
     { observed?: boolean; notes?: string; excluded?: boolean }
@@ -355,6 +361,8 @@ export interface EquipmentItem {
   pixelSizeUm?: number;
   isSmartTelescope?: boolean;
   supportsSensorRotation?: boolean;
+  supportsMosaic?: boolean;
+  mosaicMaxScale?: number;
 }
 
 export interface EquipmentLockerState {

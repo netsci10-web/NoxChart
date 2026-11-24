@@ -71,6 +71,8 @@ interface FormDraft {
   pixelSizeUm: string;
   isSmartTelescope: boolean;
   supportsSensorRotation: boolean;
+  supportsMosaic: boolean;
+  mosaicMaxScale: string;
 }
 
 const FINDER_COLOR_SWATCHES = [
@@ -102,6 +104,8 @@ function createEmptyDraft(category: EquipmentCategory): FormDraft {
     pixelSizeUm: category === 'camera' ? '3.76' : '',
     isSmartTelescope: false,
     supportsSensorRotation: false,
+    supportsMosaic: false,
+    mosaicMaxScale: '2.0',
   };
 }
 
@@ -125,6 +129,9 @@ function itemToDraft(item: EquipmentItem): FormDraft {
     pixelSizeUm: item.pixelSizeUm !== undefined ? String(item.pixelSizeUm) : '',
     isSmartTelescope: Boolean(item.isSmartTelescope),
     supportsSensorRotation: Boolean(item.supportsSensorRotation),
+    supportsMosaic: Boolean(item.supportsMosaic),
+    mosaicMaxScale:
+      item.mosaicMaxScale !== undefined ? String(item.mosaicMaxScale) : '2.0',
   };
 }
 
@@ -148,6 +155,9 @@ function presetToDraft(preset: EquipmentPreset): FormDraft {
     pixelSizeUm: preset.pixelSizeUm !== undefined ? String(preset.pixelSizeUm) : '',
     isSmartTelescope: Boolean(preset.isSmartTelescope),
     supportsSensorRotation: Boolean(preset.supportsSensorRotation),
+    supportsMosaic: Boolean(preset.supportsMosaic),
+    mosaicMaxScale:
+      preset.mosaicMaxScale !== undefined ? String(preset.mosaicMaxScale) : '2.0',
   };
 }
 
@@ -429,6 +439,8 @@ export function EquipmentLockerPanel({
       pixelSizeUm: selectedPreset.pixelSizeUm,
       isSmartTelescope: selectedPreset.isSmartTelescope,
       supportsSensorRotation: selectedPreset.supportsSensorRotation,
+      supportsMosaic: selectedPreset.supportsMosaic,
+      mosaicMaxScale: selectedPreset.mosaicMaxScale,
     };
     onAddOrUpdateItem(item);
     setFormOpen(false);
@@ -485,6 +497,11 @@ export function EquipmentLockerPanel({
       if (draft.isSmartTelescope) {
         item.isSmartTelescope = true;
         item.supportsSensorRotation = draft.supportsSensorRotation;
+        item.supportsMosaic = draft.supportsMosaic;
+        const parsedScale = parsePos(draft.mosaicMaxScale);
+        item.mosaicMaxScale = parsedScale
+          ? Math.max(1.2, Math.min(4.0, Number(parsedScale.toFixed(1))))
+          : 2.0;
         item.apertureMm = parsePos(draft.apertureMm);
         item.focalLengthMm = parsePos(draft.focalLengthMm);
       }
@@ -1242,6 +1259,42 @@ export function EquipmentLockerPanel({
                           className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
                         />
                       </label>
+                      <div className="flex items-center justify-between gap-1.5 py-0.5">
+                        <label className="flex items-center gap-1.5 cursor-pointer min-w-0">
+                          <input
+                            type="checkbox"
+                            checked={draft.supportsMosaic}
+                            onChange={(e) =>
+                              setDraft((d) => ({
+                                ...d,
+                                supportsMosaic: e.target.checked,
+                              }))
+                            }
+                            className="w-3.5 h-3.5 shrink-0 accent-emerald-500"
+                          />
+                          <span className={`text-[9.5px] tracking-[-0.04em] truncate ${ui.textMuted}`}>
+                            모자이크 촬영 지원
+                          </span>
+                        </label>
+                        {draft.supportsMosaic && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <span className={`text-[9px] ${ui.textMuted}`}>최대</span>
+                            <input
+                              type="number"
+                              min={1.2}
+                              max={4.0}
+                              step={0.1}
+                              value={draft.mosaicMaxScale}
+                              onChange={(e) =>
+                                setDraft((d) => ({ ...d, mosaicMaxScale: e.target.value }))
+                              }
+                              className={`w-12 px-1 py-0.5 border font-mono text-[10px] text-right ${ui.input}`}
+                              style={{ borderRadius: '4px' }}
+                            />
+                            <span className={`text-[9px] font-mono ${ui.textMuted}`}>×</span>
+                          </div>
+                        )}
+                      </div>
                     </div>
                   )}
 

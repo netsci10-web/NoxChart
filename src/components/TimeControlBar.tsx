@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useState } from 'react';
 import {
   ChevronsLeft,
   ChevronsRight,
@@ -88,21 +88,9 @@ export function TimeControlBar({
   observer,
   onChangeObserver,
 }: TimeControlBarProps) {
-  const [liveNowMs, setLiveNowMs] = useState(() => Date.now());
   const [selectedUnit, setSelectedUnit] = useState<TimeUnit>('hour');
 
-  // Tick local clock every 1s when live time is active so HH:MM:SS updates smoothly
-  useEffect(() => {
-    if (!observer.useLiveTime || observer.isPlaying) return;
-    setLiveNowMs(Date.now());
-    const id = window.setInterval(() => {
-      setLiveNowMs(Date.now());
-    }, 1000);
-    return () => window.clearInterval(id);
-  }, [observer.useLiveTime, observer.isPlaying]);
-
-  const displayMs =
-    observer.useLiveTime && !observer.isPlaying ? liveNowMs : observer.timestampMs;
+  const displayMs = observer.timestampMs;
 
   const d = new Date(displayMs);
   const parts: { unit: TimeUnit; value: string; gapAfter?: boolean }[] = [
@@ -117,7 +105,7 @@ export function TimeControlBar({
   const stepSelectedUnit = (delta: number, unitOverride?: TimeUnit) => {
     const targetUnit = unitOverride ?? selectedUnit;
     onChangeObserver((p) => {
-      const baseMs = p.useLiveTime ? Date.now() : p.timestampMs;
+      const baseMs = p.isPlaying && p.useLiveTime ? Date.now() : p.timestampMs;
       return {
         ...p,
         useLiveTime: false,
@@ -128,7 +116,6 @@ export function TimeControlBar({
 
   const handleResetNow = () => {
     const now = Date.now();
-    setLiveNowMs(now);
     onChangeObserver((p) => ({
       ...p,
       useLiveTime: true,
@@ -145,7 +132,7 @@ export function TimeControlBar({
       return {
         ...p,
         useLiveTime: keepLive,
-        timestampMs: p.useLiveTime ? Date.now() : p.timestampMs,
+        timestampMs: p.isPlaying && p.useLiveTime ? Date.now() : p.timestampMs,
         isPlaying: nextPlaying,
       };
     });

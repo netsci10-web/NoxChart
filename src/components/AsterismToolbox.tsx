@@ -577,7 +577,7 @@ export function AsterismToolbox({
 
       {/* Right-Edge Vertical Floating Drawing Toolbox */}
       <div
-        className={`no-print absolute top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-1 p-1.5 border shadow-md backdrop-blur-sm transition-all ${ui.hudOverlay}`}
+        className={`no-print absolute top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-1 p-1.5 border shadow-md backdrop-blur-sm transition-[right] duration-200 ease-out ${ui.hudOverlay}`}
         style={{ right: `${rightEdgeOffsetPx}px`, borderRadius: '8px' }}
         aria-label="성군 작도 도구"
       >
