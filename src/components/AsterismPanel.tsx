@@ -174,6 +174,21 @@ export function AsterismPanel({
     return () => window.clearTimeout(t);
   }, [notice]);
 
+  const activeAsterismGroup = store.activeAsterismId
+    ? store.asterisms.find((g) => g.id === store.activeAsterismId) ?? null
+    : null;
+
+  // Keep the active asterism and its parent group expanded while drawing
+  useEffect(() => {
+    if (!asterismMode || !activeAsterismGroup) return;
+    setOpenLayers((prev) =>
+      prev[activeAsterismGroup.layerId] ? prev : { ...prev, [activeAsterismGroup.layerId]: true }
+    );
+    setOpenAsterisms((prev) =>
+      prev[activeAsterismGroup.id] ? prev : { ...prev, [activeAsterismGroup.id]: true }
+    );
+  }, [asterismMode, activeAsterismGroup?.id, activeAsterismGroup?.layerId]);
+
   const allLayersVisible =
     store.layers.length > 0 &&
     store.layers.every((l) => l.visible) &&
@@ -282,7 +297,9 @@ export function AsterismPanel({
           <button
             type="button"
             onClick={() => {
-              onCreateAsterismGroup();
+              const newId = onCreateAsterismGroup();
+              setOpenLayers((prev) => ({ ...prev, [store.activeLayerId]: true }));
+              setOpenAsterisms((prev) => ({ ...prev, [newId]: true }));
               if (!asterismMode) onToggleAsterismMode();
               setNotice('새 성군을 만들고 작도 모드를 켰습니다.');
             }}
@@ -392,7 +409,9 @@ export function AsterismPanel({
             const layerAsterisms = store.asterisms.filter((g) => g.layerId === layer.id);
             const isActiveLayer = store.activeLayerId === layer.id;
             const isRenamingLayer = renamingLayerId === layer.id;
-            const isLayerCollapsed = !openLayers[layer.id];
+            const isLockedOpenLayer =
+              asterismMode && activeAsterismGroup?.layerId === layer.id;
+            const isLayerCollapsed = !isLockedOpenLayer && !openLayers[layer.id];
             const visibleAsterismCount = layerAsterisms.filter((g) => g.visible).length;
             const groupVisState: 'all' | 'partial' | 'none' =
               layerAsterisms.length === 0
@@ -487,10 +506,19 @@ export function AsterismPanel({
                   )}
                   <button
                     type="button"
-                    onClick={() =>
-                      setOpenLayers((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }))
+                    disabled={isLockedOpenLayer}
+                    onClick={() => {
+                      if (isLockedOpenLayer) return;
+                      setOpenLayers((prev) => ({ ...prev, [layer.id]: !prev[layer.id] }));
+                    }}
+                    title={
+                      isLockedOpenLayer
+                        ? '작도 중인 성군이 포함된 그룹은 접을 수 없습니다'
+                        : '그룹 펼치기/접기'
                     }
-                    className={`p-0.5 shrink-0 ${ui.textMuted}`}
+                    className={`p-0.5 shrink-0 ${ui.textMuted} ${
+                      isLockedOpenLayer ? 'opacity-45 cursor-not-allowed' : ''
+                    }`}
                     aria-label="그룹 펼치기/접기"
                   >
                     {isLayerCollapsed ? (
@@ -589,8 +617,9 @@ export function AsterismPanel({
                   <button
                     type="button"
                     onClick={() => {
-                      onCreateAsterismGroup(undefined, layer.id);
+                      const newId = onCreateAsterismGroup(undefined, layer.id);
                       setOpenLayers((prev) => ({ ...prev, [layer.id]: true }));
+                      setOpenAsterisms((prev) => ({ ...prev, [newId]: true }));
                     }}
                     title="이 그룹에 새 성군 추가"
                     className={`p-0.5 ${ui.textMuted} hover:opacity-100 shrink-0`}
@@ -628,7 +657,8 @@ export function AsterismPanel({
                     {layerAsterisms.map((grp, grpIdx) => {
                       const shapes = store.objects.filter((o) => o.asterismId === grp.id);
                       const isActiveGrp = store.activeAsterismId === grp.id;
-                      const isGrpCollapsed = !openAsterisms[grp.id];
+                      const isLockedOpenGrp = asterismMode && isActiveGrp;
+                      const isGrpCollapsed = !isLockedOpenGrp && !openAsterisms[grp.id];
                       const isRenamingGrp = renamingAsterismId === grp.id;
 
                       return (
@@ -722,13 +752,22 @@ export function AsterismPanel({
                             )}
                             <button
                               type="button"
-                              onClick={() =>
+                              disabled={isLockedOpenGrp}
+                              onClick={() => {
+                                if (isLockedOpenGrp) return;
                                 setOpenAsterisms((prev) => ({
                                   ...prev,
                                   [grp.id]: !prev[grp.id],
-                                }))
+                                }));
+                              }}
+                              title={
+                                isLockedOpenGrp
+                                  ? '작도 중인 성군은 접을 수 없습니다'
+                                  : '성군 도형 펼치기/접기'
                               }
-                              className={`p-0.5 shrink-0 ${ui.textMuted}`}
+                              className={`p-0.5 shrink-0 ${ui.textMuted} ${
+                                isLockedOpenGrp ? 'opacity-45 cursor-not-allowed' : ''
+                              }`}
                               aria-label="성군 도형 펼치기/접기"
                             >
                               {isGrpCollapsed ? (

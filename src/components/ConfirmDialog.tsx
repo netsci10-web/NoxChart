@@ -72,6 +72,7 @@ export function ConfirmDialogModal({ request, theme, onResolve }: ConfirmDialogM
       aria-labelledby="noxchart-confirm-dialog-title"
       className="fixed inset-0 z-[240] flex items-center justify-center bg-black/60 backdrop-blur-[2px] p-4"
       onClick={() => onResolve(false)}
+      onContextMenu={(e) => e.preventDefault()}
     >
       <div
         className={`w-full max-w-[330px] border shadow-2xl p-4 space-y-3 ${ui.panel} ${ui.border}`}

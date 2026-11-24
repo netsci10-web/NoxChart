@@ -200,18 +200,74 @@ function projectSphericalCircle(
   centerDecDeg: number,
   radiusDeg: number,
   projector: AsterismProjector,
-  segments = 64
+  segments = 72
 ): { x: number; y: number }[] {
   const clampedR = Math.max(0.005, Math.min(89, radiusDeg));
   const pts: { x: number; y: number }[] = [];
   for (let i = 0; i < segments; i++) {
     const pa = (i / segments) * 360;
     const pCel = destinationPointSpherical(centerRaDeg, centerDecDeg, pa, clampedR);
-    const pScr = projector.project(pCel.raDeg, pCel.decDeg, 360);
-    if (!pScr) return [];
-    pts.push(pScr);
+    const pScr = projector.project(pCel.raDeg, pCel.decDeg, 100000);
+    if (pScr) pts.push(pScr);
   }
   return pts;
+}
+
+function projectSphericalCircleRuns(
+  centerRaDeg: number,
+  centerDecDeg: number,
+  radiusDeg: number,
+  projector: AsterismProjector,
+  segments = 72,
+  maxJumpPx = 3200
+): { closed: boolean; runs: { x: number; y: number }[][]; allPts: { x: number; y: number }[] } {
+  const clampedR = Math.max(0.005, Math.min(89, radiusDeg));
+  const raw: ({ x: number; y: number } | null)[] = [];
+  const allPts: { x: number; y: number }[] = [];
+  for (let i = 0; i < segments; i++) {
+    const pa = (i / segments) * 360;
+    const pCel = destinationPointSpherical(centerRaDeg, centerDecDeg, pa, clampedR);
+    const pScr = projector.project(pCel.raDeg, pCel.decDeg, 100000);
+    raw.push(pScr);
+    if (pScr) allPts.push(pScr);
+  }
+
+  let hasBreak = raw.some((p) => p === null);
+  if (!hasBreak && allPts.length === segments) {
+    for (let i = 0; i < allPts.length; i++) {
+      const a = allPts[i];
+      const b = allPts[(i + 1) % allPts.length];
+      if (Math.hypot(b.x - a.x, b.y - a.y) > maxJumpPx) {
+        hasBreak = true;
+        break;
+      }
+    }
+    if (!hasBreak) {
+      return { closed: true, runs: [allPts], allPts };
+    }
+  }
+
+  const runs: { x: number; y: number }[][] = [];
+  let cur: { x: number; y: number }[] = [];
+  for (let i = 0; i <= segments; i++) {
+    const p = raw[i % segments];
+    if (!p) {
+      if (cur.length >= 2) runs.push(cur);
+      cur = [];
+      continue;
+    }
+    if (cur.length > 0) {
+      const prev = cur[cur.length - 1];
+      if (Math.hypot(p.x - prev.x, p.y - prev.y) > maxJumpPx) {
+        if (cur.length >= 2) runs.push(cur);
+        cur = [p];
+        continue;
+      }
+    }
+    cur.push(p);
+  }
+  if (cur.length >= 2) runs.push(cur);
+  return { closed: false, runs, allPts };
 }
 
 /**
@@ -626,22 +682,21 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
     } else if (obj.type === 'circle' && obj.vertices.length >= 1) {
       const center = obj.vertices[0];
       const radiusDeg = getCircleRadiusDeg(obj);
-      const circlePts = projectSphericalCircle(center.raDeg, center.decDeg, radiusDeg, projector, 64);
-      if (circlePts.length >= 16) {
-        let hasJump = false;
-        for (let i = 1; i < circlePts.length; i++) {
-          if (
-            Math.hypot(circlePts[i].x - circlePts[i - 1].x, circlePts[i].y - circlePts[i - 1].y) > 900
-          ) {
-            hasJump = true;
-            break;
-          }
-        }
-        if (!hasJump) {
-          ctx.beginPath();
-          ctx.moveTo(circlePts[0].x, circlePts[0].y);
-          for (let i = 1; i < circlePts.length; i++) {
-            ctx.lineTo(circlePts[i].x, circlePts[i].y);
+      const circleGeom = projectSphericalCircleRuns(
+        center.raDeg,
+        center.decDeg,
+        radiusDeg,
+        projector,
+        72,
+        Math.max(3200, Math.max(width, height) * 4)
+      );
+      if (circleGeom.runs.length > 0) {
+        ctx.beginPath();
+        if (circleGeom.closed && circleGeom.runs.length === 1) {
+          const ring = circleGeom.runs[0];
+          ctx.moveTo(ring[0].x, ring[0].y);
+          for (let i = 1; i < ring.length; i++) {
+            ctx.lineTo(ring[i].x, ring[i].y);
           }
           ctx.closePath();
 
@@ -653,25 +708,32 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
             ctx.fill();
             ctx.restore();
           }
-
-          applyLineDash(ctx, obj.lineStyle, obj.lineWidth);
-          ctx.stroke();
-
-          if (obj.linkedTitle && obj.linkedTitle.trim()) {
-            const dir: OpticsLabelDirection = obj.linkedTitleDirection ?? 'ne';
-            const anchor = findCircleRimAnchor(circlePts, dir);
-            if (anchor) {
-              drawCircleRimLabel(
-                ctx,
-                anchor.x,
-                anchor.y,
-                dir,
-                obj.linkedTitle,
-                color,
-                theme,
-                effAlpha
-              );
+        } else {
+          for (const run of circleGeom.runs) {
+            ctx.moveTo(run[0].x, run[0].y);
+            for (let i = 1; i < run.length; i++) {
+              ctx.lineTo(run[i].x, run[i].y);
             }
+          }
+        }
+
+        applyLineDash(ctx, obj.lineStyle, obj.lineWidth);
+        ctx.stroke();
+
+        if (obj.linkedTitle && obj.linkedTitle.trim() && circleGeom.allPts.length >= 8) {
+          const dir: OpticsLabelDirection = obj.linkedTitleDirection ?? 'ne';
+          const anchor = findCircleRimAnchor(circleGeom.allPts, dir);
+          if (anchor) {
+            drawCircleRimLabel(
+              ctx,
+              anchor.x,
+              anchor.y,
+              dir,
+              obj.linkedTitle,
+              color,
+              theme,
+              effAlpha
+            );
           }
         }
       }
@@ -744,6 +806,9 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
           ctx.textBaseline = 'middle';
 
           for (let mult = 2; mult <= maxIntMult; mult++) {
+            // Skip drawing a tick mark at the final arrow tip itself so it never collides with the arrowhead
+            if (Math.abs(ext - mult) < 0.08) continue;
+
             const sepM = baseSep * mult;
             const ptM = destinationPointSpherical(vA.raDeg, vA.decDeg, pa, sepM);
             const projM = projector.project(ptM.raDeg, ptM.decDeg);
@@ -799,27 +864,37 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
             ctx.restore();
           }
 
+          const tipPrev = extPts[extPts.length - 2];
           const tip = extPts[extPts.length - 1];
-          drawArrowhead(ctx, extPts[extPts.length - 2], tip, 8 + Math.min(5, obj.lineWidth), color);
+          const tipArrowSize = 9 + Math.min(6, obj.lineWidth) * 1.3;
+          ctx.globalAlpha = Math.min(1, effAlpha);
+          drawArrowhead(ctx, tipPrev, tip, tipArrowSize, color);
+
+          const tdx = tip.x - tipPrev.x;
+          const tdy = tip.y - tipPrev.y;
+          const td = Math.hypot(tdx, tdy) || 1;
+          const tux = tdx / td;
+          const tuy = tdy / td;
 
           ctx.setLineDash([]);
-          ctx.lineWidth = Math.max(1, obj.lineWidth * 0.85);
-          ctx.beginPath();
-          ctx.arc(tip.x, tip.y, 6, 0, Math.PI * 2);
-          ctx.stroke();
           ctx.font = '600 9.5px "IBM Plex Mono", monospace';
-          ctx.textAlign = 'left';
-          ctx.textBaseline = 'middle';
-          const isExactInt = Math.abs(ext - Math.round(ext)) < 0.05 && ext >= 2;
-          const tipText = isExactInt
-            ? formatAngularSeparation(baseSep * ext)
-            : `x${ext.toFixed(1)} (${formatAngularSeparation(baseSep * ext)})`;
+          const isExactInt = Math.abs(ext - Math.round(ext)) < 0.08 && ext >= 2;
+          const multStr = isExactInt ? `x${Math.round(ext)}` : `x${ext.toFixed(1)}`;
+          const tipText = `${multStr} · ${formatAngularSeparation(baseSep * ext)}`;
+
+          const labelOffset = 10;
+          const labelX = tip.x + tux * labelOffset;
+          const labelY = tip.y + tuy * labelOffset;
+          ctx.textAlign = Math.abs(tux) < 0.25 ? 'center' : tux > 0 ? 'left' : 'right';
+          ctx.textBaseline =
+            Math.abs(tuy) > 0.75 ? (tuy > 0 ? 'top' : 'bottom') : 'middle';
+
           ctx.save();
           ctx.lineWidth = 3;
           ctx.strokeStyle = haloColor;
-          ctx.strokeText(tipText, tip.x + 9, tip.y);
+          ctx.strokeText(tipText, labelX, labelY);
           ctx.fillStyle = color;
-          ctx.fillText(tipText, tip.x + 9, tip.y);
+          ctx.fillText(tipText, labelX, labelY);
           ctx.restore();
           ctx.restore();
         }
@@ -944,14 +1019,15 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
         isEyepiece ? 'eyepiece' : 'finder',
         linkedRadiusDeg * 2
       );
-      const circlePts = projectSphericalCircle(
+      const circleGeom = projectSphericalCircleRuns(
         hoverSnap.raDeg,
         hoverSnap.decDeg,
         linkedRadiusDeg,
         projector,
-        64
+        72,
+        Math.max(3200, Math.max(width, height) * 4)
       );
-      if (circlePts.length >= 16) {
+      if (circleGeom.runs.length > 0) {
         const effPreviewWidth = Math.max(0.5, Math.min(6.0, reticleLineWidth));
         const effPreviewAlpha = Math.max(0.1, Math.min(1.0, reticleOpacity));
         ctx.save();
@@ -961,19 +1037,27 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
         ctx.globalAlpha = effPreviewAlpha;
         applyLineDash(ctx, store.settings.defaultLineStyle, effPreviewWidth);
         ctx.beginPath();
-        ctx.moveTo(circlePts[0].x, circlePts[0].y);
-        for (let i = 1; i < circlePts.length; i++) ctx.lineTo(circlePts[i].x, circlePts[i].y);
-        ctx.closePath();
-        if (store.settings.defaultCircleFillEnabled && store.settings.defaultFillAlpha > 0) {
-          ctx.save();
-          ctx.globalAlpha = store.settings.defaultFillAlpha;
-          ctx.fill();
-          ctx.restore();
+        if (circleGeom.closed && circleGeom.runs.length === 1) {
+          const ring = circleGeom.runs[0];
+          ctx.moveTo(ring[0].x, ring[0].y);
+          for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i].x, ring[i].y);
+          ctx.closePath();
+          if (store.settings.defaultCircleFillEnabled && store.settings.defaultFillAlpha > 0) {
+            ctx.save();
+            ctx.globalAlpha = store.settings.defaultFillAlpha;
+            ctx.fill();
+            ctx.restore();
+          }
+        } else {
+          for (const run of circleGeom.runs) {
+            ctx.moveTo(run[0].x, run[0].y);
+            for (let i = 1; i < run.length; i++) ctx.lineTo(run[i].x, run[i].y);
+          }
         }
         ctx.stroke();
 
-        if (showReticleLabel) {
-          const anchor = findCircleRimAnchor(circlePts, reticleLabelDirection);
+        if (showReticleLabel && circleGeom.allPts.length >= 8) {
+          const anchor = findCircleRimAnchor(circleGeom.allPts, reticleLabelDirection);
           if (anchor) {
             drawCircleRimLabel(
               ctx,
@@ -999,63 +1083,87 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
       ctx.globalAlpha = 0.92;
       applyLineDash(ctx, store.settings.defaultLineStyle, store.settings.defaultLineWidth);
 
-      if (draft.type === 'circle' && hoverSnap) {
+      if (draft.type === 'circle') {
         const center = draft.vertices[0];
-        const rDeg = Math.max(
-          0.01,
-          angularDistanceDeg(center.raDeg, center.decDeg, hoverSnap.raDeg, hoverSnap.decDeg)
-        );
-        const circlePts = projectSphericalCircle(center.raDeg, center.decDeg, rDeg, projector, 64);
-        if (circlePts.length >= 16) {
-          ctx.beginPath();
-          ctx.moveTo(circlePts[0].x, circlePts[0].y);
-          for (let i = 1; i < circlePts.length; i++) ctx.lineTo(circlePts[i].x, circlePts[i].y);
-          ctx.closePath();
-          if (store.settings.defaultCircleFillEnabled && store.settings.defaultFillAlpha > 0) {
-            ctx.save();
-            ctx.globalAlpha = store.settings.defaultFillAlpha;
-            ctx.fill();
-            ctx.restore();
+        const cp = projector.project(center.raDeg, center.decDeg, 240);
+        if (hoverSnap) {
+          const rDeg = Math.max(
+            0.01,
+            angularDistanceDeg(center.raDeg, center.decDeg, hoverSnap.raDeg, hoverSnap.decDeg)
+          );
+          const circleGeom = projectSphericalCircleRuns(
+            center.raDeg,
+            center.decDeg,
+            rDeg,
+            projector,
+            72,
+            Math.max(3200, Math.max(width, height) * 4)
+          );
+          if (circleGeom.runs.length > 0) {
+            ctx.beginPath();
+            if (circleGeom.closed && circleGeom.runs.length === 1) {
+              const ring = circleGeom.runs[0];
+              ctx.moveTo(ring[0].x, ring[0].y);
+              for (let i = 1; i < ring.length; i++) ctx.lineTo(ring[i].x, ring[i].y);
+              ctx.closePath();
+              if (store.settings.defaultCircleFillEnabled && store.settings.defaultFillAlpha > 0) {
+                ctx.save();
+                ctx.globalAlpha = store.settings.defaultFillAlpha;
+                ctx.fill();
+                ctx.restore();
+              }
+            } else {
+              for (const run of circleGeom.runs) {
+                ctx.moveTo(run[0].x, run[0].y);
+                for (let i = 1; i < run.length; i++) ctx.lineTo(run[i].x, run[i].y);
+              }
+            }
+            ctx.stroke();
           }
-          ctx.stroke();
-        }
-        const cp = projector.project(center.raDeg, center.decDeg, 80);
-        if (cp) {
-          ctx.setLineDash([3, 3]);
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.moveTo(cp.x, cp.y);
-          ctx.lineTo(hoverSnap.x, hoverSnap.y);
-          ctx.stroke();
+          if (cp) {
+            ctx.setLineDash([3, 3]);
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.moveTo(cp.x, cp.y);
+            ctx.lineTo(hoverSnap.x, hoverSnap.y);
+            ctx.stroke();
 
+            ctx.setLineDash([]);
+            ctx.fillStyle = theme === 'white' ? '#FFFFFF' : '#0B1120';
+            ctx.beginPath();
+            ctx.arc(cp.x, cp.y, 4.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            const mx = (cp.x + hoverSnap.x) / 2;
+            const my = (cp.y + hoverSnap.y) / 2 - 14;
+            const txt = `R ${formatAngularSeparation(rDeg)} · Ø ${formatAngularSeparation(rDeg * 2)}`;
+            ctx.font = '600 10px "IBM Plex Mono", monospace';
+            const tw = ctx.measureText(txt).width;
+            ctx.fillStyle =
+              theme === 'white'
+                ? 'rgba(255,255,255,0.92)'
+                : theme === 'red'
+                ? 'rgba(18,2,2,0.92)'
+                : 'rgba(10,15,28,0.92)';
+            ctx.strokeStyle = activeColor;
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            ctx.roundRect(mx - tw / 2 - 5, my - 8, tw + 10, 16, 4);
+            ctx.fill();
+            ctx.stroke();
+            ctx.fillStyle = activeColor;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillText(txt, mx, my + 0.5);
+          }
+        } else if (cp) {
           ctx.setLineDash([]);
           ctx.fillStyle = theme === 'white' ? '#FFFFFF' : '#0B1120';
           ctx.beginPath();
           ctx.arc(cp.x, cp.y, 4.5, 0, Math.PI * 2);
           ctx.fill();
           ctx.stroke();
-
-          const mx = (cp.x + hoverSnap.x) / 2;
-          const my = (cp.y + hoverSnap.y) / 2 - 14;
-          const txt = `R ${formatAngularSeparation(rDeg)} · Ø ${formatAngularSeparation(rDeg * 2)}`;
-          ctx.font = '600 10px "IBM Plex Mono", monospace';
-          const tw = ctx.measureText(txt).width;
-          ctx.fillStyle =
-            theme === 'white'
-              ? 'rgba(255,255,255,0.92)'
-              : theme === 'red'
-              ? 'rgba(18,2,2,0.92)'
-              : 'rgba(10,15,28,0.92)';
-          ctx.strokeStyle = activeColor;
-          ctx.lineWidth = 1;
-          ctx.beginPath();
-          ctx.roundRect(mx - tw / 2 - 5, my - 8, tw + 10, 16, 4);
-          ctx.fill();
-          ctx.stroke();
-          ctx.fillStyle = activeColor;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(txt, mx, my + 0.5);
         }
       } else {
         const allDraftVerts: AsterismVertex[] = hoverSnap

@@ -1,16 +1,26 @@
 import React, { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react';
 import {
+  ArrowUpRight,
   BookmarkCheck,
   BookmarkPlus,
+  Check,
+  Circle,
   Compass,
   Crosshair,
   FlipHorizontal2,
   FlipVertical2,
+  Hexagon,
   Info,
+  Layers,
   MapPin,
   Minus,
+  MousePointer2,
   Plus,
   Ruler,
+  SlidersHorizontal,
+  Spline,
+  Trash2,
+  Type,
   Undo2,
   X,
 } from 'lucide-react';
@@ -150,7 +160,8 @@ interface StarChartCanvasProps {
       opacity?: number;
       linkedTitle?: string;
       linkedTitleDirection?: OpticsLabelDirection;
-    }
+    },
+    explicitEdge?: AsterismVertex
   ) => void;
   onStartNewAsterismFromStar: (vertex: AsterismVertex) => void;
   onMoveAsterismVertex: (objectId: string, vertexIndex: number, vertex: AsterismVertex) => void;
@@ -535,6 +546,12 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       vertexIndex: number;
       moved: boolean;
     } | null>(null);
+    const circleDragRef = useRef<{
+      startX: number;
+      startY: number;
+      center: AsterismVertex;
+      moved: boolean;
+    } | null>(null);
     const activePointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
     const pinchRef = useRef<{
       active: boolean;
@@ -557,13 +574,25 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     const [hoveredTarget, setHoveredTarget] = useState<ScreenTarget | null>(null);
     const [asterismHoverSnap, setAsterismHoverSnap] = useState<AsterismSnapPreview | null>(null);
     const [rulerHoverPoint, setRulerHoverPoint] = useState<RulerPoint | null>(null);
-    const [contextMenu, setContextMenu] = useState<{
-      x: number;
-      y: number;
-      target: SelectedItem | null;
-    } | null>(null);
+    const [contextMenu, setContextMenu] = useState<
+      | { mode: 'chart'; x: number; y: number; target: SelectedItem | null }
+      | {
+          mode: 'asterism';
+          x: number;
+          y: number;
+          target: SelectedItem | null;
+          deleteTarget:
+            | { kind: 'vertex'; objectId: string; vertexIndex: number }
+            | { kind: 'object'; objectId: string }
+            | null;
+        }
+      | null
+    >(null);
     const contextMenuRef = useRef<HTMLDivElement>(null);
-    const skipNextContextMenuRef = useRef(false);
+
+    useEffect(() => {
+      setContextMenu(null);
+    }, [asterismMode]);
     const [pointerEq, setPointerEq] = useState<{ raDeg: number; decDeg: number } | null>(null);
     const [pointerScreen, setPointerScreen] = useState<{ x: number; y: number } | null>(null);
     const [renderStats, setRenderStats] = useState<{
@@ -1586,37 +1615,9 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         setContextMenu(null);
       }
 
-      // Secondary (right) mouse button: only preserve asterism vertex deletion, otherwise let custom context menu handle it
+      // Secondary (right) mouse button: handled strictly in onContextMenu after e.preventDefault()
+      // so opening a confirm modal (e.g. vertex deletion) never leaks the OS/browser context menu
       if (e.button === 2) {
-        if (asterismMode && !challengePickMode && asterismTool === 'select') {
-          const rect = e.currentTarget.getBoundingClientRect();
-          const x = e.clientX - rect.left;
-          const y = e.clientY - rect.top;
-          const eff = getEffectiveTransformAtPoint(x, y, view);
-          const proj = createProjectionParams(
-            eff.view,
-            size.width,
-            size.height,
-            lstDeg,
-            observer.lat,
-            eff.rotationDeg
-          );
-          const hitAst = hitTestAsterisms(
-            x,
-            y,
-            asterismStore,
-            asterismSelectedId,
-            view.fsz,
-            {
-              project: (raDeg, decDeg, margin = 200) =>
-                projectStereographic(raDeg, decDeg, proj, margin),
-            }
-          );
-          if (hitAst?.kind === 'vertex' && hitAst.vertexIndex !== undefined) {
-            skipNextContextMenuRef.current = true;
-            onDeleteAsterismVertex(hitAst.objectId, hitAst.vertexIndex);
-          }
-        }
         return;
       }
 
@@ -1633,6 +1634,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       if (activePointersRef.current.size >= 2) {
         dragRef.current = null;
         vertexDragRef.current = null;
+        circleDragRef.current = null;
         const geom = getActivePinchGeometry();
         if (geom) {
           pinchRef.current = {
@@ -1696,6 +1698,40 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
               moved: true,
             };
           }
+          return;
+        }
+      }
+
+      // Interactive circle drawing: supports both click-and-drag (center -> release rim) and 2-click (center -> rim)
+      if (
+        !rulerMode &&
+        asterismMode &&
+        !challengePickMode &&
+        asterismTool === 'circle' &&
+        !asterismStore.settings.circleLinkEyepiece &&
+        !asterismStore.settings.circleLinkFinder
+      ) {
+        const snap = computeSnapAtPoint(x, y);
+        if (snap && (snap.snapped || asterismStore.settings.allowFreeSpace)) {
+          if (asterismDraft && asterismDraft.type === 'circle' && asterismDraft.vertices.length >= 1) {
+            circleDragRef.current = {
+              startX: e.clientX,
+              startY: e.clientY,
+              center: asterismDraft.vertices[0],
+              moved: true,
+            };
+            setAsterismHoverSnap(snap);
+            return;
+          }
+          const centerV = snapToVertex(snap);
+          circleDragRef.current = {
+            startX: e.clientX,
+            startY: e.clientY,
+            center: centerV,
+            moved: false,
+          };
+          onAddAsterismDraftPoint(centerV);
+          setAsterismHoverSnap(snap);
           return;
         }
       }
@@ -1789,6 +1825,20 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         return;
       }
 
+      // Active Asterism Circle Dragging (live radius preview without panning chart)
+      const cDrag = circleDragRef.current;
+      if (cDrag) {
+        if (!cDrag.moved && Math.hypot(e.clientX - cDrag.startX, e.clientY - cDrag.startY) > 5) {
+          cDrag.moved = true;
+        }
+        const snap = computeSnapAtPoint(x, y);
+        setAsterismHoverSnap(
+          snap && (snap.snapped || asterismStore.settings.allowFreeSpace) ? snap : null
+        );
+        setHoveredTarget(null);
+        return;
+      }
+
       const drag = dragRef.current;
       if (drag && drag.active) {
         const dx = e.clientX - drag.startX;
@@ -1876,6 +1926,34 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         setAsterismHoverSnap(null);
         if (!isCancel && wasMoved) {
           onCommitAsterismDrag();
+        }
+        return;
+      }
+
+      if (circleDragRef.current) {
+        const cDrag = circleDragRef.current;
+        circleDragRef.current = null;
+        if (isCancel) {
+          onCancelAsterismDraft();
+          return;
+        }
+        if (cDrag.moved) {
+          const rect = e.currentTarget.getBoundingClientRect();
+          const upX = e.clientX - rect.left;
+          const upY = e.clientY - rect.top;
+          const snap = computeSnapAtPoint(upX, upY);
+          if (snap && (snap.snapped || asterismStore.settings.allowFreeSpace)) {
+            const edgeV = snapToVertex(snap);
+            const rDeg = angularDistanceDeg(
+              cDrag.center.raDeg,
+              cDrag.center.decDeg,
+              edgeV.raDeg,
+              edgeV.decDeg
+            );
+            if (rDeg > 0.0005) {
+              onCreateAsterismCircle(cDrag.center, Math.max(0.02, rDeg), undefined, edgeV);
+            }
+          }
         }
         return;
       }
@@ -2133,15 +2211,83 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
     const handleContextMenu = (e: React.MouseEvent<HTMLCanvasElement>) => {
       e.preventDefault();
-      if (skipNextContextMenuRef.current) {
-        skipNextContextMenuRef.current = false;
-        return;
-      }
       const rect = e.currentTarget.getBoundingClientRect();
       const x = e.clientX - rect.left;
       const y = e.clientY - rect.top;
+
       const hit = findHitTarget(x, y, 8);
       const target = hit ? hit.item : null;
+
+      // In Asterism Drawing Mode:
+      // Show the drawing menu (tools, props/layers, delete) + divider + original star chart menu.
+      // Right-clicking empty space selects that empty location (clears previous shape selection
+      // and never targets a previously selected shape for deletion).
+      if (asterismMode && !challengePickMode) {
+        let deleteTarget:
+          | { kind: 'vertex'; objectId: string; vertexIndex: number }
+          | { kind: 'object'; objectId: string }
+          | null = null;
+
+        if (!asterismDraft) {
+          const eff = getEffectiveTransformAtPoint(x, y, view);
+          const proj = createProjectionParams(
+            eff.view,
+            size.width,
+            size.height,
+            lstDeg,
+            observer.lat,
+            eff.rotationDeg
+          );
+          const hitAst = hitTestAsterisms(
+            x,
+            y,
+            asterismStore,
+            asterismSelectedId,
+            view.fsz,
+            {
+              project: (raDeg, decDeg, margin = 200) =>
+                projectStereographic(raDeg, decDeg, proj, margin),
+            }
+          );
+          if (hitAst) {
+            const hitObj = asterismStore.objects.find((o) => o.id === hitAst.objectId);
+            if (hitObj) {
+              if (asterismSelectedId !== hitAst.objectId) {
+                onSelectAsterism(hitAst.objectId);
+              }
+              const canDeleteVertex =
+                hitAst.kind === 'vertex' &&
+                hitAst.vertexIndex !== undefined &&
+                ((hitObj.type === 'polyline' && hitObj.vertices.length > 2) ||
+                  (hitObj.type === 'polygon' && hitObj.vertices.length > 3));
+              if (canDeleteVertex && hitAst.vertexIndex !== undefined) {
+                deleteTarget = {
+                  kind: 'vertex',
+                  objectId: hitAst.objectId,
+                  vertexIndex: hitAst.vertexIndex,
+                };
+              } else {
+                deleteTarget = { kind: 'object', objectId: hitAst.objectId };
+              }
+            }
+          } else if (asterismSelectedId !== null) {
+            onSelectAsterism(null);
+          }
+        }
+
+        const menuW = target ? 186 : 156;
+        const menuH = target ? 464 : 374;
+        const clampedX = Math.max(8, Math.min(size.width - menuW - 8, x));
+        const clampedY = Math.max(8, Math.min(size.height - menuH - 8, y));
+        setContextMenu({
+          mode: 'asterism',
+          x: clampedX,
+          y: clampedY,
+          target,
+          deleteTarget,
+        });
+        return;
+      }
 
       const menuW = target ? 186 : 124;
       const menuH = target ? 240 : 132;
@@ -2149,6 +2295,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       const clampedY = Math.max(8, Math.min(size.height - menuH - 8, y));
 
       setContextMenu({
+        mode: 'chart',
         x: clampedX,
         y: clampedY,
         target,
@@ -2263,15 +2410,19 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           style={{ touchAction: 'none' }}
         />
 
-        {/* Custom Star Chart Right-Click Context Menu */}
+        {/* Custom Star Chart / Asterism Drawing Right-Click Context Menu */}
         {contextMenu && (
           <div
             ref={contextMenuRef}
             role="menu"
-            aria-label="성도 빠른 메뉴"
+            aria-label={contextMenu.mode === 'asterism' ? '작도 도구 빠른 메뉴' : '성도 빠른 메뉴'}
             onContextMenu={(e) => e.preventDefault()}
-            className={`no-print absolute z-50 py-1 border shadow-2xl backdrop-blur-md text-[12px] ${
-              contextMenu.target ? 'min-w-[178px]' : 'min-w-[116px]'
+            className={`no-print absolute z-50 py-1 border shadow-2xl backdrop-blur-md text-[12px] max-h-[calc(100%-16px)] overflow-y-auto ${
+              contextMenu.target
+                ? 'min-w-[178px]'
+                : contextMenu.mode === 'asterism'
+                ? 'min-w-[152px]'
+                : 'min-w-[116px]'
             } ${
               theme === 'white'
                 ? 'bg-white/95 border-slate-300 text-slate-800'
@@ -2285,105 +2436,235 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
               borderRadius: '6px',
             }}
           >
-            {contextMenu.target && (() => {
-              const target = contextMenu.target;
-              const inTonight = sessionIds.has(target.data.id);
-              const itemBtnCls =
+            {(() => {
+              const dividerCls =
                 theme === 'white'
-                  ? 'w-full px-2.5 py-1.5 flex items-center gap-2 text-left text-[11.5px] font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-700 transition-colors cursor-pointer'
+                  ? 'border-slate-200'
                   : theme === 'red'
-                  ? 'w-full px-2.5 py-1.5 flex items-center gap-2 text-left text-[11.5px] font-medium text-[#EF4444] hover:bg-[#2A0505] hover:text-[#FF6B6B] transition-colors cursor-pointer'
-                  : 'w-full px-2.5 py-1.5 flex items-center gap-2 text-left text-[11.5px] font-medium text-slate-200 hover:bg-[#192740] hover:text-cyan-300 transition-colors cursor-pointer';
-              return (
-                <>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      onSelect(target);
-                      setContextMenu(null);
-                    }}
-                    className={itemBtnCls}
-                  >
-                    <Info className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                    <span>천체 정보 보기</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      onUnlockCenter?.();
-                      smoothCenterOn(target.data.ra, target.data.dec);
-                      setContextMenu(null);
-                    }}
-                    className={itemBtnCls}
-                  >
-                    <Crosshair className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                    <span>시야 중심 가기</span>
-                  </button>
-                  <button
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      onToggleSessionItem?.(target, '__tonight__');
-                      setContextMenu(null);
-                    }}
-                    className={itemBtnCls}
-                  >
-                    {inTonight ? (
-                      <BookmarkCheck className="w-3.5 h-3.5 shrink-0 opacity-85" />
-                    ) : (
-                      <BookmarkPlus className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                  ? 'border-[#3F0A0A]'
+                  : 'border-slate-700/80';
+              const rowPad = contextMenu.mode === 'asterism' ? 'py-1' : 'py-1.5';
+              const baseItemCls =
+                theme === 'white'
+                  ? `w-full px-2.5 ${rowPad} flex items-center gap-2 text-left text-[11.5px] font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-700 transition-colors cursor-pointer`
+                  : theme === 'red'
+                  ? `w-full px-2.5 ${rowPad} flex items-center gap-2 text-left text-[11.5px] font-medium text-[#EF4444] hover:bg-[#2A0505] hover:text-[#FF6B6B] transition-colors cursor-pointer`
+                  : `w-full px-2.5 ${rowPad} flex items-center gap-2 text-left text-[11.5px] font-medium text-slate-200 hover:bg-[#192740] hover:text-cyan-300 transition-colors cursor-pointer`;
+
+              const renderOriginalChartMenu = (target: SelectedItem | null) => {
+                const inTonight = target ? sessionIds.has(target.data.id) : false;
+                return (
+                  <>
+                    {target && (
+                      <>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            onSelect(target);
+                            setContextMenu(null);
+                          }}
+                          className={baseItemCls}
+                        >
+                          <Info className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                          <span>천체 정보 보기</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            onUnlockCenter?.();
+                            smoothCenterOn(target.data.ra, target.data.dec);
+                            setContextMenu(null);
+                          }}
+                          className={baseItemCls}
+                        >
+                          <Crosshair className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                          <span>시야 중심 가기</span>
+                        </button>
+                        <button
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            onToggleSessionItem?.(target, '__tonight__');
+                            setContextMenu(null);
+                          }}
+                          className={baseItemCls}
+                        >
+                          {inTonight ? (
+                            <BookmarkCheck className="w-3.5 h-3.5 shrink-0 opacity-85" />
+                          ) : (
+                            <BookmarkPlus className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                          )}
+                          <span>
+                            {inTonight ? '오늘밤 관측목록 빼기' : '오늘밤 관측목록 넣기'}
+                          </span>
+                        </button>
+                        <div className={`my-1 border-t ${dividerCls}`} />
+                      </>
                     )}
-                    <span>
-                      {inTonight ? '오늘밤 관측목록 빼기' : '오늘밤 관측목록 넣기'}
-                    </span>
-                  </button>
-                  <div
-                    className={`my-1 border-t ${
-                      theme === 'white'
-                        ? 'border-slate-200'
+                    {(
+                      [
+                        { label: '북', az: 0 },
+                        { label: '동', az: 90 },
+                        { label: '남', az: 180 },
+                        { label: '서', az: 270 },
+                      ] as const
+                    ).map((dir) => (
+                      <button
+                        key={dir.label}
+                        type="button"
+                        role="menuitem"
+                        onClick={() => {
+                          onJumpCardinal?.(dir.az);
+                          setContextMenu(null);
+                        }}
+                        className={`w-full px-2.5 ${rowPad} flex items-center justify-between text-left text-[11.5px] font-medium transition-colors cursor-pointer ${
+                          theme === 'white'
+                            ? 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                            : theme === 'red'
+                            ? 'text-[#EF4444] hover:bg-[#2A0505] hover:text-[#FF6B6B]'
+                            : 'text-slate-200 hover:bg-[#192740] hover:text-cyan-300'
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <Compass className="w-3.5 h-3.5 shrink-0 opacity-75" />
+                          <span>{dir.label}</span>
+                        </span>
+                        <span className="font-mono text-[10px] opacity-60 tabular-nums">
+                          {dir.az}°
+                        </span>
+                      </button>
+                    ))}
+                  </>
+                );
+              };
+
+              if (contextMenu.mode === 'asterism') {
+                const itemCls = (active: boolean) =>
+                  `w-full px-2.5 ${rowPad} flex items-center justify-between gap-2 text-left text-[11.5px] font-medium transition-colors cursor-pointer ${
+                    active
+                      ? theme === 'white'
+                        ? 'bg-blue-50 text-blue-700'
                         : theme === 'red'
-                        ? 'border-[#3F0A0A]'
-                        : 'border-slate-700/80'
-                    }`}
-                  />
-                </>
-              );
-            })()}
-            {(
-              [
-                { label: '북', az: 0 },
-                { label: '동', az: 90 },
-                { label: '남', az: 180 },
-                { label: '서', az: 270 },
-              ] as const
-            ).map((dir) => (
-              <button
-                key={dir.label}
-                type="button"
-                role="menuitem"
-                onClick={() => {
-                  onJumpCardinal?.(dir.az);
-                  setContextMenu(null);
-                }}
-                className={`w-full px-2.5 py-1.5 flex items-center justify-between text-left text-[11.5px] font-medium transition-colors cursor-pointer ${
-                  theme === 'white'
-                    ? 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                        ? 'bg-[#2A0505] text-[#FF6B6B]'
+                        : 'bg-[#192740] text-cyan-300'
+                      : theme === 'white'
+                      ? 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'
+                      : theme === 'red'
+                      ? 'text-[#EF4444] hover:bg-[#2A0505] hover:text-[#FF6B6B]'
+                      : 'text-slate-200 hover:bg-[#192740] hover:text-cyan-300'
+                  }`;
+                const deleteTarget = contextMenu.deleteTarget;
+                const deleteTag =
+                  deleteTarget?.kind === 'vertex'
+                    ? '꼭짓점'
+                    : deleteTarget?.kind === 'object'
+                    ? '도형'
+                    : null;
+                const deleteItemCls = deleteTarget
+                  ? theme === 'white'
+                    ? `w-full px-2.5 ${rowPad} flex items-center justify-between gap-2 text-left text-[11.5px] font-medium text-rose-600 hover:bg-rose-50 hover:text-rose-700 transition-colors cursor-pointer`
                     : theme === 'red'
-                    ? 'text-[#EF4444] hover:bg-[#2A0505] hover:text-[#FF6B6B]'
-                    : 'text-slate-200 hover:bg-[#192740] hover:text-cyan-300'
-                }`}
-              >
-                <span className="flex items-center gap-2">
-                  <Compass className="w-3.5 h-3.5 shrink-0 opacity-75" />
-                  <span>{dir.label}</span>
-                </span>
-                <span className="font-mono text-[10px] opacity-60 tabular-nums">
-                  {dir.az}°
-                </span>
-              </button>
-            ))}
+                    ? `w-full px-2.5 ${rowPad} flex items-center justify-between gap-2 text-left text-[11.5px] font-medium text-[#FF6B6B] hover:bg-[#2A0505] transition-colors cursor-pointer`
+                    : `w-full px-2.5 ${rowPad} flex items-center justify-between gap-2 text-left text-[11.5px] font-medium text-rose-400 hover:bg-rose-950/60 hover:text-rose-300 transition-colors cursor-pointer`
+                  : `w-full px-2.5 ${rowPad} flex items-center justify-between gap-2 text-left text-[11.5px] font-medium opacity-40 cursor-not-allowed`;
+
+                const toolItems: { id: AsterismTool; label: string; icon: React.ReactNode }[] = [
+                  { id: 'select', label: '선택', icon: <MousePointer2 className="w-3.5 h-3.5 shrink-0 opacity-80" /> },
+                  { id: 'polyline', label: '폴리라인', icon: <Spline className="w-3.5 h-3.5 shrink-0 opacity-80" /> },
+                  { id: 'polygon', label: '다각형', icon: <Hexagon className="w-3.5 h-3.5 shrink-0 opacity-80" /> },
+                  { id: 'circle', label: '원', icon: <Circle className="w-3.5 h-3.5 shrink-0 opacity-80" /> },
+                  { id: 'arrow', label: '방향선', icon: <ArrowUpRight className="w-3.5 h-3.5 shrink-0 opacity-80" /> },
+                  { id: 'label', label: '텍스트', icon: <Type className="w-3.5 h-3.5 shrink-0 opacity-80" /> },
+                ];
+                return (
+                  <>
+                    {toolItems.map((item) => {
+                      const isActive = asterismTool === item.id;
+                      return (
+                        <button
+                          key={item.id}
+                          type="button"
+                          role="menuitem"
+                          onClick={() => {
+                            if (asterismTool !== item.id) {
+                              onChangeAsterismTool(item.id);
+                            }
+                            setContextMenu(null);
+                          }}
+                          className={itemCls(isActive)}
+                        >
+                          <span className="flex items-center gap-2">
+                            {item.icon}
+                            <span>{item.label}</span>
+                          </span>
+                          {isActive && <Check className="w-3 h-3 shrink-0 opacity-90" />}
+                        </button>
+                      );
+                    })}
+                    <div className={`my-1 border-t ${dividerCls}`} />
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        onChangeAsterismPopover(asterismPopover === 'props' ? 'none' : 'props');
+                        setContextMenu(null);
+                      }}
+                      className={itemCls(asterismPopover === 'props')}
+                    >
+                      <span className="flex items-center gap-2">
+                        <SlidersHorizontal className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                        <span>속성</span>
+                      </span>
+                      {asterismPopover === 'props' && <Check className="w-3 h-3 shrink-0 opacity-90" />}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        onChangeAsterismPopover(asterismPopover === 'layers' ? 'none' : 'layers');
+                        setContextMenu(null);
+                      }}
+                      className={itemCls(asterismPopover === 'layers')}
+                    >
+                      <span className="flex items-center gap-2">
+                        <Layers className="w-3.5 h-3.5 shrink-0 opacity-80" />
+                        <span>레이어</span>
+                      </span>
+                      {asterismPopover === 'layers' && <Check className="w-3 h-3 shrink-0 opacity-90" />}
+                    </button>
+                    <button
+                      type="button"
+                      role="menuitem"
+                      disabled={!deleteTarget}
+                      onClick={() => {
+                        if (!deleteTarget) return;
+                        setContextMenu(null);
+                        if (deleteTarget.kind === 'vertex') {
+                          onDeleteAsterismVertex(deleteTarget.objectId, deleteTarget.vertexIndex);
+                        } else {
+                          onDeleteAsterismObject(deleteTarget.objectId);
+                        }
+                      }}
+                      className={deleteItemCls}
+                    >
+                      <span className="flex items-center gap-2">
+                        <Trash2 className="w-3.5 h-3.5 shrink-0 opacity-85" />
+                        <span>삭제</span>
+                      </span>
+                      {deleteTag && (
+                        <span className="text-[10px] opacity-70">{deleteTag}</span>
+                      )}
+                    </button>
+                    <div className={`my-1 border-t ${dividerCls}`} />
+                    {renderOriginalChartMenu(contextMenu.target)}
+                  </>
+                );
+              }
+
+              return renderOriginalChartMenu(contextMenu.target);
+            })()}
           </div>
         )}
 

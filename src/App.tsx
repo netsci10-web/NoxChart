@@ -5189,6 +5189,7 @@ export default function App() {
         confirmLabel: '삭제',
       });
       if (!ok) return false;
+      const wasActiveAsterism = asterismStoreRef.current.activeAsterismId === asterismId;
       commitAsterismMutation((prev) => {
         const remainingAsterisms = prev.asterisms.filter((g) => g.id !== asterismId);
         const remainingObjects = prev.objects.filter((o) => o.asterismId !== asterismId);
@@ -5199,14 +5200,18 @@ export default function App() {
           objects: remainingObjects,
         };
       });
-      setAsterismSelectedId((sel) => {
-        if (!sel) return null;
-        const stillExists = asterismStoreRef.current.objects.some((o) => o.id === sel);
-        return stillExists ? sel : null;
-      });
+      if (wasActiveAsterism) {
+        handleCloseAsterismMode();
+      } else {
+        setAsterismSelectedId((sel) => {
+          if (!sel) return null;
+          const stillExists = asterismStoreRef.current.objects.some((o) => o.id === sel);
+          return stillExists ? sel : null;
+        });
+      }
       return true;
     },
-    [commitAsterismMutation, requestConfirm]
+    [commitAsterismMutation, handleCloseAsterismMode, requestConfirm]
   );
 
   const handleToggleAsterismGroupVisible = useCallback((asterismId: string) => {
@@ -6730,33 +6735,31 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      if (!asterismMode) {
-                        setRulerMode(false);
-                        setRulerMeasurement(null);
-                        setAsterismDraft(null);
-                        setAsterismTool('select');
-                        setAsterismMode(true);
-                        setInspectorTab('asterism');
-                        setRightOpen(true);
-                      } else if (!rightOpen || inspectorTab !== 'asterism') {
-                        setInspectorTab('asterism');
-                        setRightOpen(true);
-                      } else {
-                        handleCloseAsterismMode();
-                        setRightOpen(false);
-                      }
+                      setInspectorTab('asterism');
+                      setRightOpen((o) => (inspectorTab === 'asterism' ? !o : true));
                     }}
                     title={
                       asterismMode
-                        ? '성군 작도 모드 닫기'
-                        : '성군 작도 (도구모음 및 성군 목록 열기)'
+                        ? '성군 작도 진행 중 (작도 탭 열기/닫기)'
+                        : '성군 작도 탭 열기/닫기'
                     }
                     aria-label="성군 작도"
-                    className={`w-7 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
-                      asterismMode ? activeBoxBtn : idleBoxBtn
+                    aria-pressed={asterismMode || (rightOpen && inspectorTab === 'asterism')}
+                    className={`relative w-7 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+                      asterismMode || (rightOpen && inspectorTab === 'asterism')
+                        ? activeBoxBtn
+                        : idleBoxBtn
                     }`}
                   >
                     <Waypoints className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+                    {asterismMode && (
+                      <span
+                        className={`absolute top-0.5 right-0.5 w-1.5 h-1.5 rounded-full animate-pulse ${
+                          theme === 'red' ? 'bg-[#FF9999]' : 'bg-amber-300'
+                        }`}
+                        aria-hidden="true"
+                      />
+                    )}
                   </button>
 
                   <button
