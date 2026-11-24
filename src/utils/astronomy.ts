@@ -372,10 +372,32 @@ export function angularDistanceDeg(
   const d1 = dec1Deg * DEG2RAD;
   const a2 = ra2Deg * DEG2RAD;
   const d2 = dec2Deg * DEG2RAD;
-  const cosTheta =
-    Math.sin(d1) * Math.sin(d2) +
-    Math.cos(d1) * Math.cos(d2) * Math.cos(a1 - a2);
-  return Math.acos(Math.max(-1, Math.min(1, cosTheta))) * RAD2DEG;
+  const dA = a2 - a1;
+  const sinD1 = Math.sin(d1);
+  const cosD1 = Math.cos(d1);
+  const sinD2 = Math.sin(d2);
+  const cosD2 = Math.cos(d2);
+  const sinDA = Math.sin(dA);
+  const cosDA = Math.cos(dA);
+  const y = Math.hypot(
+    cosD2 * sinDA,
+    cosD1 * sinD2 - sinD1 * cosD2 * cosDA
+  );
+  const x = sinD1 * sinD2 + cosD1 * cosD2 * cosDA;
+  return Math.atan2(y, x) * RAD2DEG;
+}
+
+/**
+ * Format angular separation (degrees >= 0) as "0°0'0"" (D°M'S").
+ */
+export function formatAngularDistanceDMS(deg: number): string {
+  const safeDeg = Number.isFinite(deg) ? Math.max(0, deg) : 0;
+  const totalArcsec = Math.round(safeDeg * 3600);
+  const d = Math.floor(totalArcsec / 3600);
+  const rem = totalArcsec % 3600;
+  const m = Math.floor(rem / 60);
+  const s = rem % 60;
+  return `${d}°${m}'${s}"`;
 }
 
 /**

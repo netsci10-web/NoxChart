@@ -6,7 +6,9 @@ import {
   MapPin,
   Minus,
   Plus,
+  Ruler,
   Undo2,
+  X,
 } from 'lucide-react';
 import { CatalogSnapshot, GAIA_LIVE_MAX_FSZ } from '../data/catalogLoader';
 import {
@@ -29,6 +31,8 @@ import {
   ObservingSessionEntry,
   OpticsLabelDirection,
   OpticsSettings,
+  RulerMeasurement,
+  RulerPoint,
   ScreenTarget,
   SelectedItem,
   ThemeMode,
@@ -38,6 +42,7 @@ import {
   createProjectionParams,
   DEG2RAD,
   equatorialToHorizontal,
+  formatAngularDistanceDMS,
   formatDec,
   formatRA,
   getCompassDirection,
@@ -104,6 +109,12 @@ interface StarChartCanvasProps {
     decDeg: number;
   }) => void;
   onUndoChallengeCheckpoint?: () => void;
+  // Angular Distance Ruler Tool (척도)
+  rulerMode?: boolean;
+  rulerMeasurement?: RulerMeasurement | null;
+  onRulerPickPoint?: (point: RulerPoint) => void;
+  onClearRuler?: () => void;
+  onCloseRulerMode?: () => void;
   // Custom Asterism & Star Chain Drawing Mode
   asterismMode: boolean;
   asterismStore: AsterismStoreState;
@@ -436,6 +447,11 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       onUserCameraInteract,
       onChallengeChartPick,
       onUndoChallengeCheckpoint,
+      rulerMode = false,
+      rulerMeasurement = null,
+      onRulerPickPoint,
+      onClearRuler,
+      onCloseRulerMode,
       asterismMode,
       asterismStore,
       asterismTool,
@@ -529,6 +545,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     const [size, setSize] = useState({ width: 900, height: 680 });
     const [hoveredTarget, setHoveredTarget] = useState<ScreenTarget | null>(null);
     const [asterismHoverSnap, setAsterismHoverSnap] = useState<AsterismSnapPreview | null>(null);
+    const [rulerHoverPoint, setRulerHoverPoint] = useState<RulerPoint | null>(null);
     const [pointerEq, setPointerEq] = useState<{ raDeg: number; decDeg: number } | null>(null);
     const [pointerScreen, setPointerScreen] = useState<{ x: number; y: number } | null>(null);
     const [renderStats, setRenderStats] = useState<{
@@ -549,6 +566,12 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         vertexDragRef.current = null;
       }
     }, [asterismMode]);
+
+    useEffect(() => {
+      if (!rulerMode) {
+        setRulerHoverPoint(null);
+      }
+    }, [rulerMode]);
 
     useEffect(() => {
       return getPlanetRenderer().onTextureReady(() => {
@@ -1271,7 +1294,14 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             selectedObjectId: asterismSelectedId,
             draft: asterismDraft,
             hoverSnap: asterismHoverSnap,
-          }
+          },
+          rulerMode || rulerMeasurement
+            ? {
+                active: rulerMode,
+                measurement: rulerMeasurement,
+                hoverPoint: rulerMode ? rulerHoverPoint : null,
+              }
+            : undefined
         );
         targetsRef.current = result.targets;
         setRenderStats({
@@ -1306,6 +1336,9 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       asterismSelectedId,
       asterismDraft,
       asterismHoverSnap,
+      rulerMode,
+      rulerMeasurement,
+      rulerHoverPoint,
     ]);
 
     const findHitTarget = useCallback(
@@ -1457,6 +1490,54 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       starName: snap.starName,
       mag: snap.mag,
     });
+
+    const resolveRulerPointAt = (
+      x: number,
+      y: number
+    ): { point: RulerPoint; hit: ScreenTarget | null } | null => {
+      const hit = findHitTarget(x, y, 6);
+      if (hit) {
+        const item = hit.item;
+        let label: string | undefined;
+        if (item.kind === 'dso') {
+          label = item.data.koName ? `${item.data.id} ${item.data.koName}` : item.data.id;
+        } else if (item.kind === 'planet') {
+          label = item.data.koName || item.data.name || item.data.id;
+        } else if (item.kind === 'double') {
+          label = item.data.koName || item.data.name || item.data.bayer || item.data.disc;
+        } else {
+          label = item.data.koName || item.data.name || item.data.bayer || item.data.id;
+        }
+        return {
+          point: {
+            raDeg: item.data.ra,
+            decDeg: item.data.dec,
+            snapped: true,
+            label,
+          },
+          hit,
+        };
+      }
+      const eff = getEffectiveTransformAtPoint(x, y, view);
+      const proj = createProjectionParams(
+        eff.view,
+        size.width,
+        size.height,
+        lstDeg,
+        observer.lat,
+        eff.rotationDeg
+      );
+      const unproj = unprojectStereographic(x, y, proj);
+      if (!unproj) return null;
+      return {
+        point: {
+          raDeg: unproj.raDeg,
+          decDeg: unproj.decDeg,
+          snapped: false,
+        },
+        hit: null,
+      };
+    };
 
     const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
       cancelCenterAnim();
@@ -1665,6 +1746,15 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         }
       }
 
+      if (rulerMode && !challengePickMode) {
+        const resolved = resolveRulerPointAt(x, y);
+        setRulerHoverPoint(resolved ? resolved.point : null);
+        setHoveredTarget(resolved ? resolved.hit : null);
+        return;
+      } else if (rulerHoverPoint !== null) {
+        setRulerHoverPoint(null);
+      }
+
       if (asterismMode && !challengePickMode && asterismTool !== 'select') {
         const snap = computeSnapAtPoint(x, y);
         setAsterismHoverSnap(
@@ -1745,6 +1835,15 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         const rect = e.currentTarget.getBoundingClientRect();
         const clickX = e.clientX - rect.left;
         const clickY = e.clientY - rect.top;
+
+        // Angular Distance Ruler Mode clicks (celestial object or empty space)
+        if (rulerMode && !challengePickMode && onRulerPickPoint) {
+          const resolved = resolveRulerPointAt(clickX, clickY);
+          if (resolved) {
+            onRulerPickPoint(resolved.point);
+          }
+          return;
+        }
 
         // Custom Asterism & Star Chain Drawing Mode clicks
         if (asterismMode && !challengePickMode) {
@@ -1867,7 +1966,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     };
 
     const handleDoubleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
-      if (challengePickMode) return;
+      if (challengePickMode || rulerMode) return;
       if (asterismMode && (asterismDraft || asterismTool !== 'select')) {
         if (asterismDraft && asterismDraft.vertices.length >= 2) {
           onFinishAsterismDraft();
@@ -2032,6 +2131,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           onPointerLeave={() => {
             setHoveredTarget(null);
             setAsterismHoverSnap(null);
+            setRulerHoverPoint(null);
             setPointerEq(null);
             setPointerScreen(null);
           }}
@@ -2040,7 +2140,9 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           }}
           onWheel={handleWheel}
           className={`relative z-10 block w-full h-full touch-none ${
-            asterismMode && asterismTool === 'select' ? 'cursor-default' : 'cursor-crosshair'
+            !rulerMode && asterismMode && asterismTool === 'select'
+              ? 'cursor-default'
+              : 'cursor-crosshair'
           }`}
           style={{ touchAction: 'none' }}
         />
@@ -2178,6 +2280,85 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
               >
                 <Undo2 className="w-3 h-3" />
                 <span>실행 취소</span>
+              </button>
+            )}
+          </div>
+        )}
+
+        {/* Bottom-Right Angular Distance Ruler Banner */}
+        {rulerMode && !challengePickMode && (
+          <div
+            className={`no-print absolute z-20 bottom-3 border px-2.5 py-1.5 text-[11px] backdrop-blur-sm transition-[right] duration-200 ease-out flex items-center gap-2 shadow-lg ${ui.hudOverlay}`}
+            style={{ borderRadius: '6px', right: rightDrawerOpen ? '282px' : '12px' }}
+          >
+            <Ruler className={`w-3.5 h-3.5 shrink-0 ${ui.accentText}`} />
+            <div className="flex items-center gap-1.5 whitespace-nowrap">
+              {!rulerMeasurement ? (
+                <>
+                  <span className={`font-semibold ${ui.accentText}`}>척도</span>
+                  <span className={`text-[10.5px] ${ui.textMuted}`}>
+                    · 첫 번째 점(천체 또는 빈 공간)을 클릭하세요
+                  </span>
+                </>
+              ) : !rulerMeasurement.end ? (
+                <>
+                  <span className={`font-semibold ${ui.accentText}`}>척도</span>
+                  <span className={`text-[10.5px] ${ui.textMuted}`}>
+                    · 두 번째 점을 클릭하세요
+                    {rulerHoverPoint && (
+                      <span className={`ml-1.5 font-mono font-semibold ${ui.textPrimary}`}>
+                        {formatAngularDistanceDMS(
+                          angularDistanceDeg(
+                            rulerMeasurement.start.raDeg,
+                            rulerMeasurement.start.decDeg,
+                            rulerHoverPoint.raDeg,
+                            rulerHoverPoint.decDeg
+                          )
+                        )}
+                      </span>
+                    )}
+                  </span>
+                </>
+              ) : (
+                <>
+                  <span className={`font-semibold ${ui.accentText}`}>척도</span>
+                  <span className={`font-mono font-semibold ${ui.textPrimary}`}>
+                    {formatAngularDistanceDMS(
+                      angularDistanceDeg(
+                        rulerMeasurement.start.raDeg,
+                        rulerMeasurement.start.decDeg,
+                        rulerMeasurement.end.raDeg,
+                        rulerMeasurement.end.decDeg
+                      )
+                    )}
+                  </span>
+                  <span className={`hidden sm:inline text-[10.5px] ${ui.textMuted}`}>
+                    · 다른 곳 클릭 시 새 측정
+                  </span>
+                </>
+              )}
+            </div>
+            {rulerMeasurement && onClearRuler && (
+              <button
+                type="button"
+                onClick={onClearRuler}
+                title="측정선 지우기"
+                className={`px-1.5 py-0.5 border text-[10px] font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${ui.buttonIdle}`}
+                style={{ borderRadius: '4px' }}
+              >
+                지우기
+              </button>
+            )}
+            {onCloseRulerMode && (
+              <button
+                type="button"
+                onClick={onCloseRulerMode}
+                title="척도 종료 (Esc)"
+                aria-label="척도 종료"
+                className={`p-0.5 border transition-colors shrink-0 cursor-pointer ${ui.buttonIdle}`}
+                style={{ borderRadius: '4px' }}
+              >
+                <X className="w-3 h-3" />
               </button>
             )}
           </div>

@@ -21,6 +21,8 @@ import {
   ObserverConfig,
   ObservingSessionEntry,
   OpticsSettings,
+  RulerMeasurement,
+  RulerPoint,
   ScreenTarget,
   SelectedItem,
   Star,
@@ -34,6 +36,7 @@ import {
   DEG2RAD,
   equatorialToHorizontal,
   findStarHopGuides,
+  formatAngularDistanceDMS,
   getDsoLimitingMagnitude,
   getHorizonSensorScreenAngleDeg,
   getLimitingMagnitude,
@@ -69,6 +72,12 @@ export interface AsterismRenderContext {
   selectedObjectId: string | null;
   draft: AsterismDraftState | null;
   hoverSnap: AsterismSnapPreview | null;
+}
+
+export interface RulerRenderContext {
+  active: boolean;
+  measurement: RulerMeasurement | null;
+  hoverPoint: RulerPoint | null;
 }
 
 export interface ThemePalette {
@@ -4588,6 +4597,255 @@ function renderStarChartPass(
   };
 }
 
+function clipSegmentToRect(
+  x1: number,
+  y1: number,
+  x2: number,
+  y2: number,
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number
+): { x1: number; y1: number; x2: number; y2: number } | null {
+  let t0 = 0;
+  let t1 = 1;
+  const dx = x2 - x1;
+  const dy = y2 - y1;
+  const clip = (p: number, q: number): boolean => {
+    if (p === 0) return q >= 0;
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return false;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return false;
+      if (r < t1) t1 = r;
+    }
+    return true;
+  };
+  if (
+    clip(-dx, x1 - minX) &&
+    clip(dx, maxX - x1) &&
+    clip(-dy, y1 - minY) &&
+    clip(dy, maxY - y1)
+  ) {
+    return {
+      x1: x1 + t0 * dx,
+      y1: y1 + t0 * dy,
+      x2: x1 + t1 * dx,
+      y2: y1 + t1 * dy,
+    };
+  }
+  return null;
+}
+
+function drawRulerOverlay(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  theme: ThemeMode,
+  proj: ProjectionParams,
+  rulerCtx: RulerRenderContext,
+  innerProj?: ProjectionParams,
+  clipR?: number
+): void {
+  const { active, measurement, hoverPoint } = rulerCtx;
+  if (!active && !measurement) return;
+
+  const cx = width / 2;
+  const cy = height / 2;
+  const projectPoint = (pt: RulerPoint): { x: number; y: number } | null => {
+    if (innerProj && clipR !== undefined) {
+      const innerP = projectStereographic(pt.raDeg, pt.decDeg, innerProj, 4000);
+      if (innerP && Math.hypot(innerP.x - cx, innerP.y - cy) <= clipR) {
+        return innerP;
+      }
+    }
+    return projectStereographic(pt.raDeg, pt.decDeg, proj, 4000);
+  };
+
+  const strokeColor =
+    theme === 'white' ? '#D97706' : theme === 'red' ? '#FF5252' : '#FBBF24';
+  const strokePreviewColor =
+    theme === 'white'
+      ? 'rgba(217, 119, 6, 0.85)'
+      : theme === 'red'
+      ? 'rgba(255, 82, 82, 0.85)'
+      : 'rgba(251, 191, 36, 0.88)';
+  const haloColor =
+    theme === 'white'
+      ? 'rgba(255, 255, 255, 0.82)'
+      : theme === 'red'
+      ? 'rgba(10, 0, 0, 0.85)'
+      : 'rgba(6, 10, 18, 0.82)';
+  const badgeBg =
+    theme === 'white'
+      ? 'rgba(255, 255, 255, 0.94)'
+      : theme === 'red'
+      ? 'rgba(20, 2, 2, 0.92)'
+      : 'rgba(8, 13, 24, 0.92)';
+  const badgeBorder =
+    theme === 'white'
+      ? 'rgba(217, 119, 6, 0.85)'
+      : theme === 'red'
+      ? 'rgba(255, 82, 82, 0.85)'
+      : 'rgba(251, 191, 36, 0.85)';
+  const badgeText =
+    theme === 'white' ? '#92400E' : theme === 'red' ? '#FF8080' : '#FDE68A';
+
+  const drawEndpoint = (
+    x: number,
+    y: number,
+    snapped: boolean,
+    isPreview: boolean
+  ) => {
+    ctx.save();
+    ctx.globalAlpha = isPreview ? 0.82 : 1;
+    // Outer snap ring when anchored to a celestial object
+    if (snapped) {
+      ctx.beginPath();
+      ctx.arc(x, y, 8.5, 0, Math.PI * 2);
+      ctx.strokeStyle = haloColor;
+      ctx.lineWidth = 3;
+      ctx.stroke();
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+    }
+    // Crisp target marker circle
+    ctx.beginPath();
+    ctx.arc(x, y, 4.2, 0, Math.PI * 2);
+    ctx.strokeStyle = haloColor;
+    ctx.lineWidth = 3.2;
+    ctx.stroke();
+    ctx.strokeStyle = strokeColor;
+    ctx.lineWidth = 1.6;
+    ctx.stroke();
+
+    // Inner precision center dot
+    ctx.beginPath();
+    ctx.arc(x, y, 1.8, 0, Math.PI * 2);
+    ctx.fillStyle = strokeColor;
+    ctx.fill();
+    ctx.restore();
+  };
+
+  ctx.save();
+
+  // Before the first click: show subtle snap indicator when hovering a celestial target
+  if (!measurement) {
+    if (active && hoverPoint?.snapped) {
+      const hp = projectPoint(hoverPoint);
+      if (hp) {
+        drawEndpoint(hp.x, hp.y, true, true);
+      }
+    }
+    ctx.restore();
+    return;
+  }
+
+  const startScreen = projectPoint(measurement.start);
+  const endPoint = measurement.end ?? (active ? hoverPoint : null);
+  const isPreview = measurement.end === null;
+  const endScreen = endPoint ? projectPoint(endPoint) : null;
+
+  if (startScreen && endScreen && endPoint) {
+    // 1. Straight connecting line (halo + crisp foreground stroke)
+    ctx.save();
+    ctx.lineCap = 'round';
+    if (isPreview) {
+      ctx.setLineDash([6, 4]);
+    }
+    ctx.beginPath();
+    ctx.moveTo(startScreen.x, startScreen.y);
+    ctx.lineTo(endScreen.x, endScreen.y);
+    ctx.strokeStyle = haloColor;
+    ctx.lineWidth = 3.8;
+    ctx.stroke();
+
+    ctx.strokeStyle = isPreview ? strokePreviewColor : strokeColor;
+    ctx.lineWidth = 1.75;
+    ctx.stroke();
+    ctx.restore();
+
+    // 2. Endpoint markers
+    drawEndpoint(startScreen.x, startScreen.y, Boolean(measurement.start.snapped), false);
+    drawEndpoint(endScreen.x, endScreen.y, Boolean(endPoint.snapped), isPreview);
+
+    // 3. Midpoint angular distance label (0°0'0")
+    const sepDeg = angularDistanceDeg(
+      measurement.start.raDeg,
+      measurement.start.decDeg,
+      endPoint.raDeg,
+      endPoint.decDeg
+    );
+    const labelStr = formatAngularDistanceDMS(sepDeg);
+
+    const visibleSeg = clipSegmentToRect(
+      startScreen.x,
+      startScreen.y,
+      endScreen.x,
+      endScreen.y,
+      28,
+      28,
+      Math.max(30, width - 28),
+      Math.max(30, height - 28)
+    );
+
+    if (visibleSeg) {
+      const segLenPx = Math.hypot(
+        endScreen.x - startScreen.x,
+        endScreen.y - startScreen.y
+      );
+      const midX = (visibleSeg.x1 + visibleSeg.x2) / 2;
+      let midY = (visibleSeg.y1 + visibleSeg.y2) / 2;
+      if (segLenPx < 34) {
+        midY = Math.max(22, midY - 19);
+      }
+
+      ctx.save();
+      ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      const textW = ctx.measureText(labelStr).width;
+      const padX = 7;
+      const boxW = textW + padX * 2;
+      const boxH = 22;
+      const bx = Math.max(8, Math.min(width - boxW - 8, midX - boxW / 2));
+      const by = Math.max(8, Math.min(height - boxH - 8, midY - boxH / 2));
+      const r = 4;
+
+      ctx.beginPath();
+      ctx.moveTo(bx + r, by);
+      ctx.lineTo(bx + boxW - r, by);
+      ctx.quadraticCurveTo(bx + boxW, by, bx + boxW, by + r);
+      ctx.lineTo(bx + boxW, by + boxH - r);
+      ctx.quadraticCurveTo(bx + boxW, by + boxH, bx + boxW - r, by + boxH);
+      ctx.lineTo(bx + r, by + boxH);
+      ctx.quadraticCurveTo(bx, by + boxH, bx, by + boxH - r);
+      ctx.lineTo(bx, by + r);
+      ctx.quadraticCurveTo(bx, by, bx + r, by);
+      ctx.closePath();
+
+      ctx.fillStyle = badgeBg;
+      ctx.fill();
+      ctx.strokeStyle = badgeBorder;
+      ctx.lineWidth = isPreview ? 1.1 : 1.35;
+      if (isPreview) ctx.setLineDash([3, 2]);
+      ctx.stroke();
+      ctx.setLineDash([]);
+
+      ctx.fillStyle = badgeText;
+      ctx.fillText(labelStr, bx + boxW / 2, by + boxH / 2 + 0.5);
+      ctx.restore();
+    }
+  } else if (startScreen) {
+    drawEndpoint(startScreen.x, startScreen.y, Boolean(measurement.start.snapped), false);
+  }
+
+  ctx.restore();
+}
+
 export function renderStarChart(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -4607,7 +4865,8 @@ export function renderStarChart(
   challenges?: ChallengeTrack[],
   overrideRotationDeg?: number,
   sensorPhotoMode?: boolean,
-  asterismCtx?: AsterismRenderContext
+  asterismCtx?: AsterismRenderContext,
+  rulerCtx?: RulerRenderContext
 ): RenderResult {
   const rawFlipActive = view.flipH || view.flipV;
   const normEpRot = optics.showEyepiece
@@ -4636,7 +4895,7 @@ export function renderStarChart(
 
   if (!eyepieceSplitActive) {
     const effectiveView = fullFlipActive ? view : { ...view, flipH: false, flipV: false };
-    return renderStarChartPass(
+    const passRes = renderStarChartPass(
       ctx,
       width,
       height,
@@ -4662,6 +4921,19 @@ export function renderStarChart(
       challenges,
       asterismCtx
     );
+    if (rulerCtx && !sensorPhotoMode) {
+      const lstDeg = getLSTDeg(observer.timestampMs, observer.lon);
+      const rulerProj = createProjectionParams(
+        effectiveView,
+        width,
+        height,
+        lstDeg,
+        observer.lat,
+        fullRotDeg
+      );
+      drawRulerOverlay(ctx, width, height, theme, rulerProj, rulerCtx);
+    }
+    return passRes;
   }
 
   // Dual-pass Eyepiece-Only Optical Flip & Rotation:
@@ -4725,6 +4997,11 @@ export function renderStarChart(
   const proj = createProjectionParams(outerView, width, height, lstDeg, observer.lat, 0);
   const palette = getThemePalette(theme);
   drawOpticalReticles(ctx, width, height, view, theme, optics, proj, palette, true);
+
+  if (rulerCtx) {
+    const innerProj = createProjectionParams(view, width, height, lstDeg, observer.lat, normEpRot);
+    drawRulerOverlay(ctx, width, height, theme, proj, rulerCtx, innerProj, clipR);
+  }
 
   const outerTargets = outerRes.targets.filter((t) => Math.hypot(t.x - cx, t.y - cy) > clipR);
   const innerTargets = innerRes.targets.filter((t) => Math.hypot(t.x - cx, t.y - cy) <= clipR);

@@ -573,6 +573,18 @@ export interface AsterismDraftState {
   vertices: AsterismVertex[];
 }
 
+export interface RulerPoint {
+  /** J2000.0 Right Ascension in degrees (0..360) */
+  raDeg: number;
+  /** J2000.0 Declination in degrees (-90..+90) */
+  decDeg: number;
+  /** True when snapped to a celestial object (star, double star, DSO, planet) */
+  snapped?: boolean;
+  /** Optional display label of the snapped celestial object */
+  label?: string;
+}
 
-
-
+export interface RulerMeasurement {
+  start: RulerPoint;
+  end: RulerPoint | null;
+}

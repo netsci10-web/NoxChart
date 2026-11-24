@@ -16,6 +16,7 @@ import {
   Moon,
   Mountain,
   Printer,
+  Ruler,
   Share2,
   Star,
   Sun,
@@ -85,6 +86,8 @@ import {
   ObservingSessionEntry,
   OpticsLabelDirection,
   OpticsSettings,
+  RulerMeasurement,
+  RulerPoint,
   SavedObservingSite,
   SelectedItem,
   SensorExportCaptionConfig,
@@ -1086,6 +1089,57 @@ export default function App() {
       window.removeEventListener('keydown', handleEsc);
     };
   }, [cardinalMenuOpen]);
+
+  const [rulerMode, setRulerMode] = useState(false);
+  const [rulerMeasurement, setRulerMeasurement] = useState<RulerMeasurement | null>(null);
+
+  const handleToggleRulerMode = useCallback(() => {
+    setRulerMode((prev) => {
+      if (prev) {
+        setRulerMeasurement(null);
+        return false;
+      }
+      setAsterismMode(false);
+      setAsterismDraft(null);
+      setAsterismSelectedId(null);
+      setAsterismPopover('none');
+      return true;
+    });
+  }, []);
+
+  const handleRulerPickPoint = useCallback((point: RulerPoint) => {
+    setRulerMeasurement((prev) => {
+      if (!prev || prev.end !== null) {
+        return { start: point, end: null };
+      }
+      return { start: prev.start, end: point };
+    });
+  }, []);
+
+  const handleClearRuler = useCallback(() => {
+    setRulerMeasurement(null);
+  }, []);
+
+  const handleCloseRulerMode = useCallback(() => {
+    setRulerMode(false);
+    setRulerMeasurement(null);
+  }, []);
+
+  useEffect(() => {
+    if (!rulerMode) return;
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      const target = e.target as HTMLElement | null;
+      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      setRulerMeasurement((prev) => {
+        if (prev) return null;
+        setRulerMode(false);
+        return null;
+      });
+    };
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [rulerMode]);
 
   useEffect(() => {
     if (!printPreview) return;
@@ -6533,8 +6587,26 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right: Grouped Tool Box (관측목록/챌린지/작도), URL Share, PNG Export, Sensor FOV PNG, Print */}
+        {/* Right: Standalone Ruler (척도), Grouped Tool Box (관측목록/챌린지/작도), URL Share, PNG Export, Sensor FOV PNG, Print */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+          <button
+            type="button"
+            onClick={handleToggleRulerMode}
+            title={
+              rulerMode
+                ? '척도 종료 (두 점 사이 각거리 측정 중)'
+                : '척도 (두 점 사이 각거리 측정)'
+            }
+            aria-label="척도"
+            aria-pressed={rulerMode}
+            className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 cursor-pointer ${
+              rulerMode ? ui.buttonActive : ui.buttonIdle
+            }`}
+            style={{ borderRadius: '4px' }}
+          >
+            <Ruler className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+          </button>
+
           {/* Grouped Rectangular Box: 관측목록 · 챌린지 · 작도 */}
           <div
             className={`flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
@@ -6618,6 +6690,8 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       if (!asterismMode) {
+                        setRulerMode(false);
+                        setRulerMeasurement(null);
                         setAsterismDraft(null);
                         setAsterismTool('select');
                         setAsterismMode(true);
@@ -6868,6 +6942,11 @@ export default function App() {
               onUserCameraInteract={handleUserCameraInteract}
               onChallengeChartPick={handleChallengeChartPick}
               onUndoChallengeCheckpoint={handleUndoChallengeCheckpoint}
+              rulerMode={rulerMode}
+              rulerMeasurement={rulerMeasurement}
+              onRulerPickPoint={handleRulerPickPoint}
+              onClearRuler={handleClearRuler}
+              onCloseRulerMode={handleCloseRulerMode}
               asterismMode={asterismMode}
               asterismStore={tourAwareAsterismStore}
               asterismTool={asterismTool}

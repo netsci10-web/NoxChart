@@ -562,7 +562,17 @@ export function AsterismPanel({
                     >
                       <div
                         className={`text-[10.5px] font-semibold truncate ${
-                          isActiveLayer ? ui.accentText : ui.textPrimary
+                          theme === 'white'
+                            ? isActiveLayer
+                              ? 'text-amber-700'
+                              : 'text-amber-800/85'
+                            : theme === 'red'
+                            ? isActiveLayer
+                              ? 'text-[#FF8A80]'
+                              : 'text-[#F87171]/85'
+                            : isActiveLayer
+                            ? 'text-amber-300'
+                            : 'text-amber-400/85'
                         }`}
                       >
                         {isActiveLayer ? '● ' : ''}
