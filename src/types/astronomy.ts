@@ -131,6 +131,7 @@ export interface LayerSettings {
   doubleStarMinSepArcsec: number; // Minimum separation filter in arcseconds
   showDoubleStarLabels: boolean;
   doubleStarLabelDensityPct: number; // 0..100
+  doubleStarOpacity: number; // 0.05..1.0 이중성 · 다중성 표시 · 라벨 진하기
   showDso: boolean;
   showMessierCatalog: boolean; // 알려진 심우주 천체: 메시에 (M1-M110) 독립 표시
   showCaldwellCatalog: boolean; // 알려진 심우주 천체: 콜드웰 (C1-C109) 독립 표시

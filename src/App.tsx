@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { onAuthStateChanged, type User } from 'firebase/auth';
 import {
   Bookmark,
   BookOpen,
@@ -22,12 +23,14 @@ import {
   Waypoints,
   X,
 } from 'lucide-react';
+import { AuthSyncControls } from './components/AuthSyncControls';
 import {
   ConfirmDialogContext,
   ConfirmDialogModal,
   ConfirmDialogOptions,
   PendingConfirmRequest,
 } from './components/ConfirmDialog';
+import { auth, signInWithGoogle, signOutUser } from './firebase';
 import { CelestialInfoWindow } from './components/CelestialInfoWindow';
 import { ControlSidebar } from './components/ControlSidebar';
 import { ObjectInspector } from './components/ObjectInspector';
@@ -137,8 +140,21 @@ import {
 import {
   LayerSettingsBundle,
   loadSavedLayerSettings,
+  sanitizeHipsSettings,
+  sanitizeLayerSettings,
   saveLayerSettingsToLocal,
 } from './utils/layerStorage';
+import {
+  CloudSyncPayload,
+  CloudSyncStatus,
+  computePayloadHashes,
+  formatFriendlyAuthError,
+  formatFriendlySyncError,
+  loadUserCloudData,
+  saveUserCloudRoot,
+  saveUserCloudSubdoc,
+  SyncHashes,
+} from './utils/cloudSync';
 import {
   ACTIVE_SITE_STORAGE_KEY,
   mergeObservingSites,
@@ -269,6 +285,7 @@ const DEFAULT_LAYERS: LayerSettings = {
   doubleStarMinSepArcsec: 1,
   showDoubleStarLabels: true,
   doubleStarLabelDensityPct: 12,
+  doubleStarOpacity: 1.0,
   showDso: true,
   showMessierCatalog: false,
   showCaldwellCatalog: false,
@@ -394,27 +411,29 @@ function loadSavedAppPrefs(): SavedAppPrefs {
   return {};
 }
 
-function loadSavedOpticsSettings(): OpticsSettings {
-  try {
-    const raw = localStorage.getItem(OPTICS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      if (parsed && typeof parsed === 'object') {
-        const boolOr = (k: keyof OpticsSettings, fallback: boolean): boolean =>
-          typeof parsed[k] === 'boolean' ? (parsed[k] as boolean) : fallback;
-        const numOr = (k: keyof OpticsSettings, fallback: number, min: number, max: number): number =>
-          typeof parsed[k] === 'number' && Number.isFinite(parsed[k] as number)
-            ? Math.max(min, Math.min(max, parsed[k] as number))
-            : fallback;
-        const mode: OpticsSettings['eyepieceInputMode'] =
-          parsed.eyepieceInputMode === 'direct' ||
-          parsed.eyepieceInputMode === 'calc' ||
-          parsed.eyepieceInputMode === 'equipment'
-            ? parsed.eyepieceInputMode
-            : DEFAULT_OPTICS.eyepieceInputMode;
+function sanitizeOpticsSettings(raw: unknown): OpticsSettings {
+  if (!raw || typeof raw !== 'object') {
+    return {
+      ...DEFAULT_OPTICS,
+      sensorExportCaption: { ...DEFAULT_SENSOR_EXPORT_CAPTION },
+    };
+  }
+  const parsed = raw as Record<string, unknown>;
+  const boolOr = (k: keyof OpticsSettings, fallback: boolean): boolean =>
+    typeof parsed[k] === 'boolean' ? (parsed[k] as boolean) : fallback;
+  const numOr = (k: keyof OpticsSettings, fallback: number, min: number, max: number): number =>
+    typeof parsed[k] === 'number' && Number.isFinite(parsed[k] as number)
+      ? Math.max(min, Math.min(max, parsed[k] as number))
+      : fallback;
+  const mode: OpticsSettings['eyepieceInputMode'] =
+    parsed.eyepieceInputMode === 'direct' ||
+    parsed.eyepieceInputMode === 'calc' ||
+    parsed.eyepieceInputMode === 'equipment'
+      ? parsed.eyepieceInputMode
+      : DEFAULT_OPTICS.eyepieceInputMode;
 
-        return {
-          ...DEFAULT_OPTICS,
+  return {
+    ...DEFAULT_OPTICS,
           showCrosshair: boolOr('showCrosshair', DEFAULT_OPTICS.showCrosshair),
           showTelrad: boolOr('showTelrad', DEFAULT_OPTICS.showTelrad),
           showFinder7x50: boolOr('showFinder7x50', DEFAULT_OPTICS.showFinder7x50),
@@ -519,10 +538,16 @@ function loadSavedOpticsSettings(): OpticsSettings {
                 typeof c.customNote === 'string' ? c.customNote.slice(0, 80) : '',
             };
           })(),
-          showStarHop: boolOr('showStarHop', DEFAULT_OPTICS.showStarHop),
-          showSelectionMark: boolOr('showSelectionMark', DEFAULT_OPTICS.showSelectionMark),
-        };
-      }
+    showStarHop: boolOr('showStarHop', DEFAULT_OPTICS.showStarHop),
+    showSelectionMark: boolOr('showSelectionMark', DEFAULT_OPTICS.showSelectionMark),
+  };
+}
+
+function loadSavedOpticsSettings(): OpticsSettings {
+  try {
+    const raw = localStorage.getItem(OPTICS_STORAGE_KEY);
+    if (raw) {
+      return sanitizeOpticsSettings(JSON.parse(raw) as unknown);
     }
   } catch {
     // Ignore storage parse failure
@@ -1481,6 +1506,517 @@ export default function App() {
       // Ignore storage quota errors
     }
   }, [theme, view.coordSystem, view.fsz, view.flipH, view.flipV]);
+
+  // Firebase Authentication & Cloud Firestore Synchronization (users/{uid} & users/{uid}/data/*)
+  const [authUser, setAuthUser] = useState<User | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<CloudSyncStatus>('idle');
+  const [syncError, setSyncError] = useState<string | null>(null);
+  const [lastSyncedAt, setLastSyncedAt] = useState<number | null>(null);
+
+  const hydratingCloudRef = useRef(false);
+  const cloudHydratedUidRef = useRef<string | null>(null);
+  const lastSyncedHashesRef = useRef<SyncHashes | null>(null);
+  const cloudSyncTimerRef = useRef<number | null>(null);
+  const syncInFlightRef = useRef(false);
+
+  const currentCloudPayload = useMemo<CloudSyncPayload>(
+    () => ({
+      root: {
+        profile: authUser
+          ? {
+              displayName: authUser.displayName,
+              email: authUser.email,
+              photoURL: authUser.photoURL,
+            }
+          : undefined,
+        prefs: {
+          theme,
+          coordSystem: view.coordSystem,
+          fsz: view.fsz,
+          flipH: view.flipH,
+          flipV: view.flipV,
+        },
+        layers,
+        hips,
+        optics,
+        activeSite: {
+          name: observer.name,
+          lat: observer.lat,
+          lon: observer.lon,
+          minAltitudeDeg: observer.minAltitudeDeg,
+          highlightAboveMinAlt: observer.highlightAboveMinAlt,
+        },
+        savedSites,
+        equipmentLocker,
+      },
+      observingLists: observingListsState,
+      observationLogs: observationLogStore,
+      challenges,
+      asterisms: asterismStore,
+    }),
+    [
+      authUser,
+      theme,
+      view.coordSystem,
+      view.fsz,
+      view.flipH,
+      view.flipV,
+      layers,
+      hips,
+      optics,
+      observer.name,
+      observer.lat,
+      observer.lon,
+      observer.minAltitudeDeg,
+      observer.highlightAboveMinAlt,
+      savedSites,
+      equipmentLocker,
+      observingListsState,
+      observationLogStore,
+      challenges,
+      asterismStore,
+    ]
+  );
+  const currentCloudPayloadRef = useRef<CloudSyncPayload>(currentCloudPayload);
+  currentCloudPayloadRef.current = currentCloudPayload;
+
+  const flushCloudSync = useCallback(async (uid: string, forceAll = false) => {
+    if (syncInFlightRef.current || hydratingCloudRef.current) return;
+    const payload = currentCloudPayloadRef.current;
+    const nextHashes = computePayloadHashes(payload);
+    const prevHashes = lastSyncedHashesRef.current;
+
+    const dirtyRoot = forceAll || !prevHashes || prevHashes.root !== nextHashes.root;
+    const dirtyLists =
+      forceAll || !prevHashes || prevHashes.observingLists !== nextHashes.observingLists;
+    const dirtyLogs =
+      forceAll || !prevHashes || prevHashes.observationLogs !== nextHashes.observationLogs;
+    const dirtyChallenges =
+      forceAll || !prevHashes || prevHashes.challenges !== nextHashes.challenges;
+    const dirtyAsterisms =
+      forceAll || !prevHashes || prevHashes.asterisms !== nextHashes.asterisms;
+
+    if (!dirtyRoot && !dirtyLists && !dirtyLogs && !dirtyChallenges && !dirtyAsterisms) {
+      setSyncStatus('saved');
+      return;
+    }
+
+    syncInFlightRef.current = true;
+    setSyncStatus('saving');
+    setSyncError(null);
+
+    try {
+      const ops: Promise<void>[] = [];
+      if (dirtyRoot) {
+        ops.push(saveUserCloudRoot(uid, payload.root));
+      }
+      if (dirtyLists) {
+        ops.push(saveUserCloudSubdoc(uid, 'observingLists', payload.observingLists));
+      }
+      if (dirtyLogs) {
+        ops.push(saveUserCloudSubdoc(uid, 'observationLogs', payload.observationLogs));
+      }
+      if (dirtyChallenges) {
+        ops.push(saveUserCloudSubdoc(uid, 'challenges', payload.challenges));
+      }
+      if (dirtyAsterisms) {
+        ops.push(saveUserCloudSubdoc(uid, 'asterisms', payload.asterisms));
+      }
+      await Promise.all(ops);
+      lastSyncedHashesRef.current = nextHashes;
+      cloudHydratedUidRef.current = uid;
+      setSyncStatus('saved');
+      setLastSyncedAt(Date.now());
+    } catch (err) {
+      setSyncStatus('error');
+      setSyncError(formatFriendlySyncError(err));
+    } finally {
+      syncInFlightRef.current = false;
+    }
+  }, []);
+
+  // Subscribe to Firebase Auth state & hydrate user settings/data from Firestore on sign-in
+  useEffect(() => {
+    let activeLoadSeq = 0;
+
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      activeLoadSeq += 1;
+      const mySeq = activeLoadSeq;
+
+      if (cloudSyncTimerRef.current !== null) {
+        window.clearTimeout(cloudSyncTimerRef.current);
+        cloudSyncTimerRef.current = null;
+      }
+
+      setAuthUser(user);
+      setAuthReady(true);
+      setAuthError(null);
+
+      if (!user) {
+        hydratingCloudRef.current = false;
+        cloudHydratedUidRef.current = null;
+        lastSyncedHashesRef.current = null;
+        setSyncStatus('idle');
+        setSyncError(null);
+        setLastSyncedAt(null);
+        return;
+      }
+
+      hydratingCloudRef.current = true;
+      setSyncStatus('loading');
+      setSyncError(null);
+
+      void (async () => {
+        try {
+          const loaded = await loadUserCloudData(user.uid);
+          if (mySeq !== activeLoadSeq) return;
+
+          const basePayload = currentCloudPayloadRef.current;
+
+          if (loaded.hasAnyCloudData) {
+            let nextTheme = basePayload.root.prefs?.theme ?? DEFAULT_THEME;
+            let nextCoordSystem = basePayload.root.prefs?.coordSystem ?? DEFAULT_VIEW.coordSystem;
+            let nextFsz = basePayload.root.prefs?.fsz ?? DEFAULT_VIEW.fsz;
+            let nextFlipH = basePayload.root.prefs?.flipH ?? false;
+            let nextFlipV = basePayload.root.prefs?.flipV ?? false;
+
+            const cloudRoot = loaded.root;
+            if (cloudRoot?.prefs) {
+              const p = cloudRoot.prefs;
+              if (p.theme === 'dark' || p.theme === 'white' || p.theme === 'red') {
+                nextTheme = p.theme;
+              }
+              if (p.coordSystem === 'horizontal' || p.coordSystem === 'equatorial') {
+                nextCoordSystem = p.coordSystem;
+              }
+              if (typeof p.fsz === 'number' && Number.isFinite(p.fsz)) {
+                nextFsz = Math.max(0.008, Math.min(180, p.fsz));
+              }
+              if (typeof p.flipH === 'boolean') nextFlipH = p.flipH;
+              if (typeof p.flipV === 'boolean') nextFlipV = p.flipV;
+
+              setTheme(nextTheme);
+              setView((prev) => ({
+                ...prev,
+                coordSystem: nextCoordSystem,
+                fsz: nextFsz,
+                flipH: nextFlipH,
+                flipV: nextFlipV,
+              }));
+            }
+
+            let nextLayers = basePayload.root.layers ?? DEFAULT_LAYERS;
+            if (cloudRoot?.layers) {
+              nextLayers = sanitizeLayerSettings(cloudRoot.layers, DEFAULT_LAYERS);
+              setLayers(nextLayers);
+            }
+
+            let nextHips = basePayload.root.hips ?? DEFAULT_HIPS;
+            if (cloudRoot?.hips) {
+              nextHips = sanitizeHipsSettings(cloudRoot.hips, DEFAULT_HIPS);
+              setHips(nextHips);
+            }
+
+            let nextOptics = basePayload.root.optics ?? DEFAULT_OPTICS;
+            if (cloudRoot?.optics) {
+              nextOptics = sanitizeOpticsSettings(cloudRoot.optics);
+              setOptics(nextOptics);
+            }
+
+            let nextActiveSite = basePayload.root.activeSite ?? {
+              name: DEFAULT_OBSERVER.name,
+              lat: DEFAULT_OBSERVER.lat,
+              lon: DEFAULT_OBSERVER.lon,
+              minAltitudeDeg: DEFAULT_OBSERVER.minAltitudeDeg,
+              highlightAboveMinAlt: DEFAULT_OBSERVER.highlightAboveMinAlt,
+            };
+            if (
+              cloudRoot?.activeSite &&
+              typeof cloudRoot.activeSite.lat === 'number' &&
+              Number.isFinite(cloudRoot.activeSite.lat) &&
+              typeof cloudRoot.activeSite.lon === 'number' &&
+              Number.isFinite(cloudRoot.activeSite.lon)
+            ) {
+              nextActiveSite = {
+                name:
+                  typeof cloudRoot.activeSite.name === 'string' && cloudRoot.activeSite.name.trim()
+                    ? cloudRoot.activeSite.name
+                    : DEFAULT_OBSERVER.name,
+                lat: Math.max(-90, Math.min(90, cloudRoot.activeSite.lat)),
+                lon: Math.max(-180, Math.min(180, cloudRoot.activeSite.lon)),
+                minAltitudeDeg:
+                  typeof cloudRoot.activeSite.minAltitudeDeg === 'number' &&
+                  Number.isFinite(cloudRoot.activeSite.minAltitudeDeg)
+                    ? Math.max(-90, Math.min(85, cloudRoot.activeSite.minAltitudeDeg))
+                    : DEFAULT_OBSERVER.minAltitudeDeg,
+                highlightAboveMinAlt:
+                  typeof cloudRoot.activeSite.highlightAboveMinAlt === 'boolean'
+                    ? cloudRoot.activeSite.highlightAboveMinAlt
+                    : DEFAULT_OBSERVER.highlightAboveMinAlt,
+              };
+              setObserver((prev) => ({
+                ...prev,
+                ...nextActiveSite,
+              }));
+            }
+
+            let nextSavedSites = basePayload.root.savedSites ?? [];
+            if (cloudRoot && Array.isArray(cloudRoot.savedSites)) {
+              nextSavedSites = cloudRoot.savedSites;
+              setSavedSites(nextSavedSites);
+            }
+
+            let nextEquipment = basePayload.root.equipmentLocker ?? DEFAULT_EQUIPMENT_LOCKER;
+            if (
+              cloudRoot?.equipmentLocker &&
+              Array.isArray(cloudRoot.equipmentLocker.items)
+            ) {
+              nextEquipment = {
+                items: cloudRoot.equipmentLocker.items,
+                activeIds: cloudRoot.equipmentLocker.activeIds ?? {},
+              };
+              setEquipmentLocker(nextEquipment);
+            }
+
+            let nextObservingLists = basePayload.observingLists;
+            if (loaded.observingLists && Array.isArray(loaded.observingLists.lists)) {
+              const validLists = loaded.observingLists.lists.map((l, idx) => ({
+                id: typeof l.id === 'string' && l.id ? l.id : `olist_cloud_${idx}`,
+                name:
+                  typeof l.name === 'string' && l.name.trim()
+                    ? l.name.trim()
+                    : `관측 목록 ${idx + 1}`,
+                createdAt: typeof l.createdAt === 'number' ? l.createdAt : Date.now() + idx,
+                entries: Array.isArray(l.entries) ? l.entries : [],
+              }));
+              const hasTonight =
+                typeof loaded.observingLists.tonightListId === 'string' &&
+                validLists.some((l) => l.id === loaded.observingLists?.tonightListId);
+              nextObservingLists = {
+                lists:
+                  validLists.length > 0
+                    ? validLists
+                    : [
+                        {
+                          id: DEFAULT_OBSERVING_LIST_ID,
+                          name: DEFAULT_OBSERVING_LIST_NAME,
+                          createdAt: Date.now(),
+                          entries: [],
+                        },
+                      ],
+                tonightListId: hasTonight ? loaded.observingLists.tonightListId : null,
+                tonightEntries: Array.isArray(loaded.observingLists.tonightEntries)
+                  ? loaded.observingLists.tonightEntries
+                  : [],
+                tonightOrder: Array.isArray(loaded.observingLists.tonightOrder)
+                  ? loaded.observingLists.tonightOrder.filter(
+                      (id): id is string => typeof id === 'string'
+                    )
+                  : undefined,
+                tonightLinkedOverrides:
+                  loaded.observingLists.tonightLinkedOverrides &&
+                  typeof loaded.observingLists.tonightLinkedOverrides === 'object'
+                    ? loaded.observingLists.tonightLinkedOverrides
+                    : {},
+              };
+              setObservingListsState(nextObservingLists);
+            }
+
+            let nextObservationLogs = basePayload.observationLogs;
+            if (
+              loaded.observationLogs &&
+              Array.isArray(loaded.observationLogs.logs) &&
+              loaded.observationLogs.observedMap &&
+              typeof loaded.observationLogs.observedMap === 'object'
+            ) {
+              nextObservationLogs = {
+                observedMap: loaded.observationLogs.observedMap,
+                logs: loaded.observationLogs.logs,
+              };
+              setObservationLogStore(nextObservationLogs);
+            }
+
+            let nextChallenges = basePayload.challenges;
+            if (loaded.challenges && Array.isArray(loaded.challenges)) {
+              const snap = getCatalogSnapshot();
+              nextChallenges =
+                snap.dsosBright.length > 0
+                  ? hydrateChallengeTracksWithCatalog(loaded.challenges, snap.dsosBright)
+                  : loaded.challenges;
+              setChallenges(nextChallenges);
+            }
+
+            let nextAsterisms = basePayload.asterisms;
+            if (
+              loaded.asterisms &&
+              Array.isArray(loaded.asterisms.layers) &&
+              Array.isArray(loaded.asterisms.asterisms) &&
+              Array.isArray(loaded.asterisms.objects)
+            ) {
+              nextAsterisms = loaded.asterisms;
+              setAsterismStore(nextAsterisms);
+            }
+
+            const hydratedPayload: CloudSyncPayload = {
+              root: {
+                profile: {
+                  displayName: user.displayName,
+                  email: user.email,
+                  photoURL: user.photoURL,
+                },
+                prefs: {
+                  theme: nextTheme,
+                  coordSystem: nextCoordSystem,
+                  fsz: nextFsz,
+                  flipH: nextFlipH,
+                  flipV: nextFlipV,
+                },
+                layers: nextLayers,
+                hips: nextHips,
+                optics: nextOptics,
+                activeSite: nextActiveSite,
+                savedSites: nextSavedSites,
+                equipmentLocker: nextEquipment,
+              },
+              observingLists: nextObservingLists,
+              observationLogs: nextObservationLogs,
+              challenges: nextChallenges,
+              asterisms: nextAsterisms,
+            };
+            lastSyncedHashesRef.current = computePayloadHashes(hydratedPayload);
+            cloudHydratedUidRef.current = user.uid;
+            hydratingCloudRef.current = false;
+            setSyncStatus('saved');
+            setLastSyncedAt(Date.now());
+          } else {
+            // First-time sign-in: seed Firestore with existing local settings and user data
+            const seedPayload: CloudSyncPayload = {
+              ...basePayload,
+              root: {
+                ...basePayload.root,
+                profile: {
+                  displayName: user.displayName,
+                  email: user.email,
+                  photoURL: user.photoURL,
+                },
+              },
+            };
+            await Promise.all([
+              saveUserCloudRoot(user.uid, seedPayload.root),
+              saveUserCloudSubdoc(user.uid, 'observingLists', seedPayload.observingLists),
+              saveUserCloudSubdoc(user.uid, 'observationLogs', seedPayload.observationLogs),
+              saveUserCloudSubdoc(user.uid, 'challenges', seedPayload.challenges),
+              saveUserCloudSubdoc(user.uid, 'asterisms', seedPayload.asterisms),
+            ]);
+            if (mySeq !== activeLoadSeq) return;
+            lastSyncedHashesRef.current = computePayloadHashes(seedPayload);
+            cloudHydratedUidRef.current = user.uid;
+            hydratingCloudRef.current = false;
+            setSyncStatus('saved');
+            setLastSyncedAt(Date.now());
+          }
+        } catch (err) {
+          if (mySeq !== activeLoadSeq) return;
+          hydratingCloudRef.current = false;
+          setSyncStatus('error');
+          setSyncError(formatFriendlySyncError(err));
+        }
+      })();
+    });
+
+    return () => {
+      activeLoadSeq += 1;
+      unsubscribe();
+      if (cloudSyncTimerRef.current !== null) {
+        window.clearTimeout(cloudSyncTimerRef.current);
+        cloudSyncTimerRef.current = null;
+      }
+    };
+  }, []);
+
+  // Debounced auto-save (1.5s) to Firestore whenever settings or user data change while logged in
+  useEffect(() => {
+    if (!authUser) return;
+    if (hydratingCloudRef.current || cloudHydratedUidRef.current !== authUser.uid) return;
+
+    const nextHashes = computePayloadHashes(currentCloudPayload);
+    const prevHashes = lastSyncedHashesRef.current;
+    const isDirty =
+      !prevHashes ||
+      prevHashes.root !== nextHashes.root ||
+      prevHashes.observingLists !== nextHashes.observingLists ||
+      prevHashes.observationLogs !== nextHashes.observationLogs ||
+      prevHashes.challenges !== nextHashes.challenges ||
+      prevHashes.asterisms !== nextHashes.asterisms;
+
+    if (!isDirty) return;
+
+    setSyncStatus('pending');
+    if (cloudSyncTimerRef.current !== null) {
+      window.clearTimeout(cloudSyncTimerRef.current);
+    }
+    const uid = authUser.uid;
+    cloudSyncTimerRef.current = window.setTimeout(() => {
+      cloudSyncTimerRef.current = null;
+      void flushCloudSync(uid, false);
+    }, 1500);
+
+    return () => {
+      if (cloudSyncTimerRef.current !== null) {
+        window.clearTimeout(cloudSyncTimerRef.current);
+        cloudSyncTimerRef.current = null;
+      }
+    };
+  }, [authUser, currentCloudPayload, flushCloudSync]);
+
+  const handleGoogleLogin = useCallback(async () => {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      await signInWithGoogle();
+    } catch (err) {
+      const friendly = formatFriendlyAuthError(err);
+      if (friendly) setAuthError(friendly);
+    } finally {
+      setAuthBusy(false);
+    }
+  }, []);
+
+  const handleGoogleLogout = useCallback(async () => {
+    setAuthBusy(true);
+    setAuthError(null);
+    try {
+      if (cloudSyncTimerRef.current !== null) {
+        window.clearTimeout(cloudSyncTimerRef.current);
+        cloudSyncTimerRef.current = null;
+      }
+      await signOutUser();
+    } catch (err) {
+      setAuthError(formatFriendlyAuthError(err) || '로그아웃 중 오류가 발생했습니다.');
+    } finally {
+      setAuthBusy(false);
+    }
+  }, []);
+
+  const handleManualCloudSync = useCallback(() => {
+    if (!authUser) return;
+    if (cloudSyncTimerRef.current !== null) {
+      window.clearTimeout(cloudSyncTimerRef.current);
+      cloudSyncTimerRef.current = null;
+    }
+    void flushCloudSync(authUser.uid, true);
+  }, [authUser, flushCloudSync]);
+
+  const handleDismissAuthSyncError = useCallback(() => {
+    setAuthError(null);
+    setSyncError(null);
+    if (syncStatus === 'error') {
+      setSyncStatus(authUser ? 'saved' : 'idle');
+    }
+  }, [authUser, syncStatus]);
 
   // Automatically apply reflector inversion (상하 + 좌우 반전) when eyepiece FOV ring is shown with a reflector telescope
   const isActiveScopeReflector = useMemo(() => {
@@ -5967,6 +6503,22 @@ export default function App() {
               />
             </button>
           </div>
+
+          {/* Google Account Login / Profile / Cloud Sync Status */}
+          <AuthSyncControls
+            theme={theme}
+            user={authUser}
+            authReady={authReady}
+            authBusy={authBusy}
+            syncStatus={syncStatus}
+            lastSyncedAt={lastSyncedAt}
+            syncError={syncError}
+            authError={authError}
+            onLogin={handleGoogleLogin}
+            onLogout={handleGoogleLogout}
+            onManualSync={handleManualCloudSync}
+            onDismissError={handleDismissAuthSyncError}
+          />
         </div>
       </header>
 

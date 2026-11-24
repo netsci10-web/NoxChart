@@ -2639,6 +2639,7 @@ function renderStarChartPass(
       }
     }
 
+    const doubleStarOpacity = Math.max(0.05, Math.min(1, layers.doubleStarOpacity ?? 1));
     const renderedOnScreenDoubles: { entry: PendingDouble; markerR: number }[] = [];
 
     ctx.save();
@@ -2652,7 +2653,7 @@ function renderStarChartPass(
       if (!isSensorPhoto) {
         const strokeCol = sys.isMultiple ? palette.multipleStarStroke : palette.doubleStarStroke;
 
-        ctx.globalAlpha = dimmed ? 0.2 : isSelected ? 1.0 : 0.88;
+        ctx.globalAlpha = (dimmed ? 0.2 : isSelected ? 1.0 : 0.88) * doubleStarOpacity;
         ctx.strokeStyle = strokeCol;
         ctx.lineWidth = isSelected ? 1.55 : sys.isMultiple ? 1.2 : 1.1;
 
@@ -2694,7 +2695,7 @@ function renderStarChartPass(
           if (isSelected || hoveredId === sys.id || sepPx >= 9) {
             ctx.save();
             ctx.strokeStyle = strokeCol;
-            ctx.globalAlpha = dimmed ? 0.15 : isSelected ? 0.65 : 0.35;
+            ctx.globalAlpha = (dimmed ? 0.15 : isSelected ? 0.65 : 0.35) * doubleStarOpacity;
             ctx.lineWidth = 0.85;
             ctx.setLineDash([2, 2]);
             ctx.beginPath();
@@ -2705,7 +2706,7 @@ function renderStarChartPass(
           }
 
           ctx.save();
-          ctx.globalAlpha = dimmed ? 0.2 : 0.96;
+          ctx.globalAlpha = (dimmed ? 0.2 : 0.96) * doubleStarOpacity;
           ctx.fillStyle = theme === 'white' ? '#1E293B' : theme === 'red' ? '#FCA5A5' : '#F8FAFC';
           ctx.strokeStyle = strokeCol;
           ctx.lineWidth = 0.9;
@@ -2762,6 +2763,7 @@ function renderStarChartPass(
           text,
           color: sys.isMultiple ? palette.multipleStarStroke : palette.doubleStarLabel,
           font: '500 9.5px "IBM Plex Mono", "Noto Sans KR", monospace',
+          alpha: isSensorPhoto ? 1 : doubleStarOpacity,
         });
       }
     }

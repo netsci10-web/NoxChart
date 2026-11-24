@@ -2492,6 +2492,32 @@ export function ControlSidebar({
                       />
                     </div>
                   )}
+
+                  <div className="pl-2 pt-0.5 pb-0.5 space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        표시 · 라벨 진하기
+                      </span>
+                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                        {Math.round((layers.doubleStarOpacity ?? 1) * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.05}
+                      max={1}
+                      step={0.05}
+                      value={layers.doubleStarOpacity ?? 1}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          doubleStarOpacity: Number(e.target.value),
+                        }))
+                      }
+                      aria-label="이중성 다중성 표시 및 라벨 진하기"
+                      className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                    />
+                  </div>
                 </div>
               )}
 

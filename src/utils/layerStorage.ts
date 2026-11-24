@@ -127,6 +127,12 @@ export function sanitizeLayerSettings(
       0,
       100
     ),
+    doubleStarOpacity: clampNum(
+      obj.doubleStarOpacity,
+      fallback.doubleStarOpacity,
+      0.05,
+      1.0
+    ),
     showDso: readBool(obj.showDso, fallback.showDso),
     showMessierCatalog: readBool(obj.showMessierCatalog, fallback.showMessierCatalog),
     showCaldwellCatalog: readBool(obj.showCaldwellCatalog, fallback.showCaldwellCatalog),
@@ -292,6 +298,7 @@ const RECOGNIZED_LAYER_KEYS: (keyof LayerSettings)[] = [
   'showConstellationNames',
   'showSolarSystem',
   'showDoubleStars',
+  'doubleStarOpacity',
   'showDso',
   'dsoOpacity',
   'showStarLabels',
