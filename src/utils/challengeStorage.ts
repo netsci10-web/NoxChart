@@ -62,6 +62,10 @@ function sanitizeCheckpoint(raw: unknown, index: number): ChallengeCheckpoint | 
       ? Math.max(-90, Math.min(90, r.dec))
       : undefined;
   const mag = typeof r.mag === 'number' && Number.isFinite(r.mag) ? r.mag : undefined;
+  const fovDeg =
+    typeof r.fovDeg === 'number' && Number.isFinite(r.fovDeg) && r.fovDeg > 0
+      ? Number(Math.max(0.05, Math.min(180, r.fovDeg)).toFixed(2))
+      : undefined;
 
   return {
     id:
@@ -88,6 +92,7 @@ function sanitizeCheckpoint(raw: unknown, index: number): ChallengeCheckpoint | 
     mag,
     ra,
     dec,
+    fovDeg,
     guideNote:
       typeof r.guideNote === 'string' && r.guideNote.trim() ? r.guideNote.trim() : undefined,
     observed: Boolean(r.observed),

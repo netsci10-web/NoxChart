@@ -112,10 +112,16 @@ interface ObjectInspectorProps {
   onCancelChallengeDraft: () => void;
   onChangeChallengePickAllowEmpty: (allow: boolean) => void;
   onClearChallengeDraftNotice: () => void;
+  currentFovDeg: number;
   onAddCenterChallengeCheckpoint: () => void;
   onToggleChallengeOnChart: (trackId: string) => void;
   onToggleChallengeCheckpoint: (trackId: string, checkpointId: string) => void;
   onUpdateChallengeCheckpointNote: (trackId: string, checkpointId: string, note: string) => void;
+  onUpdateChallengeCheckpointFov: (
+    trackId: string,
+    checkpointId: string,
+    fovDeg: number | undefined
+  ) => void;
   onSelectChallengeCheckpoint: (track: ChallengeTrack, checkpoint: ChallengeCheckpoint) => void;
   onFrameChallengeTrack: (track: ChallengeTrack) => void;
   onPrintChallengeCertificate: (track: ChallengeTrack) => void;
@@ -239,10 +245,12 @@ export function ObjectInspector({
   onCancelChallengeDraft,
   onChangeChallengePickAllowEmpty,
   onClearChallengeDraftNotice,
+  currentFovDeg,
   onAddCenterChallengeCheckpoint,
   onToggleChallengeOnChart,
   onToggleChallengeCheckpoint,
   onUpdateChallengeCheckpointNote,
+  onUpdateChallengeCheckpointFov,
   onSelectChallengeCheckpoint,
   onFrameChallengeTrack,
   onPrintChallengeCertificate,
@@ -588,10 +596,12 @@ export function ObjectInspector({
             onCancelDraft={onCancelChallengeDraft}
             onChangePickAllowEmpty={onChangeChallengePickAllowEmpty}
             onClearDraftNotice={onClearChallengeDraftNotice}
+            currentFovDeg={currentFovDeg}
             onAddCenterCheckpoint={onAddCenterChallengeCheckpoint}
             onToggleTrackOnChart={onToggleChallengeOnChart}
             onToggleCheckpoint={onToggleChallengeCheckpoint}
             onUpdateCheckpointNote={onUpdateChallengeCheckpointNote}
+            onUpdateCheckpointFov={onUpdateChallengeCheckpointFov}
             onSelectCheckpoint={onSelectChallengeCheckpoint}
             onFrameTrack={onFrameChallengeTrack}
             onPrintCertificate={onPrintChallengeCertificate}

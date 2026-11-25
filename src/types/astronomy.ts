@@ -410,6 +410,7 @@ export interface ChallengeCheckpoint {
   mag?: number;
   ra?: number;
   dec?: number;
+  fovDeg?: number;
   guideNote?: string;
   observed: boolean;
   observedAt?: number;

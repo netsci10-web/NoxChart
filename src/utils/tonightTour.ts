@@ -808,7 +808,9 @@ export function buildChallengeTourStops(
       azDeg: hz.azDeg,
       compass: getCompassDirection(hz.azDeg),
       recommendedFovDeg:
-        item.kind === 'dso'
+        cp.fovDeg !== undefined && Number.isFinite(cp.fovDeg) && cp.fovDeg > 0
+          ? Math.max(0.05, Math.min(180, cp.fovDeg))
+          : item.kind === 'dso'
           ? computeRecommendedFov(item, true)
           : curatedSpec?.fovOverrideDeg ?? computeRecommendedFov(item, true),
       guideText: cp.guideNote || curatedSpec?.guide || fallbackGuide,

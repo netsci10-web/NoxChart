@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { onAuthStateChanged, type User } from 'firebase/auth';
 import {
   Bookmark,
@@ -136,6 +137,7 @@ import {
 import {
   buildChallengeTourStops,
   buildTonightTourStops,
+  formatFovLabel,
   GuidedTourState,
   TOUR_DWELL_OPTIONS,
   TourStop,
@@ -1082,17 +1084,37 @@ export default function App() {
   }, [asterismStore]);
 
   const [cardinalMenuOpen, setCardinalMenuOpen] = useState(false);
+  const [cardinalMenuPos, setCardinalMenuPos] = useState<{ left: number; top: number } | null>(
+    null
+  );
+  const headerRef = useRef<HTMLElement>(null);
   const cardinalMenuRef = useRef<HTMLDivElement>(null);
+  const cardinalDropdownRef = useRef<HTMLDivElement>(null);
   const [printPreview, setPrintPreview] = useState<{
     dataUrl: string;
     title: string;
   } | null>(null);
 
+  const updateCardinalMenuPos = useCallback(() => {
+    const btn = cardinalMenuRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const menuWidth = 96;
+    const centeredLeft = rect.left + rect.width / 2 - menuWidth / 2;
+    const clampedLeft = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, centeredLeft));
+    setCardinalMenuPos({ left: clampedLeft, top: rect.bottom + 6 });
+  }, []);
+
   useEffect(() => {
     if (!cardinalMenuOpen) return;
+    updateCardinalMenuPos();
     const handleOutside = (e: MouseEvent) => {
       const target = e.target as Node;
-      if (cardinalMenuRef.current && !cardinalMenuRef.current.contains(target)) {
+      if (
+        cardinalMenuRef.current &&
+        !cardinalMenuRef.current.contains(target) &&
+        (!cardinalDropdownRef.current || !cardinalDropdownRef.current.contains(target))
+      ) {
         setCardinalMenuOpen(false);
       }
     };
@@ -1101,13 +1123,16 @@ export default function App() {
         setCardinalMenuOpen(false);
       }
     };
+    const handleResize = () => updateCardinalMenuPos();
     document.addEventListener('mousedown', handleOutside);
     window.addEventListener('keydown', handleEsc);
+    window.addEventListener('resize', handleResize);
     return () => {
       document.removeEventListener('mousedown', handleOutside);
       window.removeEventListener('keydown', handleEsc);
+      window.removeEventListener('resize', handleResize);
     };
-  }, [cardinalMenuOpen]);
+  }, [cardinalMenuOpen, updateCardinalMenuPos]);
 
   const [rulerMode, setRulerMode] = useState(false);
   const [rulerMeasurement, setRulerMeasurement] = useState<RulerMeasurement | null>(null);
@@ -3898,6 +3923,23 @@ export default function App() {
     []
   );
 
+  const handleUpdateChallengeCheckpointFov = useCallback(
+    (trackId: string, checkpointId: string, fovDeg: number | undefined) => {
+      setChallenges((prev) =>
+        prev.map((t) => {
+          if (t.id !== trackId) return t;
+          return {
+            ...t,
+            checkpoints: t.checkpoints.map((cp) =>
+              cp.id === checkpointId ? { ...cp, fovDeg } : cp
+            ),
+          };
+        })
+      );
+    },
+    []
+  );
+
   const handleSaveChallengeTrack = useCallback((track: ChallengeTrack) => {
     setChallenges((prev) => {
       const idx = prev.findIndex((t) => t.id === track.id);
@@ -4092,6 +4134,7 @@ export default function App() {
     const curView = viewRef.current;
     const raDeg = ((curView.ra * 15) % 360 + 360) % 360;
     const decDeg = Math.max(-90, Math.min(90, curView.dec));
+    const fovDeg = Number(Math.max(0.05, Math.min(180, curView.fsz)).toFixed(2));
     const idx = prev.checkpoints.length + 1;
     const code = `CP ${String(idx).padStart(2, '0')}`;
     const lastStage =
@@ -4105,7 +4148,8 @@ export default function App() {
       objectType: '지정 위치',
       ra: raDeg,
       dec: decDeg,
-      guideNote: `RA ${formatRA(raDeg)} · Dec ${formatDec(decDeg)}`,
+      fovDeg,
+      guideNote: `RA ${formatRA(raDeg)} · Dec ${formatDec(decDeg)} · 화각 ${formatFovLabel(fovDeg)}`,
       observed: false,
     };
     const nextDraft: ChallengeTrack = {
@@ -4114,7 +4158,9 @@ export default function App() {
     };
     challengeDraftRef.current = nextDraft;
     setChallengeDraft(nextDraft);
-    setChallengeDraftNotice(`현재 성도 중심 (${code})을 체크포인트로 추가했습니다.`);
+    setChallengeDraftNotice(
+      `현재 성도 중심위치 및 화각(${formatFovLabel(fovDeg)})을 체크포인트(${code})로 추가했습니다.`
+    );
   }, []);
 
   const handleUndoChallengeCheckpoint = useCallback(() => {
@@ -4410,11 +4456,15 @@ export default function App() {
         centerLockedRef.current = false;
         setCenterLocked(false);
         lockedHzRef.current = null;
+        const targetFov =
+          cp.fovDeg !== undefined && Number.isFinite(cp.fovDeg) && cp.fovDeg > 0
+            ? Math.max(0.05, Math.min(180, cp.fovDeg))
+            : null;
         handleChangeView((p) => ({
           ...p,
           ra: ((item!.data.ra / 15) % 24 + 24) % 24,
           dec: Math.max(-89.5, Math.min(89.5, item!.data.dec)),
-          fsz: Math.min(p.fsz, item!.kind === 'dso' ? 18 : 24),
+          fsz: targetFov ?? Math.min(p.fsz, item!.kind === 'dso' ? 18 : 24),
         }));
       }
     },
@@ -6145,10 +6195,24 @@ export default function App() {
           </span>
         </div>
       )}
-      {/* Top Precision Telemetry Ribbon */}
+      {/* Top Precision Telemetry Ribbon (horizontally scrollable on mobile/tablet when overflowing) */}
       <header
-        className={`no-print relative z-40 h-12 shrink-0 border-b px-2 sm:px-3 flex items-center justify-between gap-1.5 sm:gap-2.5 ${ui.header}`}
+        ref={headerRef}
+        onScroll={() => {
+          if (cardinalMenuOpen) setCardinalMenuOpen(false);
+        }}
+        onWheel={(e) => {
+          const el = headerRef.current;
+          if (!el || el.scrollWidth <= el.clientWidth) return;
+          const target = e.target as HTMLElement | null;
+          if (target?.tagName === 'INPUT') return;
+          if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+            el.scrollLeft += e.deltaY;
+          }
+        }}
+        className={`no-print relative z-40 h-12 shrink-0 border-b overflow-x-auto overflow-y-hidden header-scroll touch-pan-x ${ui.header}`}
       >
+        <div className="h-full min-w-max w-full px-2 sm:px-3 flex items-center justify-between gap-1.5 sm:gap-2.5">
         {/* Left: Brand */}
         <div className="flex items-center gap-2.5 shrink-0">
           <button
@@ -6289,56 +6353,61 @@ export default function App() {
               />
             </button>
 
-            {cardinalMenuOpen && (
-              <div
-                role="menu"
-                aria-label="동서남북 방위 선택"
-                className={`absolute left-1/2 -translate-x-1/2 top-full mt-1.5 z-50 w-24 p-1 rounded-lg border shadow-xl flex flex-col gap-0.5 ${
-                  theme === 'white'
-                    ? 'bg-white border-slate-300 text-slate-700'
-                    : theme === 'red'
-                    ? 'bg-[#100101] border-[#420C0C] text-[#DC2626]'
-                    : 'bg-[#0B1220] border-[#25334D] text-slate-200'
-                }`}
-              >
-                {(
-                  [
-                    { label: '동', full: '동쪽', az: 90 },
-                    { label: '서', full: '서쪽', az: 270 },
-                    { label: '남', full: '남쪽', az: 180 },
-                    { label: '북', full: '북쪽', az: 0 },
-                  ] as const
-                ).map((dir) => (
-                  <button
-                    key={dir.label}
-                    type="button"
-                    role="menuitem"
-                    onClick={() => {
-                      handleJumpCardinal(dir.az);
-                      setCardinalMenuOpen(false);
-                    }}
-                    title={`${dir.full} 하늘 바로가기 (방위각 ${dir.az}° · 고도 30° · 화각 60°)`}
-                    className={`w-full h-7 px-2 rounded-md flex items-center justify-between text-xs font-semibold transition-colors ${
-                      theme === 'white'
-                        ? 'text-slate-700 hover:text-blue-700 hover:bg-slate-100'
-                        : theme === 'red'
-                        ? 'text-[#DC2626] hover:text-[#FF5252] hover:bg-[#220404]'
-                        : 'text-slate-200 hover:text-[#22D3EE] hover:bg-[#182438]'
-                    }`}
-                  >
-                    <span>{dir.label}</span>
-                    <span className="font-mono text-[10px] opacity-65 tabular-nums">
-                      {dir.az}°
-                    </span>
-                  </button>
-                ))}
-              </div>
-            )}
+            {cardinalMenuOpen &&
+              cardinalMenuPos &&
+              createPortal(
+                <div
+                  ref={cardinalDropdownRef}
+                  role="menu"
+                  aria-label="동서남북 방위 선택"
+                  style={{ left: cardinalMenuPos.left, top: cardinalMenuPos.top }}
+                  className={`fixed z-[120] w-24 p-1 rounded-lg border shadow-xl flex flex-col gap-0.5 ${
+                    theme === 'white'
+                      ? 'bg-white border-slate-300 text-slate-700'
+                      : theme === 'red'
+                      ? 'bg-[#100101] border-[#420C0C] text-[#DC2626]'
+                      : 'bg-[#0B1220] border-[#25334D] text-slate-200'
+                  }`}
+                >
+                  {(
+                    [
+                      { label: '동', full: '동쪽', az: 90 },
+                      { label: '서', full: '서쪽', az: 270 },
+                      { label: '남', full: '남쪽', az: 180 },
+                      { label: '북', full: '북쪽', az: 0 },
+                    ] as const
+                  ).map((dir) => (
+                    <button
+                      key={dir.label}
+                      type="button"
+                      role="menuitem"
+                      onClick={() => {
+                        handleJumpCardinal(dir.az);
+                        setCardinalMenuOpen(false);
+                      }}
+                      title={`${dir.full} 하늘 바로가기 (방위각 ${dir.az}° · 고도 30° · 화각 60°)`}
+                      className={`w-full h-7 px-2 rounded-md flex items-center justify-between text-xs font-semibold transition-colors ${
+                        theme === 'white'
+                          ? 'text-slate-700 hover:text-blue-700 hover:bg-slate-100'
+                          : theme === 'red'
+                          ? 'text-[#DC2626] hover:text-[#FF5252] hover:bg-[#220404]'
+                          : 'text-slate-200 hover:text-[#22D3EE] hover:bg-[#182438]'
+                      }`}
+                    >
+                      <span>{dir.label}</span>
+                      <span className="font-mono text-[10px] opacity-65 tabular-nums">
+                        {dir.az}°
+                      </span>
+                    </button>
+                  ))}
+                </div>,
+                document.body
+              )}
           </div>
 
           {/* Limiting Magnitude Display + Slider (2-row compact layout: badges on top, slider below) */}
           <div
-            className={`hidden sm:flex flex-col justify-center gap-0.5 rounded-lg border px-2 py-0.5 shrink-0 ${
+            className={`flex flex-col justify-center gap-0.5 rounded-lg border px-2 py-0.5 shrink-0 ${
               theme === 'white'
                 ? 'bg-slate-100 border-slate-300 text-slate-700'
                 : theme === 'red'
@@ -6951,6 +7020,7 @@ export default function App() {
             onDismissError={handleDismissAuthSyncError}
           />
         </div>
+        </div>
       </header>
 
       {/* Main Observatory Workspace: Left Overlay Drawer + Flex Star Chart + Right Pushed Drawer */}
@@ -7332,10 +7402,12 @@ export default function App() {
             onCancelChallengeDraft={handleCancelChallengeDraft}
             onChangeChallengePickAllowEmpty={setChallengePickAllowEmpty}
             onClearChallengeDraftNotice={() => setChallengeDraftNotice(null)}
+            currentFovDeg={view.fsz}
             onAddCenterChallengeCheckpoint={handleAddCenterChallengeCheckpoint}
             onToggleChallengeOnChart={handleToggleChallengeOnChart}
             onToggleChallengeCheckpoint={handleToggleChallengeCheckpoint}
             onUpdateChallengeCheckpointNote={handleUpdateChallengeCheckpointNote}
+            onUpdateChallengeCheckpointFov={handleUpdateChallengeCheckpointFov}
             onSelectChallengeCheckpoint={handleSelectChallengeCheckpoint}
             onFrameChallengeTrack={handleFrameChallengeTrack}
             onPrintChallengeCertificate={handlePrintChallengeCertificate}

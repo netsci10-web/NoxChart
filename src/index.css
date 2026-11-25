@@ -50,6 +50,50 @@
   background: rgba(239, 68, 68, 0.55);
 }
 
+/* Horizontal-only touch-friendly scroll for top header menu bar */
+.header-scroll {
+  -webkit-overflow-scrolling: touch;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+}
+
+.header-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .header-scroll {
+    scrollbar-width: thin;
+    scrollbar-color: rgba(148, 163, 184, 0.3) transparent;
+  }
+
+  .header-scroll::-webkit-scrollbar {
+    display: block;
+    height: 3px;
+  }
+
+  .header-scroll::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  .header-scroll::-webkit-scrollbar-thumb {
+    background: rgba(148, 163, 184, 0.3);
+    border-radius: 9999px;
+  }
+
+  .header-scroll::-webkit-scrollbar-thumb:hover {
+    background: rgba(148, 163, 184, 0.55);
+  }
+
+  [data-theme="red"] .header-scroll {
+    scrollbar-color: rgba(220, 38, 38, 0.4) transparent;
+  }
+
+  [data-theme="red"] .header-scroll::-webkit-scrollbar-thumb {
+    background: rgba(220, 38, 38, 0.4);
+  }
+}
+
 [data-theme="red"] input[type="checkbox"] {
   -webkit-appearance: none;
   appearance: none;

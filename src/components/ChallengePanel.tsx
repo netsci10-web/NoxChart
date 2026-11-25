@@ -87,10 +87,16 @@ interface ChallengePanelProps {
   onCancelDraft: () => void;
   onChangePickAllowEmpty: (allow: boolean) => void;
   onClearDraftNotice: () => void;
+  currentFovDeg: number;
   onAddCenterCheckpoint: () => void;
   onToggleTrackOnChart: (trackId: string) => void;
   onToggleCheckpoint: (trackId: string, checkpointId: string) => void;
   onUpdateCheckpointNote: (trackId: string, checkpointId: string, note: string) => void;
+  onUpdateCheckpointFov: (
+    trackId: string,
+    checkpointId: string,
+    fovDeg: number | undefined
+  ) => void;
   onSelectCheckpoint: (track: ChallengeTrack, checkpoint: ChallengeCheckpoint) => void;
   onFrameTrack: (track: ChallengeTrack) => void;
   onPrintCertificate: (track: ChallengeTrack) => void;
@@ -139,6 +145,88 @@ interface CatalogSearchHit {
   dec: number;
 }
 
+function clampChallengeFovDeg(val: number): number {
+  return Number(Math.max(0.05, Math.min(180, val)).toFixed(2));
+}
+
+function FovNumberInput({
+  value,
+  onChange,
+  ariaLabel,
+  inputClass,
+  mutedClass,
+  borderRadius,
+}: {
+  value: number | undefined;
+  onChange: (next: number | undefined) => void;
+  ariaLabel: string;
+  inputClass: string;
+  mutedClass: string;
+  borderRadius: string;
+}) {
+  const [text, setText] = useState(value !== undefined ? String(value) : '');
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) {
+      setText(value !== undefined ? String(value) : '');
+    }
+  }, [value, focused]);
+
+  return (
+    <div className="relative flex-1 min-w-0">
+      <input
+        type="number"
+        min={0.05}
+        max={180}
+        step="any"
+        inputMode="decimal"
+        value={text}
+        onFocus={() => setFocused(true)}
+        onChange={(e) => {
+          const raw = e.target.value;
+          setText(raw);
+          const trimmed = raw.trim();
+          if (!trimmed) {
+            onChange(undefined);
+            return;
+          }
+          const num = parseFloat(trimmed);
+          if (Number.isFinite(num) && num > 0) {
+            onChange(Math.min(180, num));
+          }
+        }}
+        onBlur={() => {
+          setFocused(false);
+          const trimmed = text.trim();
+          if (!trimmed) {
+            setText('');
+            onChange(undefined);
+            return;
+          }
+          const num = parseFloat(trimmed);
+          if (Number.isFinite(num) && num > 0) {
+            const clamped = clampChallengeFovDeg(num);
+            setText(String(clamped));
+            onChange(clamped);
+          } else {
+            setText(value !== undefined ? String(value) : '');
+          }
+        }}
+        placeholder="화각 입력"
+        aria-label={ariaLabel}
+        className={`w-full pl-1.5 pr-4 py-0.5 border text-[9.5px] font-mono tabular-nums ${inputClass}`}
+        style={{ borderRadius }}
+      />
+      <span
+        className={`pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[9px] font-mono ${mutedClass}`}
+      >
+        °
+      </span>
+    </div>
+  );
+}
+
 export function ChallengePanel({
   tracks,
   selected = null,
@@ -159,10 +247,12 @@ export function ChallengePanel({
   onCancelDraft,
   onChangePickAllowEmpty,
   onClearDraftNotice,
+  currentFovDeg,
   onAddCenterCheckpoint,
   onToggleTrackOnChart,
   onToggleCheckpoint,
   onUpdateCheckpointNote,
+  onUpdateCheckpointFov,
   onSelectCheckpoint,
   onFrameTrack,
   onPrintCertificate,
@@ -233,6 +323,7 @@ export function ChallengePanel({
   const [manualStage, setManualStage] = useState('1구간 · 기본 코스');
   const [manualRa, setManualRa] = useState('');
   const [manualDec, setManualDec] = useState('');
+  const [manualFov, setManualFov] = useState('');
   const [manualGuide, setManualGuide] = useState('');
 
   const obsTimeMs = observer.timestampMs;
@@ -497,6 +588,11 @@ export function ChallengePanel({
       setNotice('천체 이름과 유효한 적경(0~360°), 적위(-90~90°)를 입력해 주세요.');
       return;
     }
+    const parsedFov = parseFloat(manualFov);
+    const fovDeg =
+      manualFov.trim() && Number.isFinite(parsedFov) && parsedFov > 0
+        ? Number(Math.max(0.05, Math.min(180, parsedFov)).toFixed(2))
+        : undefined;
     onChangeDraft((prev) => {
       if (!prev) return prev;
       const idx = prev.checkpoints.length + 1;
@@ -508,6 +604,7 @@ export function ChallengePanel({
         stage: manualStage.trim() || '1구간 · 기본 코스',
         ra: ((raVal % 360) + 360) % 360,
         dec: Math.max(-90, Math.min(90, decVal)),
+        fovDeg,
         guideNote: manualGuide.trim() || undefined,
         observed: false,
       };
@@ -519,6 +616,7 @@ export function ChallengePanel({
     setManualName('');
     setManualRa('');
     setManualDec('');
+    setManualFov('');
     setManualGuide('');
     setShowManualAdd(false);
     setNotice(null);
@@ -562,6 +660,21 @@ export function ChallengePanel({
     });
   };
 
+  const updateDraftCheckpointFov = (cpId: string, fovDeg: number | undefined) => {
+    onChangeDraft((prev) => {
+      if (!prev) return prev;
+      return {
+        ...prev,
+        checkpoints: prev.checkpoints.map((c) =>
+          c.id === cpId ? { ...c, fovDeg } : c
+        ),
+      };
+    });
+  };
+
+  const clampFovDeg = (val: number) =>
+    Number(Math.max(0.05, Math.min(180, val)).toFixed(2));
+
   const handleCommitDraft = () => {
     if (!draft) return;
     if (!draft.title.trim()) {
@@ -582,6 +695,10 @@ export function ChallengePanel({
         code: c.code.trim() || `CP ${String(idx + 1).padStart(2, '0')}`,
         name: c.name.trim() || c.catalogId || `대상 ${idx + 1}`,
         stage: c.stage.trim() || '1구간 · 기본 코스',
+        fovDeg:
+          typeof c.fovDeg === 'number' && Number.isFinite(c.fovDeg) && c.fovDeg > 0
+            ? clampFovDeg(c.fovDeg)
+            : undefined,
         guideNote: c.guideNote?.trim() || undefined,
       })),
     };
@@ -610,9 +727,23 @@ export function ChallengePanel({
   const progressFillColor =
     theme === 'white' ? '#D97706' : theme === 'red' ? '#EF4444' : '#FBBF24';
 
+  const settingsContainerTone =
+    theme === 'white'
+      ? 'bg-sky-50/90 border-sky-300/85'
+      : theme === 'red'
+      ? 'bg-[#22060B] border-[#7F1D1D]'
+      : 'bg-[#132038] border-cyan-500/35';
+
+  const settingsDividerTone =
+    theme === 'white'
+      ? 'border-sky-200/90'
+      : theme === 'red'
+      ? 'border-[#5A1212]'
+      : 'border-cyan-500/20';
+
   const renderChallengeSettings = () => (
     <div
-      className={`border px-2 py-1.5 space-y-2 ${ui.border}`}
+      className={`border px-2 py-1.5 space-y-2 ${settingsContainerTone}`}
       style={{ borderRadius: '6px' }}
     >
       <button
@@ -636,7 +767,7 @@ export function ChallengePanel({
       </button>
 
       {settingsOpen && (
-        <div className={`pt-1.5 border-t space-y-2 ${ui.divider}`}>
+        <div className={`pt-1.5 border-t space-y-2 ${settingsDividerTone}`}>
           {/* 1. 챌린지 선 굵기 */}
           <div className="space-y-1">
             <div className="flex items-center justify-between gap-1 text-[10px]">
@@ -766,11 +897,15 @@ export function ChallengePanel({
           <button
             type="button"
             onClick={onAddCenterCheckpoint}
+            title={`현재 성도 중심 좌표와 화각(${formatFovLabel(currentFovDeg)})을 체크포인트로 추가`}
             className={`w-full py-1 px-2 border text-[9.5px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors ${ui.buttonIdle}`}
             style={{ borderRadius: '4px' }}
           >
             <Crosshair className="w-3 h-3 shrink-0" />
-            <span>현재 성도 중심 위치 추가</span>
+            <span>현재 성도 중심위치 및 화각 추가</span>
+            <span className="font-mono text-[9px] tabular-nums opacity-75">
+              ({formatFovLabel(currentFovDeg)})
+            </span>
           </button>
         </div>
 
@@ -1009,6 +1144,34 @@ export function ChallengePanel({
                   style={{ borderRadius: '4px' }}
                 />
               </div>
+              <div className="flex items-center gap-1">
+                <div className="relative flex-1 min-w-0">
+                  <input
+                    type="number"
+                    min={0.05}
+                    max={180}
+                    step="any"
+                    value={manualFov}
+                    onChange={(e) => setManualFov(e.target.value)}
+                    placeholder="화각 입력 (° · 비우면 자동)"
+                    aria-label="화각 입력"
+                    className={`w-full pl-2 pr-5 py-1 border text-[10px] font-mono tabular-nums ${ui.input}`}
+                    style={{ borderRadius: '4px' }}
+                  />
+                  <span className={`pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 text-[9.5px] font-mono ${ui.textMuted}`}>
+                    °
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setManualFov(String(clampFovDeg(currentFovDeg)))}
+                  title={`현재 성도 화각(${formatFovLabel(currentFovDeg)}) 입력`}
+                  className={`px-1.5 py-1 border text-[9.5px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${ui.buttonIdle}`}
+                  style={{ borderRadius: '4px' }}
+                >
+                  현재 화각넣기
+                </button>
+              </div>
               <input
                 type="text"
                 value={manualGuide}
@@ -1098,6 +1261,39 @@ export function ChallengePanel({
                   className={`w-full px-1.5 py-0.5 border text-[9.5px] ${ui.input}`}
                   style={{ borderRadius: '3px' }}
                 />
+                <div className="flex items-center gap-1">
+                  <span className={`text-[9.5px] font-medium whitespace-nowrap shrink-0 ${ui.textMuted}`}>
+                    화각
+                  </span>
+                  <FovNumberInput
+                    value={cp.fovDeg}
+                    onChange={(next) => updateDraftCheckpointFov(cp.id, next)}
+                    ariaLabel={`${cp.name || cp.code} 화각 입력`}
+                    inputClass={ui.input}
+                    mutedClass={ui.textMuted}
+                    borderRadius="3px"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => updateDraftCheckpointFov(cp.id, clampFovDeg(currentFovDeg))}
+                    title={`현재 성도 화각(${formatFovLabel(currentFovDeg)}) 넣기`}
+                    className={`px-1.5 py-0.5 border text-[9px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${ui.buttonIdle}`}
+                    style={{ borderRadius: '3px' }}
+                  >
+                    현재 화각넣기
+                  </button>
+                  {cp.fovDeg !== undefined && (
+                    <button
+                      type="button"
+                      onClick={() => updateDraftCheckpointFov(cp.id, undefined)}
+                      title="화각 초기화 (자동 화각 사용)"
+                      aria-label="화각 초기화"
+                      className={`p-0.5 shrink-0 ${ui.textMuted} hover:opacity-100 cursor-pointer`}
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  )}
+                </div>
                 <input
                   type="text"
                   value={cp.guideNote ?? ''}
@@ -1634,6 +1830,9 @@ export function ChallengePanel({
                                 cp.constellation,
                                 cp.objectType,
                                 cp.mag !== undefined ? `${cp.mag.toFixed(1)}m` : null,
+                                cp.fovDeg !== undefined
+                                  ? `화각 ${formatFovLabel(cp.fovDeg)}`
+                                  : null,
                                 hz
                                   ? `고도 ${hz.altDeg.toFixed(0)}°(${getCompassDirection(hz.azDeg)})`
                                   : null,
@@ -1701,6 +1900,49 @@ export function ChallengePanel({
                                 {cp.guideNote}
                               </div>
                             )}
+                            <div className="flex items-center gap-1">
+                              <span className={`text-[9px] font-medium whitespace-nowrap shrink-0 ${ui.textMuted}`}>
+                                화각
+                              </span>
+                              <FovNumberInput
+                                value={cp.fovDeg}
+                                onChange={(next) =>
+                                  onUpdateCheckpointFov(selectedTrack.id, cp.id, next)
+                                }
+                                ariaLabel={`${cp.name || cp.code} 화각 입력`}
+                                inputClass={ui.input}
+                                mutedClass={ui.textMuted}
+                                borderRadius="4px"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  onUpdateCheckpointFov(
+                                    selectedTrack.id,
+                                    cp.id,
+                                    clampFovDeg(currentFovDeg)
+                                  )
+                                }
+                                title={`현재 성도 화각(${formatFovLabel(currentFovDeg)}) 넣기`}
+                                className={`px-1.5 py-0.5 border text-[9px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${ui.buttonIdle}`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                현재 화각넣기
+                              </button>
+                              {cp.fovDeg !== undefined && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    onUpdateCheckpointFov(selectedTrack.id, cp.id, undefined)
+                                  }
+                                  title="화각 초기화 (자동 화각 사용)"
+                                  aria-label="화각 초기화"
+                                  className={`p-0.5 shrink-0 ${ui.textMuted} hover:opacity-100 cursor-pointer`}
+                                >
+                                  <X className="w-3 h-3" />
+                                </button>
+                              )}
+                            </div>
                             <input
                               type="text"
                               value={cp.logNote ?? ''}
