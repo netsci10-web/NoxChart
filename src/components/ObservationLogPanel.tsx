@@ -123,6 +123,7 @@ export function ObservationLogPanel({
   const [notice, setNotice] = useState<string | null>(null);
   const [dragLogId, setDragLogId] = useState<string | null>(null);
   const [dragOverLogId, setDragOverLogId] = useState<string | null>(null);
+  const [reorderEditMode, setReorderEditMode] = useState(false);
 
   const obsTimeMs = observer.useLiveTime ? Date.now() : observer.timestampMs;
   const activeEquipSummary = useMemo(
@@ -419,6 +420,42 @@ export function ObservationLogPanel({
                 <span>새 기록</span>
               </>
             )}
+          </button>
+        </div>
+
+        {/* Backup & Import directly below 나의 관측기록부 */}
+        <div className={`pt-1.5 border-t ${ui.divider} grid grid-cols-3 gap-1`}>
+          <button
+            type="button"
+            onClick={() => downloadObservationLogsJson(store)}
+            disabled={store.logs.length === 0 && observedObjects.length === 0}
+            className={`py-1 px-1 border text-[9.5px] font-medium flex items-center justify-center gap-0.5 whitespace-nowrap disabled:opacity-40 cursor-pointer transition-colors ${ui.buttonSave}`}
+            style={{ borderRadius: '4px' }}
+            title="관측기록 및 관측여부를 JSON 파일로 백업"
+          >
+            <Download className="w-3 h-3 shrink-0" />
+            <span>JSON 백업</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className={`py-1 px-1 border text-[9.5px] font-medium flex items-center justify-center gap-0.5 whitespace-nowrap cursor-pointer transition-colors ${ui.buttonLoad}`}
+            style={{ borderRadius: '4px' }}
+            title="백업한 JSON 파일에서 관측기록 불러오기"
+          >
+            <Upload className="w-3 h-3 shrink-0" />
+            <span>불러오기</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => downloadObservationLogsCsv(store.logs)}
+            disabled={store.logs.length === 0}
+            className={`py-1 px-1 border text-[9.5px] font-medium flex items-center justify-center gap-0.5 whitespace-nowrap disabled:opacity-40 cursor-pointer transition-colors ${ui.buttonSave}`}
+            style={{ borderRadius: '4px' }}
+            title="관측기록을 엑셀용 CSV로 저장"
+          >
+            <FileSpreadsheet className="w-3 h-3 shrink-0" />
+            <span>CSV 저장</span>
           </button>
         </div>
 
@@ -763,6 +800,19 @@ export function ObservationLogPanel({
                 ))}
               </select>
             )}
+            {filteredLogs.length > 1 && (
+              <button
+                type="button"
+                onClick={() => setReorderEditMode((v) => !v)}
+                title={reorderEditMode ? '순서 편집 종료' : '관측기록 순서 편집 (위/아래 이동)'}
+                className={`px-2 py-1 border text-[10px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                  reorderEditMode ? ui.buttonActive : ui.buttonIdle
+                }`}
+                style={{ borderRadius: '4px' }}
+              >
+                <span>{reorderEditMode ? '완료' : '편집'}</span>
+              </button>
+            )}
           </div>
         )}
       </div>
@@ -793,17 +843,19 @@ export function ObservationLogPanel({
                 Number.isFinite(log.raDeg) &&
                 Number.isFinite(log.decDeg) &&
                 (log.raDeg !== 0 || log.decDeg !== 0 || !log.objectId.startsWith('custom_'));
+              const canReorderLog = reorderEditMode && filteredLogs.length > 1;
               return (
                 <div
                   key={log.id}
-                  draggable={filteredLogs.length > 1}
+                  draggable={canReorderLog}
                   onDragStart={(e) => {
+                    if (!canReorderLog) return;
                     setDragLogId(log.id);
                     e.dataTransfer.effectAllowed = 'move';
                     e.dataTransfer.setData('text/plain', log.id);
                   }}
                   onDragOver={(e) => {
-                    if (!dragLogId || dragLogId === log.id) return;
+                    if (!canReorderLog || !dragLogId || dragLogId === log.id) return;
                     e.preventDefault();
                     setDragOverLogId(log.id);
                   }}
@@ -812,7 +864,7 @@ export function ObservationLogPanel({
                   }}
                   onDrop={(e) => {
                     e.preventDefault();
-                    if (dragLogId && dragLogId !== log.id) {
+                    if (canReorderLog && dragLogId && dragLogId !== log.id) {
                       handleReorderFilteredLogs(dragLogId, log.id);
                     }
                     setDragLogId(null);
@@ -827,36 +879,8 @@ export function ObservationLogPanel({
                   }`}
                   style={{ borderRadius: '6px' }}
                 >
-                  {/* Header: Reorder + Target Name & Rating */}
+                  {/* Header: Target Name, Rating & Right-End Reorder */}
                   <div className="flex items-start justify-between gap-1">
-                    {filteredLogs.length > 1 && (
-                      <div className="flex flex-col shrink-0 -ml-0.5">
-                        <button
-                          type="button"
-                          disabled={logIdx === 0}
-                          onClick={() =>
-                            handleReorderFilteredLogs(log.id, filteredLogs[logIdx - 1].id)
-                          }
-                          title="위로 이동"
-                          aria-label={`${log.objectName} 기록 위로 이동`}
-                          className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                        >
-                          <ChevronUp className="w-2.5 h-2.5" />
-                        </button>
-                        <button
-                          type="button"
-                          disabled={logIdx === filteredLogs.length - 1}
-                          onClick={() =>
-                            handleReorderFilteredLogs(log.id, filteredLogs[logIdx + 1].id)
-                          }
-                          title="아래로 이동"
-                          aria-label={`${log.objectName} 기록 아래로 이동`}
-                          className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                        >
-                          <ChevronDown className="w-2.5 h-2.5" />
-                        </button>
-                      </div>
-                    )}
                     <button
                       type="button"
                       disabled={!hasCoord}
@@ -892,6 +916,34 @@ export function ObservationLogPanel({
                         {'★'.repeat(log.rating)}
                       </span>
                     ) : null}
+                    {canReorderLog && (
+                      <div className="flex flex-col shrink-0 ml-0.5">
+                        <button
+                          type="button"
+                          disabled={logIdx === 0}
+                          onClick={() =>
+                            handleReorderFilteredLogs(log.id, filteredLogs[logIdx - 1].id)
+                          }
+                          title="위로 이동"
+                          aria-label={`${log.objectName} 기록 위로 이동`}
+                          className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                        >
+                          <ChevronUp className="w-3 h-3" />
+                        </button>
+                        <button
+                          type="button"
+                          disabled={logIdx === filteredLogs.length - 1}
+                          onClick={() =>
+                            handleReorderFilteredLogs(log.id, filteredLogs[logIdx + 1].id)
+                          }
+                          title="아래로 이동"
+                          aria-label={`${log.objectName} 기록 아래로 이동`}
+                          className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                        >
+                          <ChevronDown className="w-3 h-3" />
+                        </button>
+                      </div>
+                    )}
                   </div>
 
                   {/* Metadata Rows: DateTime / Seeing / Location / Equipment */}
@@ -1048,42 +1100,6 @@ export function ObservationLogPanel({
           })}
         </div>
       )}
-
-      {/* Backup & Export Footer */}
-      <div className={`pt-2 border-t ${ui.divider} grid grid-cols-3 gap-1`}>
-        <button
-          type="button"
-          onClick={() => downloadObservationLogsJson(store)}
-          disabled={store.logs.length === 0 && observedObjects.length === 0}
-          className={`py-1 px-1 border text-[9.5px] font-medium flex items-center justify-center gap-0.5 whitespace-nowrap disabled:opacity-40 ${ui.buttonIdle}`}
-          style={{ borderRadius: '4px' }}
-          title="관측기록 및 관측여부를 JSON 파일로 백업"
-        >
-          <Download className="w-3 h-3 shrink-0" />
-          <span>JSON 백업</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => fileInputRef.current?.click()}
-          className={`py-1 px-1 border text-[9.5px] font-medium flex items-center justify-center gap-0.5 whitespace-nowrap ${ui.buttonIdle}`}
-          style={{ borderRadius: '4px' }}
-          title="백업한 JSON 파일에서 관측기록 불러오기"
-        >
-          <Upload className="w-3 h-3 shrink-0" />
-          <span>가져오기</span>
-        </button>
-        <button
-          type="button"
-          onClick={() => downloadObservationLogsCsv(store.logs)}
-          disabled={store.logs.length === 0}
-          className={`py-1 px-1 border text-[9.5px] font-medium flex items-center justify-center gap-0.5 whitespace-nowrap disabled:opacity-40 ${ui.buttonIdle}`}
-          style={{ borderRadius: '4px' }}
-          title="관측기록을 엑셀용 CSV로 저장"
-        >
-          <FileSpreadsheet className="w-3 h-3 shrink-0" />
-          <span>CSV 저장</span>
-        </button>
-      </div>
     </div>
   );
 }

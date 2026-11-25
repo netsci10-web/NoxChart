@@ -24,6 +24,7 @@ interface AuthSyncControlsProps {
   onLogout: () => void;
   onManualSync: () => void;
   onDismissError: () => void;
+  toastOnly?: boolean;
 }
 
 function formatTimeShort(ts: number | null): string {
@@ -48,6 +49,7 @@ export const AuthSyncControls: React.FC<AuthSyncControlsProps> = ({
   onLogout,
   onManualSync,
   onDismissError,
+  toastOnly = false,
 }) => {
   const activeNotice = authError || (syncStatus === 'error' ? syncError : null);
 
@@ -134,9 +136,11 @@ export const AuthSyncControls: React.FC<AuthSyncControlsProps> = ({
   const displayName = user?.displayName || user?.email?.split('@')[0] || '사용자';
   const initialChar = displayName.trim().charAt(0).toUpperCase() || 'U';
 
+  if (toastOnly && !activeNotice) return null;
+
   return (
-    <div className="relative flex items-center gap-1 shrink-0">
-      {!authReady ? (
+    <div className={toastOnly ? '' : 'relative flex items-center gap-1 shrink-0'}>
+      {!toastOnly && (!authReady ? (
         <div
           className={`h-7 px-2 rounded-lg border flex items-center gap-1 text-[11px] opacity-70 ${containerTone}`}
           aria-label="인증 상태 확인 중"
@@ -263,7 +267,7 @@ export const AuthSyncControls: React.FC<AuthSyncControlsProps> = ({
             <span className="hidden sm:inline">로그아웃</span>
           </button>
         </div>
-      )}
+      ))}
 
       {/* Top-of-screen alert toast for Firestore permission / network / auth errors */}
       {activeNotice && (

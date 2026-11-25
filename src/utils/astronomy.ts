@@ -859,3 +859,48 @@ export function syncUrlState(view: ChartViewState, theme: ThemeMode): void {
   const newUrl = `${window.location.pathname}?${params.toString()}`;
   window.history.replaceState(null, '', newUrl);
 }
+
+/**
+ * Compute optical airmass X(h) using Rozenberg's (1966) formula,
+ * accurate smoothly from zenith (h=90°, X=1.0) all the way to the horizon (h=0°, X=40.0).
+ */
+export function computeAirmass(altDeg: number): number {
+  const h = Math.max(0, Math.min(90, altDeg));
+  const sinH = Math.sin(h * DEG2RAD);
+  return 1 / (sinH + 0.025 * Math.exp(-11 * sinH));
+}
+
+/**
+ * Compute visual atmospheric extinction loss Δm (magnitudes, relative to zenith)
+ * at altitude `altDeg` for extinction coefficient `coeffK` (mag/airmass, typically 0.15–0.60).
+ * Zenith objects (h = 90°) have Δm = 0; low-altitude objects progressively dim toward the horizon.
+ */
+export function computeAtmosphericExtinctionMag(
+  altDeg: number,
+  coeffK = 0.25
+): number {
+  const k = Math.max(0.05, Math.min(1.0, coeffK));
+  if (altDeg >= 89.5) return 0;
+  if (altDeg <= 0) return k * 39;
+  const airmass = computeAirmass(altDeg);
+  return Math.max(0, k * (airmass - 1));
+}
+
+/**
+ * Fast scalar altitude calculation (degrees) given precomputed sin(lat) and cos(lat)
+ * for tight per-star rendering loops.
+ */
+export function computeAltitudeDegFast(
+  raDeg: number,
+  decDeg: number,
+  lstDeg: number,
+  sinLat: number,
+  cosLat: number
+): number {
+  const decRad = decDeg * DEG2RAD;
+  const haRad = (lstDeg - raDeg) * DEG2RAD;
+  const sinAlt =
+    sinLat * Math.sin(decRad) + cosLat * Math.cos(decRad) * Math.cos(haRad);
+  return Math.asin(Math.max(-1, Math.min(1, sinAlt))) * RAD2DEG;
+}
+

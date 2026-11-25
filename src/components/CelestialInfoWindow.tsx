@@ -70,6 +70,97 @@ import { computePlanetOrientation } from '../utils/planetRenderer';
 import { getSolarSystemBodies } from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
 
+const IAU_CONSTELLATION_NAMES: Record<string, string> = {
+  and: 'Andromeda',
+  ant: 'Antlia',
+  aps: 'Apus',
+  aqr: 'Aquarius',
+  aql: 'Aquila',
+  ara: 'Ara',
+  ari: 'Aries',
+  aur: 'Auriga',
+  boo: 'Bootes',
+  cae: 'Caelum',
+  cam: 'Camelopardalis',
+  cnc: 'Cancer',
+  cvn: 'Canes Venatici',
+  cma: 'Canis Major',
+  cmi: 'Canis Minor',
+  cap: 'Capricornus',
+  car: 'Carina',
+  cas: 'Cassiopeia',
+  cen: 'Centaurus',
+  cep: 'Cepheus',
+  cet: 'Cetus',
+  cha: 'Chamaeleon',
+  cir: 'Circinus',
+  col: 'Columba',
+  com: 'Coma Berenices',
+  cra: 'Corona Australis',
+  crb: 'Corona Borealis',
+  crv: 'Corvus',
+  crt: 'Crater',
+  cru: 'Crux',
+  cyg: 'Cygnus',
+  del: 'Delphinus',
+  dor: 'Dorado',
+  dra: 'Draco',
+  equ: 'Equuleus',
+  eri: 'Eridanus',
+  for: 'Fornax',
+  gem: 'Gemini',
+  gru: 'Grus',
+  her: 'Hercules',
+  hor: 'Horologium',
+  hya: 'Hydra',
+  hyi: 'Hydrus',
+  ind: 'Indus',
+  lac: 'Lacerta',
+  leo: 'Leo',
+  lmi: 'Leo Minor',
+  lep: 'Lepus',
+  lib: 'Libra',
+  lup: 'Lupus',
+  lyn: 'Lynx',
+  lyr: 'Lyra',
+  men: 'Mensa',
+  mic: 'Microscopium',
+  mon: 'Monoceros',
+  mus: 'Musca',
+  nor: 'Norma',
+  oct: 'Octans',
+  oph: 'Ophiuchus',
+  ori: 'Orion',
+  pav: 'Pavo',
+  peg: 'Pegasus',
+  per: 'Perseus',
+  phe: 'Phoenix',
+  pic: 'Pictor',
+  psc: 'Pisces',
+  psa: 'Piscis Austrinus',
+  pup: 'Puppis',
+  pyx: 'Pyxis',
+  ret: 'Reticulum',
+  sge: 'Sagitta',
+  sgr: 'Sagittarius',
+  sco: 'Scorpius',
+  scl: 'Sculptor',
+  sct: 'Scutum',
+  ser: 'Serpens',
+  sex: 'Sextans',
+  tau: 'Taurus',
+  tel: 'Telescopium',
+  tri: 'Triangulum',
+  tra: 'Triangulum Australe',
+  tuc: 'Tucana',
+  uma: 'Ursa Major',
+  umi: 'Ursa Minor',
+  vel: 'Vela',
+  vir: 'Virgo',
+  vol: 'Volans',
+  vul: 'Vulpecula',
+};
+
 export interface CelestialInfoWindowProps {
   selected: SelectedItem;
   centerLocked: boolean;
@@ -503,12 +594,52 @@ export function CelestialInfoWindow({
       rawDesignations.filter((d) => !seenNames.has(d.toLowerCase().replace(/\s+/g, ' ')))
     );
 
-    const constellation = conAbbr
-      ? catalogs.constellations.find((c) => c.abbr.toLowerCase() === conAbbr.toLowerCase())
+    let resolvedConAbbr = conAbbr;
+    if (!resolvedConAbbr && catalogs.constellations.length > 0) {
+      let nearestCon = '';
+      let nearestDist = 15;
+      const objRa = selected.data.ra;
+      const objDec = selected.data.dec;
+      for (const st of catalogs.brightStars) {
+        if (!st.con) continue;
+        const d = angularDistanceDeg(objRa, objDec, st.ra, st.dec);
+        if (d < nearestDist) {
+          nearestDist = d;
+          nearestCon = st.con;
+        }
+      }
+      for (const dso of catalogs.dsosBright) {
+        if (!dso.con) continue;
+        const d = angularDistanceDeg(objRa, objDec, dso.ra, dso.dec);
+        if (d < nearestDist) {
+          nearestDist = d;
+          nearestCon = dso.con;
+        }
+      }
+      if (!nearestCon) {
+        let bestConDist = Infinity;
+        for (const c of catalogs.constellations) {
+          const d = angularDistanceDeg(objRa, objDec, c.ra, c.dec);
+          if (d < bestConDist) {
+            bestConDist = d;
+            nearestCon = c.abbr;
+          }
+        }
+      }
+      resolvedConAbbr = nearestCon;
+    }
+
+    const constellation = resolvedConAbbr
+      ? catalogs.constellations.find(
+          (c) => c.abbr.toLowerCase() === resolvedConAbbr.toLowerCase()
+        )
       : undefined;
+    const iauConstellationName = constellation
+      ? IAU_CONSTELLATION_NAMES[constellation.abbr.toLowerCase()] || constellation.name
+      : '';
     const conLabel = constellation
-      ? `${constellation.koName} (${constellation.abbr})`
-      : conAbbr;
+      ? `${constellation.koName}(${iauConstellationName}, ${constellation.abbr})`
+      : resolvedConAbbr;
 
     const topFallbackCode =
       designations[0] ||
@@ -715,16 +846,11 @@ export function CelestialInfoWindow({
       <div className="flex-1 min-h-0 overflow-y-auto astro-scroll p-2.5 text-[11px] space-y-3">
         {/* Title, Classification & All Alternate Names / Catalog Designations */}
         <div className="space-y-1">
-          <div className={`text-[10px] font-mono tracking-[-0.04em] leading-snug break-words ${ui.textMuted}`}>
-            {selected.kind === 'planet'
-              ? `${selected.data.symbol} 태양계 · ${selected.data.category}`
-              : [
-                  ...objectNamesSummary.headerDesignations,
-                  objectNamesSummary.conLabel,
-                ]
-                  .filter(Boolean)
-                  .join(' · ')}
-          </div>
+          {objectNamesSummary.conLabel && (
+            <div className={`text-[10px] tracking-[-0.03em] leading-snug break-words ${ui.textMuted}`}>
+              {objectNamesSummary.conLabel}
+            </div>
+          )}
           <h2
             className={`text-[15px] font-semibold leading-tight tracking-[-0.04em] break-keep ${ui.textPrimary}`}
           >

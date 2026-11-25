@@ -73,6 +73,9 @@ interface ChallengePanelProps {
   theme: ThemeMode;
   observer: ObserverConfig;
   catalogs: CatalogSnapshot;
+  challengeColor: string;
+  onChangeChallengeColor: (color: string) => void;
+  onToggleAllOnChart: (enabled: boolean, preferredTrackId?: string | null) => void;
   challengeOpacity: number;
   onChangeChallengeOpacity: (opacity: number) => void;
   challengeLineWidth: number;
@@ -233,6 +236,9 @@ export function ChallengePanel({
   theme,
   observer,
   catalogs,
+  challengeColor,
+  onChangeChallengeColor,
+  onToggleAllOnChart,
   challengeOpacity,
   onChangeChallengeOpacity,
   challengeLineWidth,
@@ -284,6 +290,7 @@ export function ChallengePanel({
   const [dragOverTrackId, setDragOverTrackId] = useState<string | null>(null);
   const [dragCpId, setDragCpId] = useState<string | null>(null);
   const [dragOverCpId, setDragOverCpId] = useState<string | null>(null);
+  const [reorderEditMode, setReorderEditMode] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState<boolean>(() => {
     try {
       const raw = localStorage.getItem('noxchart_challenge_collapse_v1');
@@ -761,8 +768,16 @@ export function ChallengePanel({
           <SlidersHorizontal className="w-3 h-3 shrink-0" />
           <span>챌린지 설정</span>
         </span>
-        <span className={`font-mono text-[9.5px] tabular-nums whitespace-nowrap ${ui.textMuted}`}>
-          {challengeLineWidth.toFixed(1)}px · {Math.round(challengeOpacity * 100)}%
+        <span className={`font-mono text-[9.5px] tabular-nums whitespace-nowrap flex items-center gap-1 ${ui.textMuted}`}>
+          {challengeColor && (
+            <span
+              className="w-2 h-2 rounded-full border border-white/30 shrink-0"
+              style={{ backgroundColor: theme === 'red' ? '#DC2626' : challengeColor }}
+            />
+          )}
+          <span>
+            {challengeLineWidth.toFixed(1)}px · {Math.round(challengeOpacity * 100)}%
+          </span>
         </span>
       </button>
 
@@ -814,6 +829,51 @@ export function ChallengePanel({
                 theme === 'red' ? 'accent-red-600' : 'accent-amber-500'
               }`}
             />
+          </div>
+
+          {/* 3. 챌린지 성도 표시색 */}
+          <div className="flex items-center justify-between gap-1.5 pt-0.5">
+            <span className={`text-[10px] font-medium whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+              표시색
+            </span>
+            <div className="flex items-center gap-1">
+              <button
+                type="button"
+                onClick={() => onChangeChallengeColor('')}
+                title="코스별 기본 색상 사용"
+                className={`px-1 py-0.5 border rounded text-[9px] font-medium cursor-pointer transition-colors ${
+                  !challengeColor ? ui.buttonActive : ui.buttonIdle
+                }`}
+              >
+                코스별
+              </button>
+              {LINE_COLOR_SWATCHES.map((hex) => {
+                const active = challengeColor.toUpperCase() === hex;
+                return (
+                  <button
+                    key={hex}
+                    type="button"
+                    onClick={() => onChangeChallengeColor(hex)}
+                    title={`표시색 ${hex}`}
+                    aria-label={`챌린지 표시색 ${hex}`}
+                    className={`w-3.5 h-3.5 rounded-full border transition-transform cursor-pointer ${
+                      active
+                        ? 'scale-115 ring-1 ring-offset-1 ring-white/80 border-white'
+                        : 'border-white/25 hover:scale-110'
+                    }`}
+                    style={{ backgroundColor: hex }}
+                  />
+                );
+              })}
+              <input
+                type="color"
+                value={challengeColor || '#38BDF8'}
+                onChange={(e) => onChangeChallengeColor(e.target.value.toUpperCase())}
+                title="사용자 지정 표시색"
+                aria-label="챌린지 사용자 지정 표시색"
+                className="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer rounded"
+              />
+            </div>
           </div>
         </div>
       )}
@@ -1638,6 +1698,25 @@ export function ChallengePanel({
           ))}
         </div>
 
+        {filterStatus === 'all' && selectedTrack.checkpoints.length > 1 && (
+          <div className="flex items-center justify-between gap-1 px-0.5">
+            <span className={`text-[9.5px] font-medium ${ui.textMuted}`}>
+              대상 목록 ({total})
+            </span>
+            <button
+              type="button"
+              onClick={() => setReorderEditMode((v) => !v)}
+              title={reorderEditMode ? '순서 편집 종료' : '대상 순서 편집 (위/아래 이동)'}
+              className={`px-1.5 py-0.5 border text-[9.5px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                reorderEditMode ? ui.buttonActive : ui.buttonIdle
+              }`}
+              style={{ borderRadius: '4px' }}
+            >
+              <span>{reorderEditMode ? '완료' : '편집'}</span>
+            </button>
+          </div>
+        )}
+
         {/* Stage-Grouped Checkpoints */}
         <div className="space-y-2">
           {stageGroups.map((group) => {
@@ -1695,7 +1774,8 @@ export function ChallengePanel({
                     const isBelowHorizon = hz !== null && hz.altDeg < 0;
                     const isSelectedCp =
                       selectedCpId === cp.id || doesCheckpointMatchSelected(cp, selected);
-                    const canReorderCp = filterStatus === 'all' && group.items.length > 1;
+                    const canReorderCp =
+                      reorderEditMode && filterStatus === 'all' && group.items.length > 1;
                     const cpRowHover = isSelectedCp
                       ? theme === 'white'
                         ? 'bg-sky-100/95 hover:bg-sky-200/80 border-l-2 border-l-blue-600'
@@ -1841,8 +1921,20 @@ export function ChallengePanel({
                                 .join(' · ')}
                             </div>
                           </button>
+                          <button
+                            type="button"
+                            onClick={() => setExpandedCpId(expanded ? null : cp.id)}
+                            title="호핑 길잡이 및 관측 로그"
+                            className={`p-0.5 shrink-0 ${ui.textMuted} hover:opacity-100`}
+                          >
+                            {expanded ? (
+                              <ChevronUp className="w-3 h-3" />
+                            ) : (
+                              <ChevronDown className="w-3 h-3" />
+                            )}
+                          </button>
                           {canReorderCp && (
-                            <div className="flex flex-col shrink-0">
+                            <div className="flex flex-col shrink-0 ml-0.5">
                               <button
                                 type="button"
                                 disabled={idxInGroup === 0}
@@ -1855,9 +1947,9 @@ export function ChallengePanel({
                                 }
                                 title="위로 이동"
                                 aria-label="위로 이동"
-                                className={`p-0.5 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
                               >
-                                <ChevronUp className="w-2.5 h-2.5" />
+                                <ChevronUp className="w-3 h-3" />
                               </button>
                               <button
                                 type="button"
@@ -1871,24 +1963,12 @@ export function ChallengePanel({
                                 }
                                 title="아래로 이동"
                                 aria-label="아래로 이동"
-                                className={`p-0.5 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
                               >
-                                <ChevronDown className="w-2.5 h-2.5" />
+                                <ChevronDown className="w-3 h-3" />
                               </button>
                             </div>
                           )}
-                          <button
-                            type="button"
-                            onClick={() => setExpandedCpId(expanded ? null : cp.id)}
-                            title="호핑 길잡이 및 관측 로그"
-                            className={`p-0.5 shrink-0 ${ui.textMuted} hover:opacity-100`}
-                          >
-                            {expanded ? (
-                              <ChevronUp className="w-3 h-3" />
-                            ) : (
-                              <ChevronDown className="w-3 h-3" />
-                            )}
-                          </button>
                         </div>
 
                         {expanded && (
@@ -1995,63 +2075,117 @@ export function ChallengePanel({
         className={`border p-2.5 space-y-2 transition-colors ${tourCardTone}`}
         style={{ borderRadius: '7px' }}
       >
-        <div className="flex items-start justify-between gap-1.5">
-          <div className="min-w-0 space-y-0.5">
-            <div className="flex items-center gap-1.5">
-              <Sparkles className={`w-3.5 h-3.5 shrink-0 ${ui.accentText}`} />
-              <span className={`text-[11.5px] font-semibold tracking-[-0.04em] ${ui.textPrimary}`}>
-                오늘의 투어
-              </span>
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            <Sparkles className={`w-3.5 h-3.5 shrink-0 ${ui.accentText}`} />
+            <span className={`text-[11.5px] font-semibold tracking-[-0.04em] whitespace-nowrap ${ui.textPrimary}`}>
+              오늘의 투어
+            </span>
+            <span
+              className={`px-1 py-[1px] border text-[8.5px] font-mono leading-tight whitespace-nowrap ${
+                isAnyTourActive ? ui.buttonActive : `${ui.border} ${ui.textMuted}`
+              }`}
+              style={{ borderRadius: '3px' }}
+            >
+              {isAnyTourActive
+                ? tourState.completed
+                  ? '완주'
+                  : tourState.playing
+                  ? `순회 ${tourState.currentIndex + 1}/${tourState.stops.length}`
+                  : '일시정지'
+                : '랜덤 추천'}
+            </span>
+          </div>
+
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isAnyTourActive}
+            aria-label={isAnyTourActive ? '오늘의 투어 끄기' : '오늘의 투어 켜기'}
+            disabled={!isAnyTourActive && playableTracks.length === 0}
+            onClick={() => {
+              if (isAnyTourActive) {
+                onStopTour();
+              } else {
+                onStartTonightTour(0);
+              }
+            }}
+            title={
+              isAnyTourActive
+                ? '오늘의 투어 종료 (OFF)'
+                : playableTracks.length === 0
+                ? '재생할 수 있는 챌린지가 없습니다'
+                : '랜덤 챌린지 자동 투어 시작 (ON)'
+            }
+            className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 border text-[9.5px] font-mono font-semibold transition-colors shrink-0 disabled:opacity-40 cursor-pointer ${
+              isAnyTourActive
+                ? theme === 'white'
+                  ? 'bg-blue-600 border-blue-600 text-white'
+                  : theme === 'red'
+                  ? 'bg-red-700 border-red-500 text-white'
+                  : 'bg-cyan-500/25 border-cyan-400 text-cyan-200'
+                : ui.buttonIdle
+            }`}
+            style={{ borderRadius: '9999px' }}
+          >
+            <span
+              className={`relative inline-flex h-3.5 w-6 items-center rounded-full transition-colors ${
+                isAnyTourActive
+                  ? theme === 'white'
+                    ? 'bg-blue-300/60'
+                    : theme === 'red'
+                    ? 'bg-red-400/50'
+                    : 'bg-cyan-400/60'
+                  : theme === 'white'
+                  ? 'bg-slate-300'
+                  : theme === 'red'
+                  ? 'bg-red-950'
+                  : 'bg-slate-700'
+              }`}
+            >
               <span
-                className={`px-1 py-[1px] border text-[8.5px] font-mono leading-tight ${
-                  isAnyTourActive ? ui.buttonActive : `${ui.border} ${ui.textMuted}`
+                className={`inline-block h-2.5 w-2.5 rounded-full bg-white shadow transition-transform ${
+                  isAnyTourActive ? 'translate-x-3' : 'translate-x-0.5'
                 }`}
-                style={{ borderRadius: '3px' }}
-              >
-                {isAnyTourActive
-                  ? tourState.completed
-                    ? '완주'
-                    : tourState.playing
-                    ? `순회 ${tourState.currentIndex + 1}/${tourState.stops.length}`
-                    : '일시정지'
-                  : '랜덤 추천'}
+              />
+            </span>
+            <span className="leading-none pr-0.5">{isAnyTourActive ? 'ON' : 'OFF'}</span>
+          </button>
+        </div>
+
+        {isAnyTourActive && (
+          <>
+            {activeTourTrack && (
+              <p className={`text-[9.5px] leading-snug break-keep ${ui.textSecondary}`}>
+                진행 중: {activeTourTrack.title} ({activeTourTrack.checkpoints.length}개 대상)
+              </p>
+            )}
+
+            {/* Dwell interval selector */}
+            <div className="flex items-center justify-between gap-1.5">
+              <span className={`text-[9.5px] flex items-center gap-1 ${ui.textMuted}`}>
+                <Compass className="w-3 h-3 shrink-0" />
+                <span>대상당 머무름</span>
               </span>
+              <div className="flex items-center gap-1">
+                {TOUR_DWELL_OPTIONS.map((sec) => (
+                  <button
+                    key={sec}
+                    type="button"
+                    onClick={() => onChangeTourDwellSec(sec)}
+                    className={`px-1.5 py-0.5 border text-[9px] font-mono tabular-nums transition-colors ${
+                      tourState.dwellSec === sec ? ui.buttonActive : ui.buttonIdle
+                    }`}
+                    style={{ borderRadius: '4px' }}
+                  >
+                    {sec}초
+                  </button>
+                ))}
+              </div>
             </div>
-            <p className={`text-[9.5px] leading-snug break-keep ${ui.textSecondary}`}>
-              {isAnyTourActive && activeTourTrack
-                ? `진행 중: ${activeTourTrack.title} (${activeTourTrack.checkpoints.length}개 대상)`
-                : `아래 챌린지 목록(${playableTracks.length}개) 중 하나를 랜덤으로 선택해 자동 투어를 진행합니다.`}
-            </p>
-          </div>
-        </div>
 
-        {/* Dwell interval selector */}
-        <div className="flex items-center justify-between gap-1.5">
-          <span className={`text-[9.5px] flex items-center gap-1 ${ui.textMuted}`}>
-            <Compass className="w-3 h-3 shrink-0" />
-            <span>대상당 머무름</span>
-          </span>
-          <div className="flex items-center gap-1">
-            {TOUR_DWELL_OPTIONS.map((sec) => (
-              <button
-                key={sec}
-                type="button"
-                onClick={() => onChangeTourDwellSec(sec)}
-                className={`px-1.5 py-0.5 border text-[9px] font-mono tabular-nums transition-colors ${
-                  tourState.dwellSec === sec ? ui.buttonActive : ui.buttonIdle
-                }`}
-                style={{ borderRadius: '4px' }}
-              >
-                {sec}초
-              </button>
-            ))}
-          </div>
-        </div>
-
-        {/* Primary Play / Pause / Random Reroll / Stop Controls */}
-        <div className="flex items-center gap-1">
-          {isAnyTourActive ? (
-            <>
+            {/* Playback Controls */}
+            <div className="flex items-center gap-1">
               <button
                 type="button"
                 onClick={onToggleTourPlay}
@@ -2096,35 +2230,80 @@ export function ChallengePanel({
                 <Square className="w-3 h-3 shrink-0" />
                 <span>종료</span>
               </button>
-            </>
-          ) : (
-            <button
-              type="button"
-              disabled={playableTracks.length === 0}
-              onClick={() => onStartTonightTour(0)}
-              className={`w-full py-1.5 px-2 border text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50 ${ui.buttonActive}`}
-              style={{ borderRadius: '5px' }}
-            >
-              <Shuffle className="w-3.5 h-3.5 shrink-0" />
-              <span>오늘의 투어 시작 (랜덤 선택)</span>
-            </button>
-          )}
-        </div>
+            </div>
+          </>
+        )}
       </div>
 
-      {renderChallengeSettings()}
-      {/* Header & File I/O Toolbar */}
-      <div className="flex items-center justify-between gap-1">
-        <span className={`font-semibold tracking-[-0.05em] flex items-center gap-1 ${ui.textPrimary}`}>
+      {/* Header & 조건부 성도 표시 토글 (챌린지 선택/표시 시에만 노출) */}
+      <div className="flex items-center justify-between gap-1 pt-0.5">
+        <span
+          className={`font-semibold tracking-[-0.05em] flex items-center gap-1 ${ui.textPrimary}`}
+        >
           <Trophy className={`w-3.5 h-3.5 ${goldTextClass}`} />
           <span>관측 투어 · 챌린지</span>
         </span>
-        {activeCount > 0 && (
-          <span className={`text-[9.5px] font-mono ${goldTextClass}`}>
-            성도 표시 {activeCount}
-          </span>
+        {(selectedTrackId !== null || activeCount > 0) && (
+          <button
+            type="button"
+            role="switch"
+            aria-checked={activeCount > 0}
+            aria-label={
+              activeCount > 0
+                ? '관측 투어 챌린지 성도 표시 끄기'
+                : '관측 투어 챌린지 성도 표시 켜기'
+            }
+            onClick={() =>
+              onToggleAllOnChart(
+                activeCount === 0,
+                selectedTrackId ?? tourState.trackId ?? null
+              )
+            }
+            title={
+              activeCount > 0
+                ? '성도에 표시 중인 챌린지 모두 끄기'
+                : '선택한 챌린지 노선을 성도에 표시하기'
+            }
+            className={`inline-flex items-center gap-1.5 px-1.5 py-0.5 border text-[9.5px] font-mono font-semibold transition-colors shrink-0 cursor-pointer ${
+              activeCount > 0
+                ? theme === 'white'
+                  ? 'bg-blue-600 border-blue-600 text-white'
+                  : theme === 'red'
+                  ? 'bg-red-700 border-red-500 text-white'
+                  : 'bg-cyan-500/25 border-cyan-400 text-cyan-200'
+                : ui.buttonIdle
+            }`}
+            style={{ borderRadius: '9999px' }}
+          >
+            <span
+              className={`relative inline-flex h-3.5 w-6 items-center rounded-full transition-colors ${
+                activeCount > 0
+                  ? theme === 'white'
+                    ? 'bg-blue-300/60'
+                    : theme === 'red'
+                    ? 'bg-red-400/50'
+                    : 'bg-cyan-400/60'
+                  : theme === 'white'
+                  ? 'bg-slate-300'
+                  : theme === 'red'
+                  ? 'bg-red-950'
+                  : 'bg-slate-700'
+              }`}
+            >
+              <span
+                className={`inline-block h-2.5 w-2.5 rounded-full bg-white shadow transition-transform ${
+                  activeCount > 0 ? 'translate-x-3' : 'translate-x-0.5'
+                }`}
+              />
+            </span>
+            <span className="leading-none pr-0.5">
+              성도 {activeCount > 0 ? 'ON' : 'OFF'}
+            </span>
+          </button>
         )}
       </div>
+
+      {renderChallengeSettings()}
 
       <div className="grid grid-cols-3 gap-1">
         <button
@@ -2144,7 +2323,7 @@ export function ChallengePanel({
             setNotice(`전체 ${tracks.length}개 챌린지 파일을 저장했습니다.`);
           }}
           title="모든 챌린지 코스와 관측 진행 상황을 .json 파일로 저장"
-          className={`py-1 px-1 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap ${ui.buttonIdle}`}
+          className={`py-1 px-1 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer transition-colors ${ui.buttonSave}`}
           style={{ borderRadius: '4px' }}
         >
           <Download className="w-3 h-3 shrink-0" />
@@ -2154,7 +2333,7 @@ export function ChallengePanel({
           type="button"
           onClick={() => fileInputRef.current?.click()}
           title="로컬 .json 챌린지 파일 불러오기"
-          className={`py-1 px-1 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap ${ui.buttonIdle}`}
+          className={`py-1 px-1 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer transition-colors ${ui.buttonLoad}`}
           style={{ borderRadius: '4px' }}
         >
           <Upload className="w-3 h-3 shrink-0" />
@@ -2199,6 +2378,25 @@ export function ChallengePanel({
         </div>
       )}
 
+      {tracks.length > 1 && (
+        <div className="flex items-center justify-between gap-1 px-0.5">
+          <span className={`text-[9.5px] font-medium ${ui.textMuted}`}>
+            챌린지 목록 ({tracks.length})
+          </span>
+          <button
+            type="button"
+            onClick={() => setReorderEditMode((v) => !v)}
+            title={reorderEditMode ? '순서 편집 종료' : '챌린지 순서 편집 (위/아래 이동)'}
+            className={`px-1.5 py-0.5 border text-[9.5px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+              reorderEditMode ? ui.buttonActive : ui.buttonIdle
+            }`}
+            style={{ borderRadius: '4px' }}
+          >
+            <span>{reorderEditMode ? '완료' : '편집'}</span>
+          </button>
+        </div>
+      )}
+
       {/* Track Cards */}
       <div className="space-y-2">
         {tracks.map((track, trackIdx) => {
@@ -2207,18 +2405,20 @@ export function ChallengePanel({
           const pct = total > 0 ? Math.round((done / total) * 100) : 0;
           const isCompleted = total > 0 && done === total;
           const unlockedBadges = evaluateTrackBadges(track).filter((b) => b.unlocked).length;
+          const canReorderTrack = reorderEditMode && tracks.length > 1;
 
           return (
             <div
               key={track.id}
-              draggable={tracks.length > 1}
+              draggable={canReorderTrack}
               onDragStart={(e) => {
+                if (!canReorderTrack) return;
                 setDragTrackId(track.id);
                 e.dataTransfer.effectAllowed = 'move';
                 e.dataTransfer.setData('text/plain', track.id);
               }}
               onDragOver={(e) => {
-                if (!dragTrackId || dragTrackId === track.id) return;
+                if (!canReorderTrack || !dragTrackId || dragTrackId === track.id) return;
                 e.preventDefault();
                 setDragOverTrackId(track.id);
               }}
@@ -2227,7 +2427,7 @@ export function ChallengePanel({
               }}
               onDrop={(e) => {
                 e.preventDefault();
-                if (dragTrackId && dragTrackId !== track.id) {
+                if (canReorderTrack && dragTrackId && dragTrackId !== track.id) {
                   onReorderTracks(dragTrackId, track.id);
                 }
                 setDragTrackId(null);
@@ -2259,30 +2459,6 @@ export function ChallengePanel({
               style={{ borderRadius: '6px' }}
             >
               <div className="flex items-start justify-between gap-1">
-                {tracks.length > 1 && (
-                  <div className="flex flex-col shrink-0 -ml-0.5 mt-0.5">
-                    <button
-                      type="button"
-                      disabled={trackIdx === 0}
-                      onClick={() => onReorderTracks(track.id, tracks[trackIdx - 1].id)}
-                      title="위로 이동"
-                      aria-label={`${track.title} 위로 이동`}
-                      className={`p-0.5 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                    >
-                      <ChevronUp className="w-2.5 h-2.5" />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={trackIdx === tracks.length - 1}
-                      onClick={() => onReorderTracks(track.id, tracks[trackIdx + 1].id)}
-                      title="아래로 이동"
-                      aria-label={`${track.title} 아래로 이동`}
-                      className={`p-0.5 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                    >
-                      <ChevronDown className="w-2.5 h-2.5" />
-                    </button>
-                  </div>
-                )}
                 <button
                   type="button"
                   onClick={() => {
@@ -2355,6 +2531,30 @@ export function ChallengePanel({
                   >
                     <Trash2 className="w-3 h-3" />
                   </button>
+                  {canReorderTrack && (
+                    <div className="flex flex-col shrink-0 ml-0.5">
+                      <button
+                        type="button"
+                        disabled={trackIdx === 0}
+                        onClick={() => onReorderTracks(track.id, tracks[trackIdx - 1].id)}
+                        title="위로 이동"
+                        aria-label={`${track.title} 위로 이동`}
+                        className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                      >
+                        <ChevronUp className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={trackIdx === tracks.length - 1}
+                        onClick={() => onReorderTracks(track.id, tracks[trackIdx + 1].id)}
+                        title="아래로 이동"
+                        aria-label={`${track.title} 아래로 이동`}
+                        className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                      >
+                        <ChevronDown className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
 

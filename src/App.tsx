@@ -9,11 +9,14 @@ import {
   ChevronDown,
   ChevronLeft,
   ChevronRight,
+  ChevronUp,
   Compass,
   Download,
   Globe2,
   Grid3x3,
   Image as ImageIcon,
+  Loader2,
+  LogIn,
   Moon,
   Mountain,
   Printer,
@@ -172,6 +175,14 @@ import {
   mergeObservingSites,
   SAVED_SITES_STORAGE_KEY,
 } from './utils/observingSites';
+import { clampBortleClass, estimateSiteBortleClass } from './utils/bortle';
+import {
+  clampUiFontSizeStep,
+  getUiFontOption,
+  getUiFontSizeMetrics,
+  isValidUiFontFamily,
+  UiFontFamily,
+} from './utils/uiTypography';
 import { getSolarSystemBodies, getSolarSystemDailyTrail } from './utils/solarSystem';
 import { getUiTheme } from './utils/themeClasses';
 
@@ -207,6 +218,9 @@ const APP_PREFS_STORAGE_KEY = 'noxchart_app_prefs_v1';
 
 interface SavedAppPrefs {
   theme?: ThemeMode;
+  redIntensity?: number;
+  uiFontFamily?: UiFontFamily;
+  uiFontSizeStep?: number;
   coordSystem?: CoordSystem;
   fsz?: number;
   flipH?: boolean;
@@ -276,6 +290,7 @@ const DEFAULT_LAYERS: LayerSettings = {
   showGridEq: false,
   showGridAltAz: true,
   gridLineWidth: 0.8,
+  gridLineOpacity: 0.35,
   showHorizon: true,
   showTerrain: true,
   showEcliptic: false,
@@ -298,17 +313,21 @@ const DEFAULT_LAYERS: LayerSettings = {
   doubleStarMinSepArcsec: 1,
   showDoubleStarLabels: true,
   doubleStarLabelDensityPct: 12,
-  doubleStarOpacity: 1.0,
+  doubleStarSymbolOpacity: 1.0,
+  doubleStarLabelOpacity: 1.0,
   showDso: true,
   showMessierCatalog: false,
   showCaldwellCatalog: false,
   dsoSymbolDensityPct: 30,
   showDsoLabels: true,
   dsoLabelDensityPct: 7,
-  dsoOpacity: 1.0,
+  dsoSymbolOpacity: 1.0,
+  dsoLabelOpacity: 1.0,
   showStarLabels: true,
+  starLabelLanguage: 'ko',
   showProperStarNames: false,
   starLabelDensityPct: 7,
+  starLabelOpacity: 1.0,
   showFieldStars: true,
   enableGaiaLive: true,
   magOffset: 0,
@@ -325,8 +344,13 @@ const DEFAULT_LAYERS: LayerSettings = {
     AST: true,
   },
   highlightSessionPlan: false,
+  sessionPlanColor: '#F59E0B',
+  sessionPlanOpacity: 1.0,
+  challengeColor: '',
   challengeOpacity: 1.0,
   challengeLineWidth: 0.8,
+  showAtmosphericExtinction: false,
+  extinctionCoeff: 0.25,
 };
 
 const DEFAULT_HIPS: HipsSettings = {
@@ -380,6 +404,8 @@ const DEFAULT_OBSERVER: ObserverConfig = {
   timeRateSecPerSec: 1,
   minAltitudeDeg: -90,
   highlightAboveMinAlt: false,
+  bortleEnabled: false,
+  bortleClass: estimateSiteBortleClass(37.5665, 126.978, '서울 (Seoul)').bortle,
 };
 
 function reorderItemsById<T extends { id: string }>(
@@ -406,6 +432,15 @@ function loadSavedAppPrefs(): SavedAppPrefs {
         const res: SavedAppPrefs = {};
         if (parsed.theme === 'dark' || parsed.theme === 'white' || parsed.theme === 'red') {
           res.theme = parsed.theme;
+        }
+        if (typeof parsed.redIntensity === 'number' && Number.isFinite(parsed.redIntensity)) {
+          res.redIntensity = Math.max(0, Math.min(100, Math.round(parsed.redIntensity)));
+        }
+        if (isValidUiFontFamily(parsed.uiFontFamily)) {
+          res.uiFontFamily = parsed.uiFontFamily;
+        }
+        if (typeof parsed.uiFontSizeStep === 'number' && Number.isFinite(parsed.uiFontSizeStep)) {
+          res.uiFontSizeStep = clampUiFontSizeStep(parsed.uiFontSizeStep);
         }
         if (parsed.coordSystem === 'horizontal' || parsed.coordSystem === 'equatorial') {
           res.coordSystem = parsed.coordSystem;
@@ -581,6 +616,8 @@ function createInitialObserver(): ObserverConfig {
         lon?: number;
         minAltitudeDeg?: number;
         highlightAboveMinAlt?: boolean;
+        bortleEnabled?: boolean;
+        bortleClass?: number;
       };
       if (
         typeof parsed.lat === 'number' &&
@@ -588,14 +625,18 @@ function createInitialObserver(): ObserverConfig {
         typeof parsed.lon === 'number' &&
         Number.isFinite(parsed.lon)
       ) {
+        const siteName =
+          typeof parsed.name === 'string' && parsed.name.trim()
+            ? parsed.name
+            : DEFAULT_OBSERVER.name;
+        const siteLat = Math.max(-90, Math.min(90, parsed.lat));
+        const siteLon = Math.max(-180, Math.min(180, parsed.lon));
+        const estimatedBortle = estimateSiteBortleClass(siteLat, siteLon, siteName).bortle;
         return {
           ...DEFAULT_OBSERVER,
-          name:
-            typeof parsed.name === 'string' && parsed.name.trim()
-              ? parsed.name
-              : DEFAULT_OBSERVER.name,
-          lat: Math.max(-90, Math.min(90, parsed.lat)),
-          lon: Math.max(-180, Math.min(180, parsed.lon)),
+          name: siteName,
+          lat: siteLat,
+          lon: siteLon,
           minAltitudeDeg:
             typeof parsed.minAltitudeDeg === 'number' && Number.isFinite(parsed.minAltitudeDeg)
               ? Math.max(-90, Math.min(85, parsed.minAltitudeDeg))
@@ -604,6 +645,14 @@ function createInitialObserver(): ObserverConfig {
             typeof parsed.highlightAboveMinAlt === 'boolean'
               ? parsed.highlightAboveMinAlt
               : DEFAULT_OBSERVER.highlightAboveMinAlt,
+          bortleEnabled:
+            typeof parsed.bortleEnabled === 'boolean'
+              ? parsed.bortleEnabled
+              : DEFAULT_OBSERVER.bortleEnabled,
+          bortleClass:
+            typeof parsed.bortleClass === 'number' && Number.isFinite(parsed.bortleClass)
+              ? clampBortleClass(parsed.bortleClass)
+              : estimatedBortle,
           timestampMs: Date.now(),
         };
       }
@@ -674,6 +723,106 @@ export default function App() {
     if (params.has('mode')) return initialUrl.theme;
     return initialAppPrefs.theme ?? initialUrl.theme;
   });
+  const [redIntensity, setRedIntensity] = useState<number>(
+    () => initialAppPrefs.redIntensity ?? 50
+  );
+  const [uiFontFamily, setUiFontFamily] = useState<UiFontFamily>(
+    () => initialAppPrefs.uiFontFamily ?? 'default'
+  );
+  const [uiFontSizeStep, setUiFontSizeStep] = useState<number>(
+    () => initialAppPrefs.uiFontSizeStep ?? 0
+  );
+  const [requestedSidebarTab, setRequestedSidebarTab] = useState<{
+    tab: 'explore' | 'layers' | 'optics' | 'observer' | 'settings';
+    seq: number;
+  } | null>(null);
+
+  // Sync UI font family, font size scaling, and automatic single-line condensation (자간·장평)
+  useEffect(() => {
+    const htmlEl = document.documentElement;
+    const fontOpt = getUiFontOption(uiFontFamily);
+    const metrics = getUiFontSizeMetrics(uiFontSizeStep);
+    htmlEl.style.setProperty('--font-sans', fontOpt.cssFamily);
+    htmlEl.style.setProperty(
+      '--font-mono',
+      uiFontFamily === 'default'
+        ? '"IBM Plex Mono", "IBM Plex Sans", "Noto Sans KR", ui-monospace, SFMono-Regular, Menlo, monospace'
+        : fontOpt.cssFamily
+    );
+    htmlEl.dataset.fontFamily = uiFontFamily;
+    htmlEl.style.setProperty('--ui-font-scale', metrics.scale.toFixed(3));
+    htmlEl.style.setProperty('--ui-letter-spacing', `${metrics.letterSpacingEm}em`);
+    htmlEl.style.setProperty('--ui-word-spacing', `${metrics.wordSpacingEm}em`);
+    htmlEl.style.setProperty('--ui-condense-x', metrics.condenseX.toFixed(3));
+    htmlEl.dataset.fontStep = String(metrics.step);
+    htmlEl.dataset.fontEnlarged = metrics.step > 0 ? 'true' : 'false';
+  }, [uiFontFamily, uiFontSizeStep]);
+
+  // Keep mobile/tablet browser chrome, iOS status bar & safe-area background synced with active theme
+  useEffect(() => {
+    const headerBg =
+      theme === 'white' ? '#E2E8F0' : theme === 'red' ? '#0B0101' : '#0B0F19';
+    document.documentElement.dataset.theme = theme;
+    document.documentElement.style.backgroundColor = headerBg;
+    document.documentElement.style.colorScheme = theme === 'white' ? 'light' : 'dark';
+    document.body.style.backgroundColor = headerBg;
+
+    let themeMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
+    if (!themeMeta) {
+      themeMeta = document.createElement('meta');
+      themeMeta.name = 'theme-color';
+      document.head.appendChild(themeMeta);
+    }
+    themeMeta.content = headerBg;
+
+    let appleStatusMeta = document.querySelector<HTMLMetaElement>(
+      'meta[name="apple-mobile-web-app-status-bar-style"]'
+    );
+    if (!appleStatusMeta) {
+      appleStatusMeta = document.createElement('meta');
+      appleStatusMeta.name = 'apple-mobile-web-app-status-bar-style';
+      document.head.appendChild(appleStatusMeta);
+    }
+    appleStatusMeta.content = theme === 'white' ? 'default' : 'black-translucent';
+  }, [theme]);
+
+  // Apply adjustable red night-vision intensity (brightness / saturation / contrast) when red theme is active
+  const redOverlayAlpha = useMemo(() => {
+    if (theme !== 'red') return 0;
+    const t = Math.max(0, Math.min(1, redIntensity / 100));
+    if (t <= 0.5) return 0;
+    return Number((((t - 0.5) / 0.5) * 0.42).toFixed(3));
+  }, [theme, redIntensity]);
+
+  useEffect(() => {
+    const rootEl = document.getElementById('root');
+    if (!rootEl) return;
+    if (theme !== 'red') {
+      rootEl.style.filter = '';
+      return;
+    }
+    const t = Math.max(0, Math.min(1, redIntensity / 100));
+    let brightness = 1;
+    let saturate = 1;
+    let contrast = 1;
+    if (t <= 0.5) {
+      const u = t / 0.5;
+      brightness = 1.85 - 0.85 * u;
+      saturate = 0.62 + 0.38 * u;
+      contrast = 0.92 + 0.08 * u;
+    } else {
+      const u = (t - 0.5) / 0.5;
+      brightness = 1.0 - 0.46 * u;
+      saturate = 1.0 + 0.35 * u;
+      contrast = 1.0 + 0.08 * u;
+    }
+    rootEl.style.filter = `brightness(${brightness.toFixed(3)}) saturate(${saturate.toFixed(
+      3
+    )}) contrast(${contrast.toFixed(3)})`;
+    return () => {
+      rootEl.style.filter = '';
+    };
+  }, [theme, redIntensity]);
   const initialLayerBundle = useMemo<LayerSettingsBundle>(() => {
     const coordMatchedDefaultLayers: LayerSettings = {
       ...DEFAULT_LAYERS,
@@ -814,7 +963,6 @@ export default function App() {
   savedSitesRef.current = savedSites;
   const [siteMapOpen, setSiteMapOpen] = useState(false);
   const [siteMapFocus, setSiteMapFocus] = useState<SavedObservingSite | null>(null);
-  const [gmpQuotaExceeded, setGmpQuotaExceeded] = useState(false);
 
   const [selected, setSelected] = useState<SelectedItem | null>(null);
   const [detailWindowOpen, setDetailWindowOpen] = useState(false);
@@ -840,6 +988,7 @@ export default function App() {
   const [solarTrails, setSolarTrails] = useState<Record<string, number>>({});
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  const [timeBarOpen, setTimeBarOpen] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<
     'session' | 'challenge' | 'asterism' | 'log'
   >('session');
@@ -1013,6 +1162,7 @@ export default function App() {
   const [challengePickAllowEmpty, setChallengePickAllowEmpty] = useState(true);
   const [challengeDraftNotice, setChallengeDraftNotice] = useState<string | null>(null);
   const [copiedUrl, setCopiedUrl] = useState(false);
+  const [sensorPngExporting, setSensorPngExporting] = useState(false);
   const [searchActive, setSearchActive] = useState(false);
   const [resetCount, setResetCount] = useState(0);
 
@@ -1134,6 +1284,50 @@ export default function App() {
     };
   }, [cardinalMenuOpen, updateCardinalMenuPos]);
 
+  const [themeMenuOpen, setThemeMenuOpen] = useState(false);
+  const [themeMenuPos, setThemeMenuPos] = useState<{ left: number; top: number } | null>(null);
+  const themeMenuRef = useRef<HTMLDivElement>(null);
+  const themeDropdownRef = useRef<HTMLDivElement>(null);
+
+  const updateThemeMenuPos = useCallback(() => {
+    const btn = themeMenuRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const menuWidth = 112;
+    const centeredLeft = rect.left + rect.width / 2 - menuWidth / 2;
+    const clampedLeft = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, centeredLeft));
+    setThemeMenuPos({ left: clampedLeft, top: rect.bottom + 6 });
+  }, []);
+
+  useEffect(() => {
+    if (!themeMenuOpen) return;
+    updateThemeMenuPos();
+    const handleOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        themeMenuRef.current &&
+        !themeMenuRef.current.contains(target) &&
+        (!themeDropdownRef.current || !themeDropdownRef.current.contains(target))
+      ) {
+        setThemeMenuOpen(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setThemeMenuOpen(false);
+      }
+    };
+    const handleResize = () => updateThemeMenuPos();
+    document.addEventListener('mousedown', handleOutside);
+    window.addEventListener('keydown', handleEsc);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      window.removeEventListener('keydown', handleEsc);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [themeMenuOpen, updateThemeMenuPos]);
+
   const [rulerMode, setRulerMode] = useState(false);
   const [rulerMeasurement, setRulerMeasurement] = useState<RulerMeasurement | null>(null);
 
@@ -1233,7 +1427,17 @@ export default function App() {
   const handleChangeObserver = useCallback(
     (updater: (prev: ObserverConfig) => ObserverConfig) => {
       const prevObs = observerRef.current;
-      const nextObs = updater(prevObs);
+      let nextObs = updater(prevObs);
+      const siteChanged =
+        Math.abs(nextObs.lat - prevObs.lat) > 1e-5 ||
+        Math.abs(nextObs.lon - prevObs.lon) > 1e-5 ||
+        nextObs.name !== prevObs.name;
+      if (siteChanged && nextObs.bortleClass === prevObs.bortleClass) {
+        nextObs = {
+          ...nextObs,
+          bortleClass: estimateSiteBortleClass(nextObs.lat, nextObs.lon, nextObs.name).bortle,
+        };
+      }
       observerRef.current = nextObs;
       setObserver(nextObs);
 
@@ -1558,7 +1762,7 @@ export default function App() {
     }
   }, [savedSites]);
 
-  // Persist active observing site coordinates & altitude filter locally
+  // Persist active observing site coordinates, Bortle class & altitude filter locally
   useEffect(() => {
     try {
       localStorage.setItem(
@@ -1569,6 +1773,8 @@ export default function App() {
           lon: observer.lon,
           minAltitudeDeg: observer.minAltitudeDeg,
           highlightAboveMinAlt: observer.highlightAboveMinAlt,
+          bortleEnabled: observer.bortleEnabled,
+          bortleClass: observer.bortleClass,
         })
       );
     } catch {
@@ -1580,6 +1786,8 @@ export default function App() {
     observer.lon,
     observer.minAltitudeDeg,
     observer.highlightAboveMinAlt,
+    observer.bortleEnabled,
+    observer.bortleClass,
   ]);
 
   // Persist layer & HiPS settings locally so they are restored on next load
@@ -1601,6 +1809,9 @@ export default function App() {
     try {
       const prefs: SavedAppPrefs = {
         theme,
+        redIntensity,
+        uiFontFamily,
+        uiFontSizeStep,
         coordSystem: view.coordSystem,
         fsz: view.fsz,
         flipH: view.flipH,
@@ -1610,7 +1821,16 @@ export default function App() {
     } catch {
       // Ignore storage quota errors
     }
-  }, [theme, view.coordSystem, view.fsz, view.flipH, view.flipV]);
+  }, [
+    theme,
+    redIntensity,
+    uiFontFamily,
+    uiFontSizeStep,
+    view.coordSystem,
+    view.fsz,
+    view.flipH,
+    view.flipV,
+  ]);
 
   // Firebase Authentication & Real-time Cloud Firestore Synchronization (onSnapshot on users/{uid} & users/{uid}/data)
   const [authUser, setAuthUser] = useState<User | null>(null);
@@ -1659,6 +1879,8 @@ export default function App() {
           lon: observer.lon,
           minAltitudeDeg: observer.minAltitudeDeg,
           highlightAboveMinAlt: observer.highlightAboveMinAlt,
+          bortleEnabled: observer.bortleEnabled,
+          bortleClass: observer.bortleClass,
         },
         savedSites,
         equipmentLocker,
@@ -1683,6 +1905,8 @@ export default function App() {
       observer.lon,
       observer.minAltitudeDeg,
       observer.highlightAboveMinAlt,
+      observer.bortleEnabled,
+      observer.bortleClass,
       savedSites,
       equipmentLocker,
       observingListsState,
@@ -1747,6 +1971,8 @@ export default function App() {
         lon: DEFAULT_OBSERVER.lon,
         minAltitudeDeg: DEFAULT_OBSERVER.minAltitudeDeg,
         highlightAboveMinAlt: DEFAULT_OBSERVER.highlightAboveMinAlt,
+        bortleEnabled: DEFAULT_OBSERVER.bortleEnabled,
+        bortleClass: DEFAULT_OBSERVER.bortleClass,
       };
       let nextSavedSites = basePayload.root.savedSites ?? [];
       let nextEquipment = basePayload.root.equipmentLocker ?? DEFAULT_EQUIPMENT_LOCKER;
@@ -1839,13 +2065,17 @@ export default function App() {
             typeof cloudRoot.activeSite.lon === 'number' &&
             Number.isFinite(cloudRoot.activeSite.lon)
           ) {
+            const siteName =
+              typeof cloudRoot.activeSite.name === 'string' && cloudRoot.activeSite.name.trim()
+                ? cloudRoot.activeSite.name
+                : DEFAULT_OBSERVER.name;
+            const siteLat = Math.max(-90, Math.min(90, cloudRoot.activeSite.lat));
+            const siteLon = Math.max(-180, Math.min(180, cloudRoot.activeSite.lon));
+            const estimatedBortle = estimateSiteBortleClass(siteLat, siteLon, siteName).bortle;
             const candidate = {
-              name:
-                typeof cloudRoot.activeSite.name === 'string' && cloudRoot.activeSite.name.trim()
-                  ? cloudRoot.activeSite.name
-                  : DEFAULT_OBSERVER.name,
-              lat: Math.max(-90, Math.min(90, cloudRoot.activeSite.lat)),
-              lon: Math.max(-180, Math.min(180, cloudRoot.activeSite.lon)),
+              name: siteName,
+              lat: siteLat,
+              lon: siteLon,
               minAltitudeDeg:
                 typeof cloudRoot.activeSite.minAltitudeDeg === 'number' &&
                 Number.isFinite(cloudRoot.activeSite.minAltitudeDeg)
@@ -1855,6 +2085,15 @@ export default function App() {
                 typeof cloudRoot.activeSite.highlightAboveMinAlt === 'boolean'
                   ? cloudRoot.activeSite.highlightAboveMinAlt
                   : DEFAULT_OBSERVER.highlightAboveMinAlt,
+              bortleEnabled:
+                typeof cloudRoot.activeSite.bortleEnabled === 'boolean'
+                  ? cloudRoot.activeSite.bortleEnabled
+                  : DEFAULT_OBSERVER.bortleEnabled,
+              bortleClass:
+                typeof cloudRoot.activeSite.bortleClass === 'number' &&
+                Number.isFinite(cloudRoot.activeSite.bortleClass)
+                  ? clampBortleClass(cloudRoot.activeSite.bortleClass)
+                  : estimatedBortle,
             };
             if (serialize(candidate) !== serialize(nextActiveSite)) {
               nextActiveSite = candidate;
@@ -1993,13 +2232,10 @@ export default function App() {
               const localActiveById = new Map(
                 basePayload.challenges.map((t) => [t.id, Boolean(t.activeOnChart)])
               );
-              nextChallenges =
-                mode === 'poll'
-                  ? hydrated.map((t) => ({
-                      ...t,
-                      activeOnChart: localActiveById.get(t.id) ?? false,
-                    }))
-                  : hydrated;
+              nextChallenges = hydrated.map((t) => ({
+                ...t,
+                activeOnChart: localActiveById.get(t.id) ?? false,
+              }));
               setChallenges(nextChallenges);
               changed = true;
             }
@@ -2483,13 +2719,6 @@ export default function App() {
     }
   }, [optics.showEyepiece, isActiveScopeReflector]);
 
-  // Listen for Google Maps Platform Demo Key quota-exceeded events
-  useEffect(() => {
-    const onQuotaExceeded = () => setGmpQuotaExceeded(true);
-    window.addEventListener('gmp-quota-exceeded', onQuotaExceeded);
-    return () => window.removeEventListener('gmp-quota-exceeded', onQuotaExceeded);
-  }, []);
-
   // Time remains completely frozen whenever playback is paused (observer.isPlaying === false).
   // Real-time 1x & time-lapse updates are handled exclusively by the playback ticker below.
 
@@ -2721,12 +2950,11 @@ export default function App() {
     setSelected(item);
     detailWindowOpenRef.current = Boolean(item);
     setDetailWindowOpen(Boolean(item));
-    if (item) {
-      const wantMark = !options?.hideSelectionMark;
+    if (item && options?.hideSelectionMark) {
       setOptics((prevOptics) =>
-        prevOptics.showSelectionMark === wantMark
-          ? prevOptics
-          : { ...prevOptics, showSelectionMark: wantMark }
+        prevOptics.showSelectionMark
+          ? { ...prevOptics, showSelectionMark: false }
+          : prevOptics
       );
     }
   };
@@ -3180,7 +3408,10 @@ export default function App() {
         if (st) found = { kind: 'star', data: st };
       }
 
+      detailWindowOpenRef.current = false;
+      setDetailWindowOpen(false);
       if (found) {
+        selectedRef.current = found;
         setSelected(found);
       }
 
@@ -3848,6 +4079,27 @@ export default function App() {
     });
   }, []);
 
+  const handleToggleAllChallengesOnChart = useCallback(
+    (enabled: boolean, preferredTrackId?: string | null) => {
+      setChallenges((prev) => {
+        if (!enabled) {
+          return prev.map((t) => (t.activeOnChart ? { ...t, activeOnChart: false } : t));
+        }
+        if (prev.some((t) => t.activeOnChart)) return prev;
+        const target =
+          (preferredTrackId ? prev.find((t) => t.id === preferredTrackId) : undefined) ??
+          prev.find((t) => t.checkpoints.length > 0) ??
+          prev[0];
+        if (!target) return prev;
+        return prev.map((t) => ({
+          ...t,
+          activeOnChart: t.id === target.id,
+        }));
+      });
+    },
+    []
+  );
+
   const handleReorderChallengeTracks = useCallback((fromId: string, toId: string) => {
     setChallenges((prev) => reorderItemsById(prev, fromId, toId));
   }, []);
@@ -4448,11 +4700,10 @@ export default function App() {
       }
 
       if (item) {
+        detailWindowOpenRef.current = false;
+        setDetailWindowOpen(false);
         selectedRef.current = item;
         setSelected(item);
-        setOptics((prev) =>
-          prev.showSelectionMark ? prev : { ...prev, showSelectionMark: true }
-        );
         centerLockedRef.current = false;
         setCenterLocked(false);
         lockedHzRef.current = null;
@@ -4515,11 +4766,10 @@ export default function App() {
       const token = ++tourRunTokenRef.current;
 
       setTourDwellProgress(0);
+      detailWindowOpenRef.current = false;
+      setDetailWindowOpen(false);
       selectedRef.current = stop.selectedItem;
       setSelected(stop.selectedItem);
-      setOptics((prev) =>
-        prev.showSelectionMark ? prev : { ...prev, showSelectionMark: true }
-      );
       centerLockedRef.current = false;
       setCenterLocked(false);
       lockedHzRef.current = null;
@@ -6177,42 +6427,31 @@ export default function App() {
     <ConfirmDialogContext.Provider value={requestConfirm}>
     <div
       data-theme={theme}
-      className={`w-screen h-screen flex flex-col overflow-hidden ${ui.shell}`}
+      className={`w-screen h-[100dvh] flex flex-col overflow-hidden ${ui.shell}`}
     >
-      {gmpQuotaExceeded && (
-        <div className="bg-amber-50 border-b border-amber-200 text-amber-900 px-4 py-2.5 text-xs md:text-sm text-center sticky top-0 z-50 shadow-sm shrink-0">
-          <span>
-            Google Maps Platform quota reached. If you are the app owner, visit{' '}
-            <a
-              href="https://developers.google.com/maps/ai/ai-studio?utm_campaign=gmp_mcp_codeassist_v1_aistudio#quota_exceeded_errors"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline font-semibold text-amber-950 hover:text-amber-800"
-            >
-              maps developer site
-            </a>{' '}
-            for instructions to update your account.
-          </span>
-        </div>
-      )}
-      {/* Top Precision Telemetry Ribbon (horizontally scrollable on mobile/tablet when overflowing) */}
-      <header
-        ref={headerRef}
-        onScroll={() => {
-          if (cardinalMenuOpen) setCardinalMenuOpen(false);
-        }}
-        onWheel={(e) => {
-          const el = headerRef.current;
-          if (!el || el.scrollWidth <= el.clientWidth) return;
-          const target = e.target as HTMLElement | null;
-          if (target?.tagName === 'INPUT') return;
-          if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
-            el.scrollLeft += e.deltaY;
-          }
-        }}
-        className={`no-print relative z-40 h-12 shrink-0 border-b overflow-x-auto overflow-y-hidden header-scroll touch-pan-x ${ui.header}`}
+      {/* Top Precision Telemetry Ribbon (extends seamlessly behind mobile/tablet status bar safe-area) */}
+      <div
+        className={`no-print relative z-40 shrink-0 border-b ${ui.header}`}
+        style={{ paddingTop: 'env(safe-area-inset-top, 0px)' }}
       >
-        <div className="h-full min-w-max w-full px-2 sm:px-3 flex items-center justify-between gap-1.5 sm:gap-2.5">
+        <header
+          ref={headerRef}
+          onScroll={() => {
+            if (cardinalMenuOpen) setCardinalMenuOpen(false);
+            if (themeMenuOpen) setThemeMenuOpen(false);
+          }}
+          onWheel={(e) => {
+            const el = headerRef.current;
+            if (!el || el.scrollWidth <= el.clientWidth) return;
+            const target = e.target as HTMLElement | null;
+            if (target?.tagName === 'INPUT') return;
+            if (Math.abs(e.deltaY) > Math.abs(e.deltaX)) {
+              el.scrollLeft += e.deltaY;
+            }
+          }}
+          className="h-12 overflow-x-auto overflow-y-hidden header-scroll touch-pan-x"
+        >
+          <div className="h-full min-w-max w-full px-2 sm:px-3 flex items-center justify-between gap-1.5 sm:gap-2.5">
         {/* Left: Brand */}
         <div className="flex items-center gap-2.5 shrink-0">
           <button
@@ -6416,8 +6655,7 @@ export default function App() {
             }`}
             title="현재 시야각 기준 항성 및 DSO 한계등급 조절"
           >
-            <div className="flex items-center gap-1 leading-none">
-              <span className="text-[10px] font-medium whitespace-nowrap">한계등급</span>
+            <div className="flex items-center justify-center gap-1 leading-none">
               <span
                 className={`rounded border px-1 py-[1px] flex items-center gap-0.5 font-mono text-[10px] font-bold tabular-nums whitespace-nowrap ${
                   theme === 'white'
@@ -6451,7 +6689,7 @@ export default function App() {
                   : 'OFF'}
               </span>
             </div>
-            <div className="flex items-center gap-1.5 leading-none">
+            <div className="flex items-center gap-1 leading-none">
               <input
                 type="range"
                 min={-3.0}
@@ -6471,7 +6709,7 @@ export default function App() {
                 }}
                 aria-label="한계 등급 보정"
                 title="한계 등급 보정 (-3.0m ~ +3.0m)"
-                className={`flex-1 min-w-[92px] h-1.5 cursor-pointer ${
+                className={`w-[68px] h-1.5 cursor-pointer ${
                   theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
                 }`}
               />
@@ -6481,7 +6719,7 @@ export default function App() {
                   setLayers((p) => ({ ...p, magOffset: 0, dsoMagOffset: 0 }))
                 }
                 title="클릭하여 한계 등급 보정 초기화 (0.0m)"
-                className={`font-mono text-[10px] tabular-nums whitespace-nowrap w-9 text-right hover:opacity-100 transition-opacity ${
+                className={`font-mono text-[9.5px] tabular-nums whitespace-nowrap w-7 text-right hover:opacity-100 transition-opacity ${
                   layers.magOffset !== 0 || layers.dsoMagOffset !== 0
                     ? theme === 'white'
                       ? 'text-sky-700 font-semibold'
@@ -6702,8 +6940,123 @@ export default function App() {
           </div>
         </div>
 
-        {/* Right: Standalone Ruler (척도), Grouped Tool Box (관측목록/챌린지/작도), URL Share, PNG Export, Sensor FOV PNG, Print */}
+        {/* Right: Theme Dropdown, Standalone Ruler (척도), Grouped Tool Box (관측목록/챌린지/작도), URL Share, PNG Export, Sensor FOV PNG, Print */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
+          {/* Single-Icon Screen Theme Dropdown (same pattern as Cardinal Direction selector) */}
+          <div ref={themeMenuRef} className="relative shrink-0">
+            <button
+              type="button"
+              onClick={() => setThemeMenuOpen((o) => !o)}
+              title="화면 테마 선택 (다크 · 화이트 · 적색)"
+              aria-label="화면 테마 메뉴"
+              aria-expanded={themeMenuOpen}
+              aria-haspopup="menu"
+              className={`h-8 px-2 rounded-lg border flex items-center justify-center gap-1 transition-colors shrink-0 cursor-pointer ${
+                themeMenuOpen
+                  ? theme === 'white'
+                    ? 'bg-blue-700 border-blue-700 text-white'
+                    : theme === 'red'
+                    ? 'bg-[#7F1D1D] border-[#EF4444] text-[#FF5252]'
+                    : 'bg-[#0094B8] border-[#22D3EE] text-white'
+                  : theme === 'white'
+                  ? 'bg-slate-100 border-slate-300 text-slate-600 hover:text-blue-700 hover:bg-white'
+                  : theme === 'red'
+                  ? 'bg-[#100101] border-[#420C0C] text-[#DC2626] hover:text-[#FF5252] hover:bg-[#220404]'
+                  : 'bg-[#0B1220] border-[#25334D] text-slate-300 hover:text-[#22D3EE] hover:bg-[#182438]'
+              }`}
+            >
+              {theme === 'dark' ? (
+                <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+              ) : theme === 'white' ? (
+                <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4 shrink-0" />
+              ) : (
+                <span
+                  className="w-3 h-3 rounded-full bg-[#EF4444] ring-1 ring-[#FF6B6B]/80 inline-block shrink-0"
+                  aria-hidden="true"
+                />
+              )}
+              <ChevronDown
+                className={`w-3 h-3 shrink-0 transition-transform ${
+                  themeMenuOpen ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
+
+            {themeMenuOpen &&
+              themeMenuPos &&
+              createPortal(
+                <div
+                  ref={themeDropdownRef}
+                  role="menu"
+                  aria-label="화면 테마 선택"
+                  style={{ left: themeMenuPos.left, top: themeMenuPos.top }}
+                  className={`fixed z-[120] w-28 p-1 rounded-lg border shadow-xl flex flex-col gap-0.5 ${
+                    theme === 'white'
+                      ? 'bg-white border-slate-300 text-slate-700'
+                      : theme === 'red'
+                      ? 'bg-[#100101] border-[#420C0C] text-[#DC2626]'
+                      : 'bg-[#0B1220] border-[#25334D] text-slate-200'
+                  }`}
+                >
+                  {(
+                    [
+                      { id: 'dark', label: '다크', desc: '다크 모드' },
+                      { id: 'white', label: '화이트', desc: '인쇄용 화이트 모드' },
+                      { id: 'red', label: '적색', desc: '적색 야간 모드' },
+                    ] as const
+                  ).map((opt) => {
+                    const active = theme === opt.id;
+                    return (
+                      <button
+                        key={opt.id}
+                        type="button"
+                        role="menuitemradio"
+                        aria-checked={active}
+                        onClick={() => {
+                          setTheme(opt.id);
+                          setThemeMenuOpen(false);
+                        }}
+                        title={opt.desc}
+                        className={`w-full h-7 px-2 rounded-md flex items-center justify-between text-xs font-semibold transition-colors cursor-pointer ${
+                          active
+                            ? theme === 'white'
+                              ? 'bg-blue-600 text-white'
+                              : theme === 'red'
+                              ? 'bg-[#7F1D1D] text-[#FF5252]'
+                              : 'bg-[#0094B8] text-white'
+                            : theme === 'white'
+                            ? 'text-slate-700 hover:text-blue-700 hover:bg-slate-100'
+                            : theme === 'red'
+                            ? 'text-[#DC2626] hover:text-[#FF5252] hover:bg-[#220404]'
+                            : 'text-slate-200 hover:text-[#22D3EE] hover:bg-[#182438]'
+                        }`}
+                      >
+                        <span className="flex items-center gap-1.5">
+                          {opt.id === 'dark' ? (
+                            <Moon className="w-3.5 h-3.5 shrink-0" />
+                          ) : opt.id === 'white' ? (
+                            <Sun className="w-3.5 h-3.5 shrink-0" />
+                          ) : (
+                            <span
+                              className={`w-3 h-3 rounded-full inline-block shrink-0 ${
+                                active
+                                  ? 'bg-[#FF6B6B] ring-1 ring-white/70'
+                                  : 'bg-red-600'
+                              }`}
+                              aria-hidden="true"
+                            />
+                          )}
+                          <span>{opt.label}</span>
+                        </span>
+                        {active && <Check className="w-3 h-3 shrink-0" />}
+                      </button>
+                    );
+                  })}
+                </div>,
+                document.body
+              )}
+          </div>
+
           <button
             type="button"
             onClick={handleToggleRulerMode}
@@ -6895,15 +7248,24 @@ export default function App() {
 
           <button
             type="button"
-            onClick={() => {
+            disabled={sensorPngExporting}
+            onClick={async () => {
               if (optics.showSensorBox) {
-                canvasHandleRef.current?.exportSensorFovPng(activeSensorEquipmentName);
+                if (sensorPngExporting) return;
+                setSensorPngExporting(true);
+                try {
+                  await canvasHandleRef.current?.exportSensorFovPng(activeSensorEquipmentName);
+                } finally {
+                  setSensorPngExporting(false);
+                }
               } else {
                 setOptics((p) => ({ ...p, showSensorBox: true }));
               }
             }}
             title={
-              optics.showSensorBox
+              sensorPngExporting
+                ? '고해상도 성야 이미지 로딩 완료를 기다린 후 PNG로 저장하는 중...'
+                : optics.showSensorBox
                 ? (() => {
                     const mActive = Boolean(optics.sensorMosaicSupported);
                     const sw = mActive ? Math.max(1, optics.sensorMosaicScaleW ?? 1) : 1;
@@ -6920,11 +7282,19 @@ export default function App() {
             }
             aria-label="사진 화각 PNG 저장"
             className={`w-7 h-7 sm:w-8 sm:h-7 border flex items-center justify-center transition-colors shrink-0 ${
-              optics.showSensorBox ? ui.buttonActive : `${ui.buttonIdle} opacity-65 hover:opacity-100`
+              sensorPngExporting
+                ? `${ui.buttonActive} cursor-wait`
+                : optics.showSensorBox
+                ? ui.buttonActive
+                : `${ui.buttonIdle} opacity-65 hover:opacity-100`
             }`}
             style={{ borderRadius: '4px' }}
           >
-            <Camera className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            {sensorPngExporting ? (
+              <Loader2 className="w-3.5 h-3.5 sm:w-4 sm:h-4 animate-spin" />
+            ) : (
+              <Camera className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
+            )}
           </button>
 
           <button
@@ -6938,90 +7308,100 @@ export default function App() {
             <Printer className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
 
-          {/* Far Right: 3-Mode Theme Switcher (다크 / 주간 / 적색) */}
+          {/* Far-Right Account Login & Settings Group */}
           <div
-            className={`flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
-              theme === 'white'
-                ? 'bg-slate-100 border-slate-300'
-                : theme === 'red'
-                ? 'bg-[#100101] border-[#420C0C]'
-                : 'bg-[#0B1220] border-[#25334D]'
-            }`}
-            role="group"
-            aria-label="테마 모드"
+            className={`flex items-center gap-1 pl-1.5 ml-0.5 border-l shrink-0 ${ui.divider}`}
           >
-            <button
-              type="button"
-              onClick={() => setTheme('dark')}
-              title="다크 모드"
-              aria-label="다크 모드"
-              className={`w-7 h-6 sm:w-8 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
-                theme === 'dark'
-                  ? 'bg-[#0094B8] text-white'
-                  : theme === 'white'
-                  ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-200'
-                  : 'text-[#B85050] hover:text-[#FF5555] hover:bg-[#220404]'
-              }`}
-            >
-              <Moon className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setTheme('white')}
-              title="인쇄용 화이트 모드"
-              aria-label="인쇄용 화이트 모드"
-              className={`w-7 h-6 sm:w-8 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
-                theme === 'white'
-                  ? 'bg-slate-900 text-white'
-                  : theme === 'red'
-                  ? 'text-[#B85050] hover:text-[#FF5555] hover:bg-[#220404]'
-                  : 'text-slate-400 hover:text-white hover:bg-[#182438]'
-              }`}
-            >
-              <Sun className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
-            </button>
-            <button
-              type="button"
-              onClick={() => setTheme('red')}
-              title="적색 야간 모드"
-              aria-label="적색 야간 모드"
-              className={`w-7 h-6 sm:w-8 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
-                theme === 'red'
-                  ? 'bg-[#7F1D1D] text-[#FF4D4D]'
-                  : theme === 'white'
-                  ? 'text-slate-500 hover:bg-slate-200'
-                  : 'text-slate-400 hover:bg-[#182438]'
-              }`}
-            >
-              <span
-                className={`w-3 h-3 rounded-full inline-block ${
-                  theme === 'red'
-                    ? 'bg-[#EF4444] ring-2 ring-[#FF4D4D]/75'
-                    : 'bg-red-600'
-                }`}
-                aria-hidden="true"
-              />
-            </button>
+            {authUser ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setRequestedSidebarTab((prev) => ({
+                    tab: 'settings',
+                    seq: (prev?.seq ?? 0) + 1,
+                  }));
+                  setLeftOpen(true);
+                }}
+                title={`${authUser.displayName || authUser.email || 'Google 계정'} · 계정 및 클라우드 동기화 설정`}
+                aria-label="로그인 계정 및 동기화 설정"
+                className={`relative h-7 px-1.5 border flex items-center gap-1 transition-colors shrink-0 cursor-pointer ${ui.buttonIdle}`}
+                style={{ borderRadius: '4px' }}
+              >
+                {authUser.photoURL ? (
+                  <img
+                    src={authUser.photoURL}
+                    alt=""
+                    referrerPolicy="no-referrer"
+                    className="w-4 h-4 rounded-full object-cover shrink-0"
+                  />
+                ) : (
+                  <span
+                    className={`w-4 h-4 rounded-full text-[9.5px] font-bold flex items-center justify-center shrink-0 ${
+                      theme === 'white'
+                        ? 'bg-blue-600 text-white'
+                        : theme === 'red'
+                        ? 'bg-[#DC2626] text-black'
+                        : 'bg-cyan-500 text-slate-950'
+                    }`}
+                  >
+                    {(authUser.displayName || authUser.email || 'U').slice(0, 1).toUpperCase()}
+                  </span>
+                )}
+                <span className="hidden lg:inline text-[10.5px] font-medium max-w-[68px] truncate tracking-[-0.04em]">
+                  {authUser.displayName || authUser.email?.split('@')[0] || '계정'}
+                </span>
+                <span
+                  className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+                    syncStatus === 'error'
+                      ? 'bg-rose-500'
+                      : syncStatus === 'saving' ||
+                        syncStatus === 'loading' ||
+                        syncStatus === 'checking' ||
+                        syncStatus === 'pending'
+                      ? 'bg-amber-400 animate-pulse'
+                      : theme === 'red'
+                      ? 'bg-[#EF4444]'
+                      : 'bg-emerald-400'
+                  }`}
+                  aria-hidden="true"
+                />
+              </button>
+            ) : (
+              <button
+                type="button"
+                disabled={!authReady || authBusy}
+                onClick={() => void handleGoogleLogin()}
+                title="Google 로그인 (클라우드 자동 동기화)"
+                aria-label="Google 로그인"
+                className={`h-7 px-2 border flex items-center gap-1 text-[10.5px] font-medium whitespace-nowrap transition-colors shrink-0 cursor-pointer disabled:opacity-50 ${ui.buttonLoad}`}
+                style={{ borderRadius: '4px' }}
+              >
+                <LogIn className="w-3.5 h-3.5 shrink-0" />
+                <span className="hidden sm:inline tracking-[-0.04em]">로그인</span>
+              </button>
+            )}
           </div>
+        </div>
+          </div>
+        </header>
+      </div>
 
-          {/* Google Account Login / Profile / Cloud Sync Status */}
-          <AuthSyncControls
-            theme={theme}
-            user={authUser}
-            authReady={authReady}
-            authBusy={authBusy}
-            syncStatus={syncStatus}
-            lastSyncedAt={lastSyncedAt}
-            syncError={syncError}
-            authError={authError}
-            onLogin={handleGoogleLogin}
-            onLogout={handleGoogleLogout}
-            onManualSync={handleManualCloudSync}
-            onDismissError={handleDismissAuthSyncError}
-          />
-        </div>
-        </div>
-      </header>
+      {/* Global floating error toast for Firebase Auth / Firestore Sync */}
+      <AuthSyncControls
+        toastOnly
+        theme={theme}
+        user={authUser}
+        authReady={authReady}
+        authBusy={authBusy}
+        syncStatus={syncStatus}
+        lastSyncedAt={lastSyncedAt}
+        syncError={syncError}
+        authError={authError}
+        onLogin={handleGoogleLogin}
+        onLogout={handleGoogleLogout}
+        onManualSync={handleManualCloudSync}
+        onDismissError={handleDismissAuthSyncError}
+      />
 
       {/* Main Observatory Workspace: Left Overlay Drawer + Flex Star Chart + Right Pushed Drawer */}
       <main className="relative flex-1 min-h-0 overflow-hidden flex">
@@ -7166,12 +7546,51 @@ export default function App() {
                 }}
               />
             )}
+
+            {/* Bottom Edge Pull-Handle Tab (shown only when TimeControlBar is hidden; when open, toggle sits inline before '-' inside TimeControlBar) */}
+            {!timeBarOpen && (
+              <button
+                type="button"
+                onClick={() => setTimeBarOpen(true)}
+                title="시간 조절바 펼치기"
+                aria-label="시간 조절바 펼치기"
+                aria-expanded={false}
+                className={`no-print absolute z-30 bottom-0 left-1/2 -translate-x-1/2 h-5 w-16 border border-b-0 flex items-center justify-center transition-[background-color,box-shadow] duration-200 ease-out cursor-pointer ${
+                  theme === 'white'
+                    ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-400 shadow-md'
+                    : theme === 'red'
+                    ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-[0_0_12px_rgba(239,68,68,0.45)]'
+                    : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 border-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.45)]'
+                }`}
+                style={{
+                  borderTopLeftRadius: '6px',
+                  borderTopRightRadius: '6px',
+                }}
+              >
+                <ChevronUp className="w-3.5 h-3.5 stroke-[2.5]" />
+              </button>
+            )}
           </div>
-          <TimeControlBar
-            theme={theme}
-            observer={observer}
-            onChangeObserver={handleChangeObserver}
-          />
+          <div
+            className={`no-print shrink-0 grid transition-[grid-template-rows] duration-200 ease-out ${
+              timeBarOpen ? 'grid-rows-[1fr]' : 'grid-rows-[0fr]'
+            }`}
+          >
+            <div className="overflow-hidden">
+              <div
+                className={`transition-transform duration-200 ease-out ${
+                  timeBarOpen ? 'translate-y-0' : 'translate-y-full pointer-events-none'
+                }`}
+              >
+                <TimeControlBar
+                  theme={theme}
+                  observer={observer}
+                  onChangeObserver={handleChangeObserver}
+                  onCollapse={() => setTimeBarOpen(false)}
+                />
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Left Overlay Control Drawer (270px, auto-hides on mouse leave) */}
@@ -7247,6 +7666,25 @@ export default function App() {
             onImportSites={handleImportSites}
             onImportLayerSettings={handleImportLayerSettings}
             onResetLayerSettings={handleResetLayerSettings}
+            onChangeTheme={setTheme}
+            redIntensity={redIntensity}
+            onChangeRedIntensity={setRedIntensity}
+            uiFontFamily={uiFontFamily}
+            onChangeUiFontFamily={setUiFontFamily}
+            uiFontSizeStep={uiFontSizeStep}
+            onChangeUiFontSizeStep={setUiFontSizeStep}
+            authUser={authUser}
+            authReady={authReady}
+            authBusy={authBusy}
+            syncStatus={syncStatus}
+            lastSyncedAt={lastSyncedAt}
+            syncError={syncError}
+            authError={authError}
+            onLogin={handleGoogleLogin}
+            onLogout={handleGoogleLogout}
+            onManualSync={handleManualCloudSync}
+            onDismissAuthError={handleDismissAuthSyncError}
+            requestedTab={requestedSidebarTab}
           />
         </div>
 
@@ -7281,7 +7719,7 @@ export default function App() {
           }}
           title={leftOpen ? '왼쪽 메뉴 접기' : '왼쪽 메뉴 펼치기'}
           aria-label={leftOpen ? '왼쪽 메뉴 접기' : '왼쪽 메뉴 펼치기'}
-          className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-16 w-5 border border-l-0 flex items-center justify-center transition-[left,background-color,box-shadow] duration-200 ease-out ${
+          className={`no-print absolute z-30 top-[30%] -translate-y-1/2 h-16 w-5 border border-l-0 flex items-center justify-center transition-[left,background-color,box-shadow] duration-200 ease-out ${
             theme === 'white'
               ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-400 shadow-md'
               : theme === 'red'
@@ -7384,6 +7822,23 @@ export default function App() {
             onReorderObservingListEntries={handleReorderObservingListEntries}
             onImportSkylist={handleImportSkylistSession}
             onExportSkylist={handleExportSkylistSession}
+            highlightSessionPlan={layers.highlightSessionPlan}
+            onToggleHighlightSessionPlan={(enabled) =>
+              setLayers((p) => ({ ...p, highlightSessionPlan: enabled }))
+            }
+            sessionPlanColor={layers.sessionPlanColor}
+            onChangeSessionPlanColor={(color) =>
+              setLayers((p) => ({ ...p, sessionPlanColor: color }))
+            }
+            sessionPlanOpacity={layers.sessionPlanOpacity}
+            onChangeSessionPlanOpacity={(opacity) =>
+              setLayers((p) => ({ ...p, sessionPlanOpacity: opacity }))
+            }
+            challengeColor={layers.challengeColor}
+            onChangeChallengeColor={(color) =>
+              setLayers((p) => ({ ...p, challengeColor: color }))
+            }
+            onToggleAllChallengesOnChart={handleToggleAllChallengesOnChart}
             challengeOpacity={layers.challengeOpacity}
             onChangeChallengeOpacity={(opacity) =>
               setLayers((p) => ({ ...p, challengeOpacity: opacity }))
@@ -7493,7 +7948,7 @@ export default function App() {
           }}
           title={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
           aria-label={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
-          className={`no-print absolute z-30 top-1/2 -translate-y-1/2 h-16 w-5 border border-r-0 flex items-center justify-center transition-[right,background-color,box-shadow] duration-200 ease-out ${
+          className={`no-print absolute z-30 top-[30%] -translate-y-1/2 h-16 w-5 border border-r-0 flex items-center justify-center transition-[right,background-color,box-shadow] duration-200 ease-out ${
             theme === 'white'
               ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-400 shadow-md'
               : theme === 'red'
@@ -7607,6 +8062,16 @@ export default function App() {
         onResolve={handleResolveConfirm}
       />
     </div>
+      {theme === 'red' && redOverlayAlpha > 0 && (
+        <div
+          aria-hidden="true"
+          className="no-print pointer-events-none fixed inset-0 z-[9999]"
+          style={{
+            backgroundColor: `rgba(150, 0, 0, ${redOverlayAlpha})`,
+            mixBlendMode: 'multiply',
+          }}
+        />
+      )}
     </ConfirmDialogContext.Provider>
   );
 }

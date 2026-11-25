@@ -112,6 +112,7 @@ export function AsterismPanel({
     id: string;
   } | null>(null);
   const [dragOverKey, setDragOverKey] = useState<string | null>(null);
+  const [reorderEditMode, setReorderEditMode] = useState(false);
   const [openLayers, setOpenLayers] = useState<Record<string, boolean>>(() => {
     try {
       const raw = localStorage.getItem('noxchart_asterism_collapse_v1');
@@ -325,6 +326,37 @@ export function AsterismPanel({
         </div>
       </div>
 
+      {/* Full JSON Backup / Import directly below header */}
+      <div className={`pb-2 border-b space-y-1 ${ui.divider}`}>
+        <div className="grid grid-cols-2 gap-1.5">
+          <button
+            type="button"
+            disabled={store.asterisms.length === 0}
+            onClick={() => downloadAsterismsJson(store)}
+            className={`py-1.5 px-2 border text-[10px] font-medium flex items-center justify-center gap-1 transition-colors ${
+              store.asterisms.length === 0
+                ? `${ui.buttonSave} opacity-45 cursor-not-allowed`
+                : `${ui.buttonSave} cursor-pointer`
+            }`}
+            style={{ borderRadius: '5px' }}
+            title="모든 그룹과 성군을 JSON 파일로 백업"
+          >
+            <Download className="w-3 h-3 shrink-0" />
+            <span>전체 성군 백업</span>
+          </button>
+          <button
+            type="button"
+            onClick={() => importInputRef.current?.click()}
+            className={`py-1.5 px-2 border text-[10px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${ui.buttonLoad}`}
+            style={{ borderRadius: '5px' }}
+            title="백업한 성군 JSON 파일 불러오기"
+          >
+            <Upload className="w-3 h-3 shrink-0" />
+            <span>JSON 백업 불러오기</span>
+          </button>
+        </div>
+      </div>
+
       {notice && (
         <div
           className={`px-2 py-1.5 border text-[10px] leading-snug ${ui.panelMuted} ${ui.border} ${ui.accentText}`}
@@ -364,6 +396,17 @@ export function AsterismPanel({
               style={{ borderRadius: '4px' }}
             >
               모두 숨김
+            </button>
+            <button
+              type="button"
+              onClick={() => setReorderEditMode((v) => !v)}
+              title={reorderEditMode ? '순서 편집 종료' : '그룹·성군·도형 순서 편집 (위/아래 이동)'}
+              className={`px-1.5 py-0.5 border text-[9.5px] font-medium whitespace-nowrap shrink-0 transition-colors cursor-pointer ${
+                reorderEditMode ? ui.buttonActive : ui.buttonIdle
+              }`}
+              style={{ borderRadius: '4px' }}
+            >
+              <span>{reorderEditMode ? '완료' : '편집'}</span>
             </button>
             <button
               type="button"
@@ -442,8 +485,9 @@ export function AsterismPanel({
             return (
               <div
                 key={layer.id}
-                draggable={store.layers.length > 1}
+                draggable={reorderEditMode && store.layers.length > 1}
                 onDragStart={(e) => {
+                  if (!reorderEditMode) return;
                   e.stopPropagation();
                   setDragState({ kind: 'layer', id: layer.id });
                   e.dataTransfer.effectAllowed = 'move';
@@ -480,30 +524,6 @@ export function AsterismPanel({
               >
                 {/* Level 1: Group (Layer) Row */}
                 <div className="px-2 py-1.5 flex items-center gap-1">
-                  {store.layers.length > 1 && (
-                    <div className="flex flex-col shrink-0 -ml-0.5">
-                      <button
-                        type="button"
-                        disabled={layerIdx <= 0}
-                        onClick={() => onReorderLayers(layer.id, store.layers[layerIdx - 1].id)}
-                        title="그룹 위로 이동"
-                        aria-label={`${layer.name} 위로 이동`}
-                        className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                      >
-                        <ChevronUp className="w-2.5 h-2.5" />
-                      </button>
-                      <button
-                        type="button"
-                        disabled={layerIdx >= store.layers.length - 1}
-                        onClick={() => onReorderLayers(layer.id, store.layers[layerIdx + 1].id)}
-                        title="그룹 아래로 이동"
-                        aria-label={`${layer.name} 아래로 이동`}
-                        className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                      >
-                        <ChevronDown className="w-2.5 h-2.5" />
-                      </button>
-                    </div>
-                  )}
                   <button
                     type="button"
                     disabled={isLockedOpenLayer}
@@ -649,6 +669,30 @@ export function AsterismPanel({
                       <Trash2 className="w-2.5 h-2.5" />
                     </button>
                   )}
+                  {reorderEditMode && store.layers.length > 1 && (
+                    <div className="flex flex-col shrink-0 ml-0.5">
+                      <button
+                        type="button"
+                        disabled={layerIdx <= 0}
+                        onClick={() => onReorderLayers(layer.id, store.layers[layerIdx - 1].id)}
+                        title="그룹 위로 이동"
+                        aria-label={`${layer.name} 위로 이동`}
+                        className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                      >
+                        <ChevronUp className="w-3 h-3" />
+                      </button>
+                      <button
+                        type="button"
+                        disabled={layerIdx >= store.layers.length - 1}
+                        onClick={() => onReorderLayers(layer.id, store.layers[layerIdx + 1].id)}
+                        title="그룹 아래로 이동"
+                        aria-label={`${layer.name} 아래로 이동`}
+                        className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                      >
+                        <ChevronDown className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
                 </div>
 
                 {/* Level 2: Asterisms inside this Group */}
@@ -664,8 +708,9 @@ export function AsterismPanel({
                       return (
                         <div
                           key={grp.id}
-                          draggable={layerAsterisms.length > 1}
+                          draggable={reorderEditMode && layerAsterisms.length > 1}
                           onDragStart={(e) => {
+                            if (!reorderEditMode) return;
                             e.stopPropagation();
                             setDragState({ kind: 'asterism', parentId: layer.id, id: grp.id });
                             e.dataTransfer.effectAllowed = 'move';
@@ -714,42 +759,6 @@ export function AsterismPanel({
                         >
                           {/* Asterism Header Row (Warm Amber Color) — HAS Quick-Jump Navigation Icon! */}
                           <div className="px-1.5 py-1.5 flex items-center gap-1">
-                            {layerAsterisms.length > 1 && (
-                              <div className="flex flex-col shrink-0">
-                                <button
-                                  type="button"
-                                  disabled={grpIdx === 0}
-                                  onClick={() =>
-                                    onReorderAsterismGroups(
-                                      layer.id,
-                                      grp.id,
-                                      layerAsterisms[grpIdx - 1].id
-                                    )
-                                  }
-                                  title="성군 위로 이동"
-                                  aria-label={`${grp.name} 위로 이동`}
-                                  className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                                >
-                                  <ChevronUp className="w-2.5 h-2.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={grpIdx === layerAsterisms.length - 1}
-                                  onClick={() =>
-                                    onReorderAsterismGroups(
-                                      layer.id,
-                                      grp.id,
-                                      layerAsterisms[grpIdx + 1].id
-                                    )
-                                  }
-                                  title="성군 아래로 이동"
-                                  aria-label={`${grp.name} 아래로 이동`}
-                                  className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                                >
-                                  <ChevronDown className="w-2.5 h-2.5" />
-                                </button>
-                              </div>
-                            )}
                             <button
                               type="button"
                               disabled={isLockedOpenGrp}
@@ -910,6 +919,42 @@ export function AsterismPanel({
                             >
                               <Trash2 className="w-2.5 h-2.5" />
                             </button>
+                            {reorderEditMode && layerAsterisms.length > 1 && (
+                              <div className="flex flex-col shrink-0 ml-0.5">
+                                <button
+                                  type="button"
+                                  disabled={grpIdx === 0}
+                                  onClick={() =>
+                                    onReorderAsterismGroups(
+                                      layer.id,
+                                      grp.id,
+                                      layerAsterisms[grpIdx - 1].id
+                                    )
+                                  }
+                                  title="성군 위로 이동"
+                                  aria-label={`${grp.name} 위로 이동`}
+                                  className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                >
+                                  <ChevronUp className="w-3 h-3" />
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={grpIdx === layerAsterisms.length - 1}
+                                  onClick={() =>
+                                    onReorderAsterismGroups(
+                                      layer.id,
+                                      grp.id,
+                                      layerAsterisms[grpIdx + 1].id
+                                    )
+                                  }
+                                  title="성군 아래로 이동"
+                                  aria-label={`${grp.name} 아래로 이동`}
+                                  className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                >
+                                  <ChevronDown className="w-3 h-3" />
+                                </button>
+                              </div>
+                            )}
                           </div>
 
                           {/* Level 3: Shapes nested inside this Asterism (Cool Sky/Cyan Color — NO Navigation icon!) */}
@@ -928,8 +973,9 @@ export function AsterismPanel({
                                   return (
                                     <div
                                       key={obj.id}
-                                      draggable={shapes.length > 1}
+                                      draggable={reorderEditMode && shapes.length > 1}
                                       onDragStart={(e) => {
+                                        if (!reorderEditMode) return;
                                         e.stopPropagation();
                                         setDragState({
                                           kind: 'shape',
@@ -986,46 +1032,6 @@ export function AsterismPanel({
                                         className="px-1.5 py-1 flex items-center gap-1 text-[10px]"
                                         onDoubleClick={() => onOpenShapeProperties(grp.id, obj.id)}
                                       >
-                                        {shapes.length > 1 && (
-                                          <div className="flex flex-col shrink-0">
-                                            <button
-                                              type="button"
-                                              disabled={shapeIdx === 0}
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                onReorderAsterismObjects(
-                                                  grp.id,
-                                                  obj.id,
-                                                  shapes[shapeIdx - 1].id
-                                                );
-                                              }}
-                                              onDoubleClick={(e) => e.stopPropagation()}
-                                              title="도형 위로 이동"
-                                              aria-label="도형 위로 이동"
-                                              className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                                            >
-                                              <ChevronUp className="w-2.5 h-2.5" />
-                                            </button>
-                                            <button
-                                              type="button"
-                                              disabled={shapeIdx === shapes.length - 1}
-                                              onClick={(e) => {
-                                                e.stopPropagation();
-                                                onReorderAsterismObjects(
-                                                  grp.id,
-                                                  obj.id,
-                                                  shapes[shapeIdx + 1].id
-                                                );
-                                              }}
-                                              onDoubleClick={(e) => e.stopPropagation()}
-                                              title="도형 아래로 이동"
-                                              aria-label="도형 아래로 이동"
-                                              className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
-                                            >
-                                              <ChevronDown className="w-2.5 h-2.5" />
-                                            </button>
-                                          </div>
-                                        )}
                                         {hasVerticesDetail && (
                                           <button
                                             type="button"
@@ -1093,6 +1099,46 @@ export function AsterismPanel({
                                         >
                                           <Trash2 className="w-2.5 h-2.5" />
                                         </button>
+                                        {reorderEditMode && shapes.length > 1 && (
+                                          <div className="flex flex-col shrink-0 ml-0.5">
+                                            <button
+                                              type="button"
+                                              disabled={shapeIdx === 0}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                onReorderAsterismObjects(
+                                                  grp.id,
+                                                  obj.id,
+                                                  shapes[shapeIdx - 1].id
+                                                );
+                                              }}
+                                              onDoubleClick={(e) => e.stopPropagation()}
+                                              title="도형 위로 이동"
+                                              aria-label="도형 위로 이동"
+                                              className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                            >
+                                              <ChevronUp className="w-3 h-3" />
+                                            </button>
+                                            <button
+                                              type="button"
+                                              disabled={shapeIdx === shapes.length - 1}
+                                              onClick={(e) => {
+                                                e.stopPropagation();
+                                                onReorderAsterismObjects(
+                                                  grp.id,
+                                                  obj.id,
+                                                  shapes[shapeIdx + 1].id
+                                                );
+                                              }}
+                                              onDoubleClick={(e) => e.stopPropagation()}
+                                              title="도형 아래로 이동"
+                                              aria-label="도형 아래로 이동"
+                                              className={`p-0 leading-none disabled:opacity-25 ${ui.textMuted} hover:opacity-100`}
+                                            >
+                                              <ChevronDown className="w-3 h-3" />
+                                            </button>
+                                          </div>
+                                        )}
                                       </div>
 
                                       {/* Nested Vertices / Element Details inside the shape */}
@@ -1142,39 +1188,6 @@ export function AsterismPanel({
               </div>
             );
           })}
-        </div>
-      </div>
-
-      {/* Full JSON Backup / Import */}
-      <div className={`pt-2.5 border-t space-y-1.5 ${ui.divider}`}>
-        <div className={`text-[10px] font-semibold ${ui.textSecondary}`}>
-          성군 데이터 백업 · 복원 (JSON)
-        </div>
-        <div className="grid grid-cols-2 gap-1.5">
-          <button
-            type="button"
-            disabled={store.asterisms.length === 0}
-            onClick={() => downloadAsterismsJson(store)}
-            className={`py-1.5 px-2 border text-[10px] font-medium flex items-center justify-center gap-1 ${
-              store.asterisms.length === 0
-                ? `${ui.buttonIdle} opacity-45 cursor-not-allowed`
-                : ui.buttonIdle
-            }`}
-            style={{ borderRadius: '5px' }}
-            title="모든 그룹과 성군을 JSON 파일로 백업"
-          >
-            <Download className="w-3 h-3" />
-            <span>전체 성군 백업</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => importInputRef.current?.click()}
-            className={`py-1.5 px-2 border text-[10px] font-medium flex items-center justify-center gap-1 ${ui.buttonIdle}`}
-            style={{ borderRadius: '5px' }}
-          >
-            <Upload className="w-3 h-3" />
-            <span>JSON 백업 불러오기</span>
-          </button>
         </div>
       </div>
     </div>

@@ -109,6 +109,7 @@ export interface LayerSettings {
   showGridEq: boolean;
   showGridAltAz: boolean;
   gridLineWidth: number; // 0.2..2.5 좌표 그리드 선 굵기 (px)
+  gridLineOpacity: number; // 0.05..1.0 좌표 그리드 선 진하기
   showHorizon: boolean;
   showTerrain: boolean;
   showEcliptic: boolean;
@@ -131,7 +132,8 @@ export interface LayerSettings {
   doubleStarMinSepArcsec: number; // Minimum separation filter in arcseconds
   showDoubleStarLabels: boolean;
   doubleStarLabelDensityPct: number; // 0..100
-  doubleStarOpacity: number; // 0.05..1.0 이중성 · 다중성 표시 · 라벨 진하기
+  doubleStarSymbolOpacity: number; // 0.05..1.0 이중성 · 다중성 심볼 진하기
+  doubleStarLabelOpacity: number; // 0.05..1.0 이중성 · 다중성 라벨 진하기
   showDso: boolean;
   showMessierCatalog: boolean; // 알려진 심우주 천체: 메시에 (M1-M110) 독립 표시
   showCaldwellCatalog: boolean; // 알려진 심우주 천체: 콜드웰 (C1-C109) 독립 표시
@@ -139,10 +141,13 @@ export interface LayerSettings {
   hideDsoSymbols?: boolean; // Runtime override: hide DSO symbols/rings while preserving DSO labels (e.g. during guided tour)
   showDsoLabels: boolean;
   dsoLabelDensityPct: number; // 0..100 (% of currently visible on-screen DSOs to label)
-  dsoOpacity: number; // 0.05..1.0 심우주 천체 심볼 · 라벨 진하기
+  dsoSymbolOpacity: number; // 0.05..1.0 심우주 천체 심볼 진하기
+  dsoLabelOpacity: number; // 0.05..1.0 심우주 천체 라벨 진하기
   showStarLabels: boolean;
-  showProperStarNames: boolean; // 알려진 항성 고유 이름 표시 (항성 이름 라벨 OFF 시에도 표시)
+  starLabelLanguage?: 'ko' | 'en' | 'ko_en'; // 항성 이름 표시 언어 (한글 / 영어 / 한글(영어))
+  showProperStarNames: boolean; // 알려진 항성 고유 이름 표시 (항성 이름 표시 OFF 시에도 표시)
   starLabelDensityPct: number; // 0..100 (% of currently visible on-screen stars to label)
+  starLabelOpacity: number; // 0.05..1.0 항성 이름 표시 진하기
   showFieldStars: boolean;
   enableGaiaLive: boolean;
   magOffset: number; // -3.0 to +4.0 star limiting magnitude adjustment
@@ -150,8 +155,13 @@ export interface LayerSettings {
   dsoCategories: Record<DsoType, boolean>;
   catalogFilter: 'all' | 'messier' | 'ngc' | 'ic' | 'barnard';
   highlightSessionPlan: boolean; // 관측 목록 강조 모드
+  sessionPlanColor: string; // #RRGGBB 오늘의 관측목록 성도 표시색
+  sessionPlanOpacity: number; // 0.1..1.0 관측 목록 강조 모드 진하기
+  challengeColor: string; // '' (코스 기본색) 또는 #RRGGBB 챌린지 성도 표시색
   challengeOpacity: number; // 0.05..1.0 성도 위 챌린지 노선·마커 투명도
   challengeLineWidth: number; // 0.3..3.0 성도 위 챌린지 노선 선 굵기 (px)
+  showAtmosphericExtinction: boolean; // 대기 소광 효과 활성화 여부
+  extinctionCoeff: number; // 0.10..0.80 대기 소광 계수 k (mag/airmass)
 }
 
 export interface MilkyWayLayer {
@@ -230,6 +240,8 @@ export interface ObserverConfig {
   timeRateSecPerSec: number; // Simulated seconds per real second (negative = reverse)
   minAltitudeDeg: number; // -90 (off), 0, 15, 30, 45
   highlightAboveMinAlt: boolean;
+  bortleEnabled: boolean; // 관측지 보틀 등급 광공해 효과 활성화 여부
+  bortleClass: number; // 1..9 보틀 등급 (현재 관측지 기준 자동 설정 + 수동 조정 가능)
 }
 
 export type SolarSystemGroup = 'star' | 'planet' | 'dwarf' | 'asteroid' | 'moon';

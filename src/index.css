@@ -10,12 +10,112 @@
   body,
   #root {
     height: 100%;
+    width: 100%;
     margin: 0;
     padding: 0;
     overflow: hidden;
+    background-color: #0b0f19;
+    overscroll-behavior: none;
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
   }
+
+  button,
+  input,
+  select,
+  textarea {
+    font-family: var(--font-sans);
+  }
+
+  html[data-theme="dark"],
+  html[data-theme="dark"] body {
+    background-color: #0b0f19;
+    color-scheme: dark;
+  }
+
+  html[data-theme="red"],
+  html[data-theme="red"] body {
+    background-color: #0b0101;
+    color-scheme: dark;
+  }
+
+  html[data-theme="white"],
+  html[data-theme="white"] body {
+    background-color: #e2e8f0;
+    color-scheme: light;
+  }
+}
+
+/* Apply user-selected UI font family across monospace HUD/readout elements too */
+html[data-font-family]:not([data-font-family="default"]) .font-mono,
+html[data-font-family]:not([data-font-family="default"]) code,
+html[data-font-family]:not([data-font-family="default"]) pre {
+  font-family: var(--font-sans) !important;
+}
+
+/* Dynamic UI font-size scaling across all Tailwind px/rem text utilities */
+html[data-font-step]:not([data-font-step="0"]) .text-\[8px\] { font-size: calc(8px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[8\.5px\] { font-size: calc(8.5px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[9px\] { font-size: calc(9px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[9\.5px\] { font-size: calc(9.5px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[10px\] { font-size: calc(10px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[10\.5px\] { font-size: calc(10.5px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[11px\] { font-size: calc(11px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[11\.5px\] { font-size: calc(11.5px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[12px\] { font-size: calc(12px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[13px\] { font-size: calc(13px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[14px\] { font-size: calc(14px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-\[15px\] { font-size: calc(15px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-xs { font-size: calc(12px * var(--ui-font-scale, 1)); }
+html[data-font-step]:not([data-font-step="0"]) .text-sm { font-size: calc(14px * var(--ui-font-scale, 1)); }
+
+/* When font size is enlarged (+), automatically tighten letter-spacing (자간),
+   word-spacing, and horizontal condensation (장평) so UI labels stay on a single line */
+html[data-font-enlarged="true"] body {
+  letter-spacing: var(--ui-letter-spacing, -0.05em);
+  word-spacing: var(--ui-word-spacing, -0.06em);
+  font-stretch: condensed;
+}
+
+html[data-font-enlarged="true"] [class*="tracking-"] {
+  letter-spacing: var(--ui-letter-spacing, -0.05em);
+}
+
+/* Prevent compact UI buttons, tabs, and single-line labels from wrapping onto 2 lines */
+html[data-font-enlarged="true"] :is(header, aside, [role="dialog"]) button:not(.break-keep):not([class*="whitespace-normal"]),
+html[data-font-enlarged="true"] :is(header, aside, [role="dialog"]) label > span:not(.flex):not(.inline-flex):not(.break-keep):not([class*="leading-snug"]):not([class*="leading-relaxed"]) {
+  white-space: nowrap;
+}
+
+/* Subtle horizontal condensation (장평) on leaf text spans inside buttons/labels/rows,
+   strictly excluding flex wrappers, circular dots/badges, fixed-width boxes, and transformed nodes */
+html[data-font-enlarged="true"] :is(header, aside) button span:not(.flex):not(.inline-flex):not(.grid):not([class*="rounded-full"]):not([class*="w-"]):not([class*="rotate"]):not([class*="translate"]):not([class*="scale"]):not([class*="animate-"]):not(.break-keep) {
+  display: inline-block;
+  white-space: nowrap;
+  transform: scaleX(var(--ui-condense-x, 1));
+  transform-origin: center center;
+}
+
+html[data-font-enlarged="true"] aside button.justify-between span:first-child:not(.flex):not(.inline-flex):not(.grid):not([class*="rounded-full"]):not([class*="w-"]):not([class*="rotate"]):not([class*="translate"]):not([class*="scale"]):not([class*="animate-"]):not(.break-keep),
+html[data-font-enlarged="true"] aside button.justify-between > span.flex > span:not([class*="rounded-full"]):not([class*="w-"]):not([class*="rotate"]):not([class*="translate"]):not([class*="scale"]):not([class*="animate-"]):not(.break-keep),
+html[data-font-enlarged="true"] aside label > span:first-child:not(.flex):not(.inline-flex):not(.grid):not([class*="rounded-full"]):not([class*="w-"]):not([class*="rotate"]):not([class*="translate"]):not([class*="scale"]):not(.break-keep),
+html[data-font-enlarged="true"] aside .justify-between > span:first-child:not(.flex):not(.inline-flex):not(.grid):not([class*="rounded-full"]):not([class*="w-"]):not([class*="rotate"]):not([class*="translate"]):not([class*="scale"]):not(.break-keep) {
+  display: inline-block;
+  white-space: nowrap;
+  transform: scaleX(var(--ui-condense-x, 1));
+  transform-origin: left center;
+}
+
+html[data-font-enlarged="true"] aside .justify-between > span:last-child:not(:first-child):not(.flex):not(.inline-flex):not(.grid):not([class*="rounded-full"]):not([class*="w-"]):not([class*="rotate"]):not([class*="translate"]):not([class*="scale"]):not(.break-keep) {
+  display: inline-block;
+  white-space: nowrap;
+  transform: scaleX(var(--ui-condense-x, 1));
+  transform-origin: right center;
+}
+
+html[data-font-enlarged="true"] aside button.px-2\.5 {
+  padding-left: 0.45rem;
+  padding-right: 0.45rem;
 }
 
 /* Precision thin scrollbars for sidebars */
@@ -177,6 +277,7 @@
     height: auto !important;
     overflow: visible !important;
     background: #ffffff !important;
+    filter: none !important;
   }
   header,
   aside,

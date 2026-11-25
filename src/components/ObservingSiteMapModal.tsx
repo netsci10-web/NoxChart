@@ -1,16 +1,6 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import {
-  APILoadingStatus,
-  APIProvider,
-  AdvancedMarker,
-  Map as GoogleMap,
-  InfoWindow,
-  Pin,
-  useApiIsLoaded,
-  useApiLoadingStatus,
-  useMap,
-  useMapsLibrary,
-} from '@vis.gl/react-google-maps';
+import L from 'leaflet';
+import 'leaflet/dist/leaflet.css';
 import {
   BookmarkPlus,
   Check,
@@ -20,6 +10,7 @@ import {
   LocateFixed,
   MapPin,
   Search,
+  Sparkles,
   Trash2,
   Upload,
   X,
@@ -29,6 +20,7 @@ import {
   SavedObservingSite,
   ThemeMode,
 } from '../types/astronomy';
+import { estimateSiteBortleClass } from '../utils/bortle';
 import {
   clampLat,
   clampLon,
@@ -44,7 +36,17 @@ interface CameraTarget {
   lat: number;
   lng: number;
   zoom?: number;
+  bounds?: [number, number, number, number]; // [south, north, west, east]
   seq: number;
+}
+
+interface GeocodeSuggestion {
+  id: string;
+  name: string;
+  detail: string;
+  lat: number;
+  lon: number;
+  boundingbox?: [number, number, number, number];
 }
 
 interface ObservingSiteMapModalProps {
@@ -62,76 +64,151 @@ interface ObservingSiteMapModalProps {
   ) => { addedCount: number; updatedCount: number };
 }
 
-function isQuotaError(err: unknown): boolean {
-  const msg =
-    err instanceof Error
-      ? `${err.name} ${err.message}`
-      : typeof err === 'string'
-      ? err
-      : JSON.stringify(err ?? '');
-  return (
-    msg.includes('RESOURCE_EXHAUSTED') ||
-    msg.includes('OVER_QUERY_LIMIT') ||
-    msg.includes('QuotaExceeded') ||
-    msg.includes('OverQuota') ||
-    msg.includes('429')
-  );
+function escapeHtml(text: string): string {
+  return text
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
 }
 
-function MapCameraController({ target }: { target: CameraTarget | null }) {
-  const map = useMap();
-  useEffect(() => {
-    if (!map || !target) return;
-    map.panTo({ lat: target.lat, lng: target.lng });
-    if (typeof target.zoom === 'number') {
-      map.setZoom(target.zoom);
+function createPinIcon(fillColor: string, strokeColor: string, scale = 1): L.DivIcon {
+  const w = Math.round(26 * scale);
+  const h = Math.round(36 * scale);
+  const svg = `
+    <svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 26 36" style="filter: drop-shadow(0 2px 4px rgba(0,0,0,0.45)); display: block;">
+      <path d="M13 1.5C6.65 1.5 1.5 6.65 1.5 13c0 8.5 10.35 19.6 10.8 20.08a.95.95 0 0 0 1.4 0C14.15 32.6 24.5 21.5 24.5 13 24.5 6.65 19.35 1.5 13 1.5z" fill="${fillColor}" stroke="${strokeColor}" stroke-width="2"/>
+      <circle cx="13" cy="12.5" r="4.3" fill="#ffffff" fill-opacity="0.95"/>
+    </svg>
+  `;
+  return L.divIcon({
+    html: svg,
+    className: 'noxchart-leaflet-pin',
+    iconSize: [w, h],
+    iconAnchor: [Math.round(w / 2), h],
+    popupAnchor: [0, -h + 4],
+  });
+}
+
+async function queryOpenGeocode(query: string, signal: AbortSignal): Promise<GeocodeSuggestion[]> {
+  // 1. Try local Express open-API geocode proxy (Nominatim + Photon with proper User-Agent & cache)
+  try {
+    const res = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`, {
+      signal,
+      headers: { Accept: 'application/json' },
+    });
+    if (res.ok) {
+      const data = (await res.json()) as { results?: GeocodeSuggestion[] };
+      if (Array.isArray(data.results)) {
+        return data.results;
+      }
     }
-  }, [map, target]);
-  return null;
-}
-
-function MapLoadStatusOverlay({ theme }: { theme: ThemeMode }) {
-  const isLoaded = useApiIsLoaded();
-  const status = useApiLoadingStatus();
-
-  if (status === APILoadingStatus.FAILED || status === APILoadingStatus.AUTH_FAILURE) {
-    return (
-      <div
-        className={`absolute inset-0 z-20 flex flex-col items-center justify-center p-6 text-center ${
-          theme === 'white'
-            ? 'bg-slate-100/95 text-slate-800'
-            : theme === 'red'
-            ? 'bg-[#120000]/95 text-[#FF6B6B]'
-            : 'bg-[#070B14]/95 text-slate-200'
-        }`}
-      >
-        <MapPin className="w-8 h-8 mb-2 opacity-70" />
-        <div className="text-sm font-semibold mb-1">지도를 불러올 수 없습니다</div>
-        <p className="text-xs opacity-75 max-w-sm leading-relaxed">
-          Google Maps API 인증 또는 네트워크 상태를 확인해 주세요. 우측 입력란에서 위도·경도를 직접 입력해 관측지를 설정하고 저장할 수 있습니다.
-        </p>
-      </div>
-    );
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
   }
 
-  if (!isLoaded) {
-    return (
-      <div
-        className={`absolute inset-0 z-20 flex items-center justify-center gap-2 text-xs ${
-          theme === 'white'
-            ? 'bg-slate-100/80 text-slate-700'
-            : theme === 'red'
-            ? 'bg-[#120000]/80 text-[#FF6B6B]'
-            : 'bg-[#070B14]/80 text-slate-300'
-        }`}
-      >
-        <Loader2 className="w-4 h-4 animate-spin" />
-        <span>지도 불러오는 중...</span>
-      </div>
+  // 2. Direct browser fallback to OpenStreetMap Nominatim Open API
+  try {
+    const nomRes = await fetch(
+      `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=8&accept-language=ko&q=${encodeURIComponent(
+        query
+      )}`,
+      { signal, headers: { Accept: 'application/json' } }
     );
+    if (nomRes.ok) {
+      const rows = (await nomRes.json()) as Array<{
+        place_id?: number | string;
+        name?: string;
+        display_name?: string;
+        lat?: string;
+        lon?: string;
+        boundingbox?: [string, string, string, string];
+      }>;
+      if (Array.isArray(rows) && rows.length > 0) {
+        return rows
+          .map((r, idx): GeocodeSuggestion | null => {
+            const lat = Number(r.lat);
+            const lon = Number(r.lon);
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+            const full = String(r.display_name || '').trim();
+            const parts = full.split(',').map((s) => s.trim()).filter(Boolean);
+            const name = (r.name && r.name.trim()) || parts[0] || query;
+            const detail = parts.length > 1 ? parts.slice(1).join(', ') : '';
+            let bbox: [number, number, number, number] | undefined;
+            if (Array.isArray(r.boundingbox) && r.boundingbox.length === 4) {
+              const nums = r.boundingbox.map(Number);
+              if (nums.every(Number.isFinite)) {
+                bbox = [nums[0], nums[1], nums[2], nums[3]];
+              }
+            }
+            return {
+              id: `nom_${r.place_id ?? idx}`,
+              name,
+              detail: detail === name ? '' : detail,
+              lat,
+              lon,
+              boundingbox: bbox,
+            };
+          })
+          .filter((x): x is GeocodeSuggestion => x !== null);
+      }
+    }
+  } catch (err) {
+    if (err instanceof DOMException && err.name === 'AbortError') throw err;
   }
 
-  return null;
+  // 3. Direct browser fallback to Komoot Photon Open API
+  const photonRes = await fetch(
+    `https://photon.komoot.io/api/?q=${encodeURIComponent(query)}&limit=8`,
+    { signal, headers: { Accept: 'application/json' } }
+  );
+  if (!photonRes.ok) return [];
+  const payload = (await photonRes.json()) as {
+    features?: Array<{
+      geometry?: { coordinates?: [number, number] };
+      properties?: {
+        osm_id?: number;
+        name?: string;
+        street?: string;
+        city?: string;
+        county?: string;
+        state?: string;
+        country?: string;
+        extent?: [number, number, number, number];
+      };
+    }>;
+  };
+  const feats = Array.isArray(payload?.features) ? payload.features : [];
+  return feats
+    .map((f, idx): GeocodeSuggestion | null => {
+      const coords = f.geometry?.coordinates;
+      if (!coords || coords.length < 2) return null;
+      const lon = Number(coords[0]);
+      const lat = Number(coords[1]);
+      if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      const p = f.properties || {};
+      const name = p.name || p.street || p.city || p.state || query;
+      const detailParts = [p.city, p.county, p.state, p.country].filter(
+        (v): v is string => Boolean(v && v !== name)
+      );
+      let bbox: [number, number, number, number] | undefined;
+      if (Array.isArray(p.extent) && p.extent.length === 4) {
+        const [west, north, east, south] = p.extent.map(Number);
+        if ([west, north, east, south].every(Number.isFinite)) {
+          bbox = [south, north, west, east];
+        }
+      }
+      return {
+        id: `pho_${p.osm_id ?? idx}_${lat.toFixed(4)}`,
+        name,
+        detail: detailParts.join(', '),
+        lat,
+        lon,
+        boundingbox: bbox,
+      };
+    })
+    .filter((x): x is GeocodeSuggestion => x !== null);
 }
 
 interface PlaceSearchBarProps {
@@ -140,23 +217,56 @@ interface PlaceSearchBarProps {
     name: string;
     lat: number;
     lon: number;
-    viewport?: google.maps.LatLngBounds | null;
+    bounds?: [number, number, number, number];
   }) => void;
 }
 
-function PlaceSearchBar({ theme, onSelectPlace }: PlaceSearchBarProps) {
-  const placesLib = useMapsLibrary('places');
-  const map = useMap();
+function OpenPlaceSearchBar({ theme, onSelectPlace }: PlaceSearchBarProps) {
   const [inputValue, setInputValue] = useState('');
-  const [suggestions, setSuggestions] = useState<
-    google.maps.places.AutocompleteSuggestion[]
-  >([]);
+  const [suggestions, setSuggestions] = useState<GeocodeSuggestion[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [dropdownOpen, setDropdownOpen] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const sessionTokenRef =
-    useRef<google.maps.places.AutocompleteSessionToken | null>(null);
   const debounceRef = useRef<number | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+
+  const runSearch = useCallback(async (rawQuery: string) => {
+    const trimmed = rawQuery.trim();
+    if (trimmed.length < 2) {
+      setSuggestions([]);
+      setIsSearching(false);
+      setSearchError(null);
+      return;
+    }
+
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    setIsSearching(true);
+    setSearchError(null);
+
+    try {
+      const results = await queryOpenGeocode(trimmed, controller.signal);
+      if (!controller.signal.aborted) {
+        setSuggestions(results);
+        setDropdownOpen(true);
+        if (results.length === 0) {
+          setSearchError('검색 결과가 없습니다. 영문 지명이나 인근 시·군 이름으로 검색해 보세요.');
+        }
+      }
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      if (!controller.signal.aborted) {
+        setSuggestions([]);
+        setSearchError('장소 검색 중 오류가 발생했습니다. 지도를 직접 클릭해 선택할 수 있습니다.');
+      }
+    } finally {
+      if (!controller.signal.aborted) {
+        setIsSearching(false);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     if (debounceRef.current !== null) {
@@ -165,95 +275,45 @@ function PlaceSearchBar({ theme, onSelectPlace }: PlaceSearchBarProps) {
     }
 
     const trimmed = inputValue.trim();
-    if (!placesLib || trimmed.length < 2) {
+    if (trimmed.length < 2) {
+      abortRef.current?.abort();
       setSuggestions([]);
       setIsSearching(false);
       setSearchError(null);
       return;
     }
 
-    let cancelled = false;
-    setIsSearching(true);
-    setSearchError(null);
-
-    debounceRef.current = window.setTimeout(async () => {
-      try {
-        const { AutocompleteSessionToken, AutocompleteSuggestion } = placesLib;
-        if (!sessionTokenRef.current) {
-          sessionTokenRef.current = new AutocompleteSessionToken();
-        }
-        const res = await AutocompleteSuggestion.fetchAutocompleteSuggestions({
-          input: trimmed,
-          sessionToken: sessionTokenRef.current,
-          language: 'ko',
-        });
-        if (!cancelled) {
-          const list = Array.isArray(res?.suggestions) ? res.suggestions : [];
-          setSuggestions(list);
-          setDropdownOpen(true);
-        }
-      } catch (err) {
-        if (isQuotaError(err)) {
-          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        }
-        if (!cancelled) {
-          setSuggestions([]);
-          setSearchError('장소 검색에 실패했습니다. 지도를 직접 클릭해 위치를 선택할 수 있습니다.');
-        }
-      } finally {
-        if (!cancelled) setIsSearching(false);
-      }
-    }, 280);
+    debounceRef.current = window.setTimeout(() => {
+      void runSearch(trimmed);
+    }, 360);
 
     return () => {
-      cancelled = true;
       if (debounceRef.current !== null) {
         window.clearTimeout(debounceRef.current);
       }
     };
-  }, [placesLib, inputValue]);
+  }, [inputValue, runSearch]);
+
+  useEffect(() => {
+    return () => {
+      abortRef.current?.abort();
+    };
+  }, []);
 
   const handlePickSuggestion = useCallback(
-    async (suggestion: google.maps.places.AutocompleteSuggestion) => {
-      if (!placesLib || !suggestion.placePrediction) return;
-      try {
-        const place = suggestion.placePrediction.toPlace();
-        await place.fetchFields({
-          fields: ['displayName', 'formattedAddress', 'location', 'viewport'],
-        });
-        const loc = place.location;
-        if (loc) {
-          const lat = typeof loc.lat === 'function' ? loc.lat() : Number(loc.lat);
-          const lng = typeof loc.lng === 'function' ? loc.lng() : Number(loc.lng);
-          if (Number.isFinite(lat) && Number.isFinite(lng)) {
-            if (place.viewport && map) {
-              map.fitBounds(place.viewport);
-            }
-            const label =
-              place.displayName ||
-              suggestion.placePrediction.mainText?.text ||
-              suggestion.placePrediction.text?.text ||
-              `관측지 (${lat.toFixed(3)}, ${lng.toFixed(3)})`;
-            onSelectPlace({
-              name: label,
-              lat,
-              lon: lng,
-              viewport: place.viewport ?? null,
-            });
-          }
-        }
-        setInputValue('');
-        setSuggestions([]);
-        setDropdownOpen(false);
-        sessionTokenRef.current = null;
-      } catch (err) {
-        if (isQuotaError(err)) {
-          window.dispatchEvent(new CustomEvent('gmp-quota-exceeded'));
-        }
-        setSearchError('선택한 장소의 좌표를 가져오지 못했습니다.');
-      }
+    (item: GeocodeSuggestion) => {
+      onSelectPlace({
+        name: item.name,
+        lat: item.lat,
+        lon: item.lon,
+        bounds: item.boundingbox,
+      });
+      setInputValue('');
+      setSuggestions([]);
+      setDropdownOpen(false);
+      setSearchError(null);
     },
-    [placesLib, map, onSelectPlace]
+    [onSelectPlace]
   );
 
   const surfaceCls =
@@ -284,7 +344,17 @@ function PlaceSearchBar({ theme, onSelectPlace }: PlaceSearchBarProps) {
           onFocus={() => {
             if (suggestions.length > 0) setDropdownOpen(true);
           }}
-          placeholder="관측지, 천문대, 지명 검색..."
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              if (debounceRef.current !== null) {
+                window.clearTimeout(debounceRef.current);
+                debounceRef.current = null;
+              }
+              void runSearch(inputValue);
+            }
+          }}
+          placeholder="관측지, 천문대, 지명 검색 (OSM)..."
           className="w-full bg-transparent text-xs outline-none placeholder:opacity-60"
         />
         {isSearching && <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 opacity-75" />}
@@ -292,13 +362,14 @@ function PlaceSearchBar({ theme, onSelectPlace }: PlaceSearchBarProps) {
           <button
             type="button"
             onClick={() => {
+              abortRef.current?.abort();
               setInputValue('');
               setSuggestions([]);
               setDropdownOpen(false);
               setSearchError(null);
             }}
             aria-label="검색어 지우기"
-            className="opacity-65 hover:opacity-100"
+            className="opacity-65 hover:opacity-100 cursor-pointer"
           >
             <X className="w-3.5 h-3.5" />
           </button>
@@ -309,41 +380,31 @@ function PlaceSearchBar({ theme, onSelectPlace }: PlaceSearchBarProps) {
         <ul
           className={`absolute left-0 right-0 top-full mt-1 border rounded-md overflow-hidden max-h-56 overflow-y-auto astro-scroll z-30 ${surfaceCls}`}
         >
-          {suggestions.map((sug, idx) => {
-            const pred = sug.placePrediction;
-            if (!pred) return null;
-            const mainText = pred.mainText?.text || pred.text?.text || '';
-            const secondaryText = pred.secondaryText?.text || '';
-            return (
-              <li key={pred.placeId || idx}>
-                <button
-                  type="button"
-                  onClick={() => void handlePickSuggestion(sug)}
-                  className={`w-full text-left px-2.5 py-2 text-xs transition-colors border-b last:border-b-0 ${
-                    theme === 'white'
-                      ? 'border-slate-100'
-                      : theme === 'red'
-                      ? 'border-[#300606]'
-                      : 'border-[#1E2B42]'
-                  } ${itemHoverCls}`}
-                >
-                  <div className="font-medium truncate">{mainText}</div>
-                  {secondaryText && (
-                    <div className="text-[10.5px] opacity-65 truncate mt-0.5">
-                      {secondaryText}
-                    </div>
-                  )}
-                </button>
-              </li>
-            );
-          })}
+          {suggestions.map((item) => (
+            <li key={item.id}>
+              <button
+                type="button"
+                onClick={() => handlePickSuggestion(item)}
+                className={`w-full text-left px-2.5 py-2 text-xs transition-colors border-b last:border-b-0 cursor-pointer ${
+                  theme === 'white'
+                    ? 'border-slate-100'
+                    : theme === 'red'
+                    ? 'border-[#300606]'
+                    : 'border-[#1E2B42]'
+                } ${itemHoverCls}`}
+              >
+                <div className="font-medium truncate">{item.name}</div>
+                {item.detail && (
+                  <div className="text-[10.5px] opacity-65 truncate mt-0.5">{item.detail}</div>
+                )}
+              </button>
+            </li>
+          ))}
         </ul>
       )}
 
       {searchError && (
-        <div
-          className={`mt-1 px-2 py-1 text-[10.5px] border rounded ${surfaceCls}`}
-        >
+        <div className={`mt-1 px-2 py-1 text-[10.5px] border rounded ${surfaceCls}`}>
           {searchError}
         </div>
       )}
@@ -365,14 +426,12 @@ export function ObservingSiteMapModal({
 }: ObservingSiteMapModalProps) {
   const ui = getUiTheme(theme);
   const fileInputRef = useRef<HTMLInputElement>(null);
-
-  const [mapsApiKey, setMapsApiKey] = useState<string>(() => {
-    const buildKey =
-      import.meta.env.VITE_GOOGLE_MAPS_API_KEY ||
-      (typeof __GOOGLE_MAPS_API_KEY__ !== 'undefined' ? __GOOGLE_MAPS_API_KEY__ : '');
-    return buildKey || '';
-  });
-  const [keyChecked, setKeyChecked] = useState<boolean>(() => Boolean(mapsApiKey));
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<L.Map | null>(null);
+  const baseLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  const savedLayerGroupRef = useRef<L.LayerGroup | null>(null);
+  const activeObsMarkerRef = useRef<L.Marker | null>(null);
+  const candidateMarkerRef = useRef<L.Marker | null>(null);
 
   const [pickedLat, setPickedLat] = useState<number>(observer.lat);
   const [pickedLon, setPickedLon] = useState<number>(observer.lon);
@@ -380,12 +439,16 @@ export function ObservingSiteMapModal({
   const [siteNote, setSiteNote] = useState<string>('');
   const [siteBortle, setSiteBortle] = useState<string>('');
   const [editingSiteId, setEditingSiteId] = useState<string | null>(null);
-  const [mapType, setMapType] = useState<MapStyleType>('terrain');
+  const [mapType, setMapType] = useState<MapStyleType>('roadmap');
   const [redFilterEnabled, setRedFilterEnabled] = useState<boolean>(true);
   const [cameraTarget, setCameraTarget] = useState<CameraTarget | null>(null);
-  const [activeInfoSiteId, setActiveInfoSiteId] = useState<string | null>(null);
   const [locatingGps, setLocatingGps] = useState(false);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
+
+  const siteNameRef = useRef(siteName);
+  siteNameRef.current = siteName;
+  const observerNameRef = useRef(observer.name);
+  observerNameRef.current = observer.name;
 
   const showNotice = useCallback((msg: string) => {
     setStatusMsg(msg);
@@ -394,26 +457,11 @@ export function ObservingSiteMapModal({
     }, 3600);
   }, []);
 
-  // Runtime fallback fetch for Maps API key if not embedded at build time
-  useEffect(() => {
-    if (!open || mapsApiKey) return;
-    let active = true;
-    fetch('/api/maps-config')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data: { apiKey?: string } | null) => {
-        if (!active) return;
-        if (data?.apiKey) {
-          setMapsApiKey(data.apiKey);
-        }
-        setKeyChecked(true);
-      })
-      .catch(() => {
-        if (active) setKeyChecked(true);
-      });
-    return () => {
-      active = false;
-    };
-  }, [open, mapsApiKey]);
+  const isAutoName = useCallback(
+    (name: string) =>
+      !name.trim() || name.startsWith('지도 선택 (') || name === '사용자 지정',
+    []
+  );
 
   // Sync modal state whenever opened
   useEffect(() => {
@@ -426,7 +474,6 @@ export function ObservingSiteMapModal({
       setSiteNote(focus.note ?? '');
       setSiteBortle(focus.bortle ? String(focus.bortle) : '');
       setEditingSiteId(focus.id);
-      setActiveInfoSiteId(focus.id);
       setCameraTarget({ lat: focus.lat, lng: focus.lon, zoom: 12, seq: Date.now() });
     } else {
       setPickedLat(observer.lat);
@@ -435,7 +482,6 @@ export function ObservingSiteMapModal({
       setSiteNote('');
       setSiteBortle('');
       setEditingSiteId(null);
-      setActiveInfoSiteId(null);
       setCameraTarget({ lat: observer.lat, lng: observer.lon, zoom: 11, seq: Date.now() });
     }
   }, [open, initialFocusSite, observer.lat, observer.lon, observer.name]);
@@ -450,24 +496,238 @@ export function ObservingSiteMapModal({
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [open, onClose]);
 
-  if (!open) return null;
+  const handleSelectSavedSite = useCallback((site: SavedObservingSite) => {
+    setPickedLat(site.lat);
+    setPickedLon(site.lon);
+    setSiteName(site.name);
+    setSiteNote(site.note ?? '');
+    setSiteBortle(site.bortle ? String(site.bortle) : '');
+    setEditingSiteId(site.id);
+    setCameraTarget({ lat: site.lat, lng: site.lon, zoom: 12, seq: Date.now() });
+  }, []);
 
-  const isAutoName = (name: string) =>
-    !name.trim() || name.startsWith('지도 선택 (') || name === '사용자 지정';
+  // Initialize Leaflet map when modal opens
+  useEffect(() => {
+    if (!open) return;
+    const container = mapContainerRef.current;
+    if (!container) return;
 
-  const handleMapClick = (ev: { detail?: { latLng?: { lat: number; lng: number } | null } }) => {
-    const ll = ev.detail?.latLng;
-    if (!ll) return;
-    const nextLat = Number(clampLat(ll.lat).toFixed(5));
-    const nextLon = Number(clampLon(ll.lng).toFixed(5));
-    setPickedLat(nextLat);
-    setPickedLon(nextLon);
-    setEditingSiteId(null);
-    setActiveInfoSiteId(null);
-    if (isAutoName(siteName) || siteName === observer.name) {
-      setSiteName(`지도 선택 (${nextLat.toFixed(3)}, ${nextLon.toFixed(3)})`);
+    const initLat = initialFocusSite ? initialFocusSite.lat : observer.lat;
+    const initLon = initialFocusSite ? initialFocusSite.lon : observer.lon;
+    const initZoom = initialFocusSite ? 12 : 11;
+
+    const map = L.map(container, {
+      center: [initLat, initLon],
+      zoom: initZoom,
+      zoomControl: false,
+      attributionControl: true,
+    });
+
+    L.control.zoom({ position: 'bottomright' }).addTo(map);
+
+    const baseGroup = L.layerGroup().addTo(map);
+    const savedGroup = L.layerGroup().addTo(map);
+    baseLayerGroupRef.current = baseGroup;
+    savedLayerGroupRef.current = savedGroup;
+    mapInstanceRef.current = map;
+
+    map.on('click', (e: L.LeafletMouseEvent) => {
+      const nextLat = Number(clampLat(e.latlng.lat).toFixed(5));
+      const nextLon = Number(clampLon(e.latlng.lng).toFixed(5));
+      setPickedLat(nextLat);
+      setPickedLon(nextLon);
+      setEditingSiteId(null);
+      if (isAutoName(siteNameRef.current) || siteNameRef.current === observerNameRef.current) {
+        setSiteName(`지도 선택 (${nextLat.toFixed(3)}, ${nextLon.toFixed(3)})`);
+      }
+    });
+
+    // Ensure Leaflet measures container properly after modal renders/resizes
+    const raf = requestAnimationFrame(() => map.invalidateSize());
+    const timer = window.setTimeout(() => map.invalidateSize(), 160);
+    const ro = new ResizeObserver(() => {
+      map.invalidateSize();
+    });
+    ro.observe(container);
+
+    return () => {
+      cancelAnimationFrame(raf);
+      window.clearTimeout(timer);
+      ro.disconnect();
+      map.remove();
+      mapInstanceRef.current = null;
+      baseLayerGroupRef.current = null;
+      savedLayerGroupRef.current = null;
+      activeObsMarkerRef.current = null;
+      candidateMarkerRef.current = null;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open]);
+
+  // Switch open tile layer (OpenStreetMap / OpenTopoMap / Esri Satellite + Labels)
+  useEffect(() => {
+    if (!open || !baseLayerGroupRef.current) return;
+    const group = baseLayerGroupRef.current;
+    group.clearLayers();
+
+    if (mapType === 'terrain') {
+      L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+        maxZoom: 17,
+        attribution: '© OpenStreetMap, © OpenTopoMap (CC-BY-SA)',
+      }).addTo(group);
+    } else if (mapType === 'hybrid') {
+      L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}',
+        {
+          maxZoom: 18,
+          attribution: 'Tiles © Esri, Maxar, Earthstar Geographics',
+        }
+      ).addTo(group);
+      L.tileLayer(
+        'https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}',
+        {
+          maxZoom: 18,
+          opacity: 0.9,
+        }
+      ).addTo(group);
+    } else {
+      L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19,
+        attribution: '© OpenStreetMap contributors',
+      }).addTo(group);
     }
-  };
+  }, [open, mapType]);
+
+  // Pan / Zoom / FitBounds camera when target changes
+  useEffect(() => {
+    if (!open || !mapInstanceRef.current || !cameraTarget) return;
+    const map = mapInstanceRef.current;
+    if (cameraTarget.bounds) {
+      const [south, north, west, east] = cameraTarget.bounds;
+      if (
+        Number.isFinite(south) &&
+        Number.isFinite(north) &&
+        Number.isFinite(west) &&
+        Number.isFinite(east) &&
+        Math.abs(north - south) > 0.002 &&
+        Math.abs(east - west) > 0.002
+      ) {
+        map.fitBounds(
+          [
+            [south, west],
+            [north, east],
+          ],
+          { maxZoom: 14, padding: [36, 36] }
+        );
+        return;
+      }
+    }
+    if (typeof cameraTarget.zoom === 'number') {
+      map.setView([cameraTarget.lat, cameraTarget.lng], cameraTarget.zoom, { animate: true });
+    } else {
+      map.panTo([cameraTarget.lat, cameraTarget.lng], { animate: true });
+    }
+  }, [open, cameraTarget]);
+
+  const isSameAsActive =
+    Math.abs(pickedLat - observer.lat) < 0.0002 &&
+    Math.abs(pickedLon - observer.lon) < 0.0002;
+
+  // Render Current Active Observer marker (when distinct from candidate)
+  useEffect(() => {
+    if (!open || !mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+    if (activeObsMarkerRef.current) {
+      activeObsMarkerRef.current.remove();
+      activeObsMarkerRef.current = null;
+    }
+    if (!isSameAsActive) {
+      const marker = L.marker([observer.lat, observer.lon], {
+        icon: createPinIcon('#0284C7', '#0369A1', 0.92),
+        title: `현재 관측지: ${observer.name}`,
+      }).addTo(map);
+      marker.on('click', () => {
+        setPickedLat(observer.lat);
+        setPickedLon(observer.lon);
+        setSiteName(observer.name);
+        setEditingSiteId(null);
+      });
+      activeObsMarkerRef.current = marker;
+    }
+  }, [open, isSameAsActive, observer.lat, observer.lon, observer.name]);
+
+  // Render Saved Observing Site markers
+  useEffect(() => {
+    if (!open || !savedLayerGroupRef.current) return;
+    const group = savedLayerGroupRef.current;
+    group.clearLayers();
+
+    const fillColor = theme === 'red' ? '#991B1B' : '#7C3AED';
+    const strokeColor = theme === 'red' ? '#450A0A' : '#4C1D95';
+
+    for (const site of savedSites) {
+      if (editingSiteId === site.id) continue;
+      const marker = L.marker([site.lat, site.lon], {
+        icon: createPinIcon(fillColor, strokeColor, 0.95),
+        title: site.name,
+      });
+
+      const popupLines = [
+        `<div style="font-weight:700;color:#0f172a;font-size:12px;">${escapeHtml(site.name)}</div>`,
+        `<div style="font-family:monospace;font-size:10.5px;color:#475569;margin-top:2px;">${escapeHtml(
+          formatCoordsShort(site.lat, site.lon)
+        )}</div>`,
+      ];
+      if (site.bortle) {
+        popupLines.push(
+          `<div style="font-size:10.5px;color:#4338ca;font-weight:600;margin-top:2px;">Bortle ${site.bortle}등급</div>`
+        );
+      }
+      if (site.note) {
+        popupLines.push(
+          `<div style="font-size:10.5px;color:#475569;margin-top:2px;">${escapeHtml(site.note)}</div>`
+        );
+      }
+      marker.bindPopup(`<div style="min-width:130px;max-width:210px;">${popupLines.join('')}</div>`);
+      marker.on('click', () => {
+        handleSelectSavedSite(site);
+      });
+      marker.addTo(group);
+    }
+  }, [open, savedSites, editingSiteId, theme, handleSelectSavedSite]);
+
+  // Render Candidate / Picked Location draggable marker
+  useEffect(() => {
+    if (!open || !mapInstanceRef.current) return;
+    const map = mapInstanceRef.current;
+    const fillColor = theme === 'red' ? '#EF4444' : '#F59E0B';
+    const strokeColor = theme === 'red' ? '#7F1D1D' : '#B45309';
+
+    if (!candidateMarkerRef.current) {
+      const marker = L.marker([pickedLat, pickedLon], {
+        draggable: true,
+        zIndexOffset: 500,
+        icon: createPinIcon(fillColor, strokeColor, 1.18),
+        title: siteName || '선택된 관측지',
+      }).addTo(map);
+      marker.on('dragend', () => {
+        const ll = marker.getLatLng();
+        const nextLat = Number(clampLat(ll.lat).toFixed(5));
+        const nextLon = Number(clampLon(ll.lng).toFixed(5));
+        setPickedLat(nextLat);
+        setPickedLon(nextLon);
+        if (isAutoName(siteNameRef.current)) {
+          setSiteName(`지도 선택 (${nextLat.toFixed(3)}, ${nextLon.toFixed(3)})`);
+        }
+      });
+      candidateMarkerRef.current = marker;
+    } else {
+      candidateMarkerRef.current.setLatLng([pickedLat, pickedLon]);
+      candidateMarkerRef.current.setIcon(createPinIcon(fillColor, strokeColor, 1.18));
+    }
+  }, [open, pickedLat, pickedLon, theme, siteName, isAutoName]);
+
+  if (!open) return null;
 
   const handleLocateMe = () => {
     if (!navigator.geolocation) {
@@ -541,17 +801,6 @@ export function ObservingSiteMapModal({
     }
   };
 
-  const handleSelectSavedSite = (site: SavedObservingSite) => {
-    setPickedLat(site.lat);
-    setPickedLon(site.lon);
-    setSiteName(site.name);
-    setSiteNote(site.note ?? '');
-    setSiteBortle(site.bortle ? String(site.bortle) : '');
-    setEditingSiteId(site.id);
-    setActiveInfoSiteId(site.id);
-    setCameraTarget({ lat: site.lat, lng: site.lon, zoom: 12, seq: Date.now() });
-  };
-
   const handleExportFile = () => {
     if (savedSites.length === 0) {
       showNotice('저장된 관측지가 없습니다. 먼저 관측지를 저장해 주세요.');
@@ -612,14 +861,6 @@ export function ObservingSiteMapModal({
       ? 'bg-[#8F1616] hover:bg-[#A61B1B] text-[#FFE0E0] border-[#B91C1C]'
       : 'bg-[#0094B8] hover:bg-[#00A8D0] text-white border-[#06B6D4]';
 
-  const activeInfoSite = activeInfoSiteId
-    ? savedSites.find((s) => s.id === activeInfoSiteId) ?? null
-    : null;
-
-  const isSameAsActive =
-    Math.abs(pickedLat - observer.lat) < 0.0002 &&
-    Math.abs(pickedLon - observer.lon) < 0.0002;
-
   return (
     <div
       className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-black/70 backdrop-blur-[2px]"
@@ -641,7 +882,7 @@ export function ObservingSiteMapModal({
             <MapPin className={`w-4 h-4 shrink-0 ${ui.accentText}`} />
             <div className="min-w-0">
               <h2 className="text-xs sm:text-sm font-bold tracking-tight truncate">
-                지도에서 관측지 선택 및 관리
+                지도에서 관측지 선택 및 관리 (OpenStreetMap)
               </h2>
               <p className={`text-[10.5px] truncate ${ui.textMuted}`}>
                 지도를 클릭하거나 핀을 드래그해 관측 좌표를 지정하고 로컬 파일(.json)로 저장·불러오기 할 수 있습니다.
@@ -653,7 +894,7 @@ export function ObservingSiteMapModal({
             type="button"
             onClick={onClose}
             aria-label="닫기"
-            className={`p-1.5 border rounded-md transition-colors shrink-0 ${ui.buttonIdle}`}
+            className={`p-1.5 border rounded-md transition-colors shrink-0 cursor-pointer ${ui.buttonIdle}`}
           >
             <X className="w-4 h-4" />
           </button>
@@ -661,276 +902,124 @@ export function ObservingSiteMapModal({
 
         {/* Main Split Body */}
         <div className="flex-1 min-h-0 flex flex-col md:flex-row overflow-hidden">
-          {/* Interactive Google Map Canvas */}
+          {/* Interactive OpenStreetMap / Leaflet Canvas */}
           <div className="relative flex-1 min-h-[300px] md:min-h-0 h-full overflow-hidden">
-            {mapsApiKey ? (
-              <APIProvider
-                apiKey={mapsApiKey}
-                language="ko"
-                region="KR"
-                libraries={['places', 'marker']}
-              >
+            <div
+              ref={mapContainerRef}
+              className="w-full h-full"
+              style={
+                theme === 'red' && redFilterEnabled
+                  ? {
+                      filter:
+                        'sepia(1) hue-rotate(-55deg) saturate(2.3) brightness(0.68)',
+                    }
+                  : undefined
+              }
+            />
+
+            {/* Top-Left Search Bar Overlay (above Leaflet z-index) */}
+            <div className="absolute top-2.5 left-2.5 right-2.5 z-[1050] flex flex-wrap items-start justify-between gap-2 pointer-events-none">
+              <div className="pointer-events-auto flex-1 min-w-[200px] max-w-xs">
+                <OpenPlaceSearchBar
+                  theme={theme}
+                  onSelectPlace={({ name, lat, lon, bounds }) => {
+                    const cLat = Number(clampLat(lat).toFixed(5));
+                    const cLon = Number(clampLon(lon).toFixed(5));
+                    setPickedLat(cLat);
+                    setPickedLon(cLon);
+                    setSiteName(name);
+                    setEditingSiteId(null);
+                    setCameraTarget({
+                      lat: cLat,
+                      lng: cLon,
+                      zoom: 13,
+                      bounds,
+                      seq: Date.now(),
+                    });
+                  }}
+                />
+              </div>
+
+              {/* Top-Right Map Type & GPS Controls */}
+              <div className="pointer-events-auto flex items-center gap-1.5">
                 <div
-                  className="w-full h-full relative"
-                  style={
-                    theme === 'red' && redFilterEnabled
-                      ? {
-                          filter:
-                            'sepia(1) hue-rotate(-55deg) saturate(2.3) brightness(0.68)',
-                        }
-                      : undefined
-                  }
-                >
-                  <GoogleMap
-                    mapId="DEMO_MAP_ID"
-                    internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-                    defaultCenter={{ lat: pickedLat, lng: pickedLon }}
-                    defaultZoom={11}
-                    mapTypeId={mapType}
-                    gestureHandling="greedy"
-                    streetViewControl={false}
-                    mapTypeControl={false}
-                    fullscreenControl={false}
-                    clickableIcons={false}
-                    onClick={handleMapClick}
-                    style={{ width: '100%', height: '100%' }}
-                  >
-                    <MapCameraController target={cameraTarget} />
-
-                    {/* Current active observer marker (if distinct from candidate) */}
-                    {!isSameAsActive && (
-                      <AdvancedMarker
-                        position={{ lat: observer.lat, lng: observer.lon }}
-                        title={`현재 관측지: ${observer.name}`}
-                        onClick={() => {
-                          setPickedLat(observer.lat);
-                          setPickedLon(observer.lon);
-                          setSiteName(observer.name);
-                          setEditingSiteId(null);
-                        }}
-                      >
-                        <Pin
-                          background="#0284C7"
-                          borderColor="#0369A1"
-                          glyphColor="#E0F2FE"
-                          scale={0.9}
-                        />
-                      </AdvancedMarker>
-                    )}
-
-                    {/* Saved Observing Sites Markers */}
-                    {savedSites.map((site) => {
-                      const isEditingThis = editingSiteId === site.id;
-                      if (isEditingThis) return null;
-                      return (
-                        <AdvancedMarker
-                          key={site.id}
-                          position={{ lat: site.lat, lng: site.lon }}
-                          title={site.name}
-                          onClick={() => handleSelectSavedSite(site)}
-                        >
-                          <Pin
-                            background={theme === 'red' ? '#991B1B' : '#7C3AED'}
-                            borderColor={theme === 'red' ? '#450A0A' : '#4C1D95'}
-                            glyphColor="#FFFFFF"
-                            scale={0.95}
-                          />
-                        </AdvancedMarker>
-                      );
-                    })}
-
-                    {/* Candidate / Picked Location Draggable Marker */}
-                    <AdvancedMarker
-                      position={{ lat: pickedLat, lng: pickedLon }}
-                      draggable={true}
-                      title={siteName || '선택된 관측지'}
-                      onDragEnd={(ev) => {
-                        const ll = ev.latLng;
-                        if (!ll) return;
-                        const nextLat = Number(clampLat(ll.lat()).toFixed(5));
-                        const nextLon = Number(clampLon(ll.lng()).toFixed(5));
-                        setPickedLat(nextLat);
-                        setPickedLon(nextLon);
-                        if (isAutoName(siteName)) {
-                          setSiteName(
-                            `지도 선택 (${nextLat.toFixed(3)}, ${nextLon.toFixed(3)})`
-                          );
-                        }
-                      }}
-                    >
-                      <Pin
-                        background={theme === 'red' ? '#EF4444' : '#F59E0B'}
-                        borderColor={theme === 'red' ? '#7F1D1D' : '#B45309'}
-                        glyphColor="#FFFFFF"
-                        scale={1.2}
-                      />
-                    </AdvancedMarker>
-
-                    {activeInfoSite && (
-                      <InfoWindow
-                        position={{ lat: activeInfoSite.lat, lng: activeInfoSite.lon }}
-                        pixelOffset={[0, -38]}
-                        onCloseClick={() => setActiveInfoSiteId(null)}
-                      >
-                        <div className="text-slate-900 text-xs max-w-[200px] p-0.5">
-                          <div className="font-bold text-slate-900">
-                            {activeInfoSite.name}
-                          </div>
-                          <div className="font-mono text-[10.5px] text-slate-600 mt-0.5">
-                            {formatCoordsShort(activeInfoSite.lat, activeInfoSite.lon)}
-                          </div>
-                          {activeInfoSite.bortle && (
-                            <div className="text-[10.5px] text-indigo-700 font-medium mt-0.5">
-                              Bortle {activeInfoSite.bortle}등급
-                            </div>
-                          )}
-                          {activeInfoSite.note && (
-                            <div className="text-[10.5px] text-slate-600 mt-0.5">
-                              {activeInfoSite.note}
-                            </div>
-                          )}
-                        </div>
-                      </InfoWindow>
-                    )}
-                  </GoogleMap>
-                </div>
-
-                <MapLoadStatusOverlay theme={theme} />
-
-                {/* Top-Left Search Bar Overlay (unfiltered for crisp readability) */}
-                <div className="absolute top-2.5 left-2.5 right-2.5 z-20 flex flex-wrap items-start justify-between gap-2 pointer-events-none">
-                  <div className="pointer-events-auto flex-1 min-w-[200px] max-w-xs">
-                    <PlaceSearchBar
-                      theme={theme}
-                      onSelectPlace={({ name, lat, lon, viewport }) => {
-                        const cLat = Number(clampLat(lat).toFixed(5));
-                        const cLon = Number(clampLon(lon).toFixed(5));
-                        setPickedLat(cLat);
-                        setPickedLon(cLon);
-                        setSiteName(name);
-                        setEditingSiteId(null);
-                        setActiveInfoSiteId(null);
-                        if (!viewport) {
-                          setCameraTarget({
-                            lat: cLat,
-                            lng: cLon,
-                            zoom: 13,
-                            seq: Date.now(),
-                          });
-                        }
-                      }}
-                    />
-                  </div>
-
-                  {/* Top-Right Map Type & GPS Controls */}
-                  <div className="pointer-events-auto flex items-center gap-1.5">
-                    <div
-                      className={`flex items-center p-0.5 border rounded-md ${
-                        theme === 'white'
-                          ? 'bg-white/95 border-slate-300 shadow-sm'
-                          : theme === 'red'
-                          ? 'bg-[#120101]/95 border-[#5A1212] shadow-sm'
-                          : 'bg-[#0B1220]/95 border-[#2C3E5C] shadow-md'
-                      }`}
-                    >
-                      {(
-                        [
-                          { id: 'roadmap', label: '지도' },
-                          { id: 'terrain', label: '지형' },
-                          { id: 'hybrid', label: '위성' },
-                        ] as const
-                      ).map((mt) => (
-                        <button
-                          key={mt.id}
-                          type="button"
-                          onClick={() => setMapType(mt.id)}
-                          className={`px-2 py-1 text-[10.5px] font-medium rounded transition-colors ${
-                            mapType === mt.id ? ui.buttonActive : ui.textSecondary
-                          }`}
-                        >
-                          {mt.label}
-                        </button>
-                      ))}
-                    </div>
-
-                    {theme === 'red' && (
-                      <button
-                        type="button"
-                        onClick={() => setRedFilterEnabled((v) => !v)}
-                        title="적색 야간 지도 필터 토글"
-                        className={`px-2 py-1.5 border rounded-md text-[10.5px] font-medium ${
-                          redFilterEnabled ? ui.buttonActive : ui.buttonIdle
-                        }`}
-                      >
-                        {redFilterEnabled ? '적색필터' : '원본색'}
-                      </button>
-                    )}
-
-                    <button
-                      type="button"
-                      onClick={handleLocateMe}
-                      disabled={locatingGps}
-                      title="현재 GPS 위치로 이동"
-                      className={`px-2 py-1.5 border rounded-md text-[11px] font-medium flex items-center gap-1 shadow-sm ${
-                        theme === 'white'
-                          ? 'bg-white/95 border-slate-300 text-slate-700 hover:bg-slate-50'
-                          : theme === 'red'
-                          ? 'bg-[#120101]/95 border-[#5A1212] text-[#FF5252] hover:bg-[#240303]'
-                          : 'bg-[#0B1220]/95 border-[#2C3E5C] text-slate-200 hover:bg-[#162235]'
-                      }`}
-                    >
-                      {locatingGps ? (
-                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                      ) : (
-                        <LocateFixed className="w-3.5 h-3.5" />
-                      )}
-                      <span className="hidden sm:inline">내 위치</span>
-                    </button>
-                  </div>
-                </div>
-
-                {/* Bottom-Left Live Coordinate HUD */}
-                <div
-                  className={`absolute bottom-2.5 left-2.5 z-20 px-2.5 py-1.5 border rounded-md text-[11px] font-mono tabular-nums flex items-center gap-2 pointer-events-none ${
+                  className={`flex items-center p-0.5 border rounded-md ${
                     theme === 'white'
-                      ? 'bg-white/95 border-slate-300 text-slate-800 shadow-sm'
+                      ? 'bg-white/95 border-slate-300 shadow-sm'
                       : theme === 'red'
-                      ? 'bg-[#120101]/95 border-[#5A1212] text-[#FF6B6B] shadow-sm'
-                      : 'bg-[#0B1220]/95 border-[#2C3E5C] text-cyan-300 shadow-md'
+                      ? 'bg-[#120101]/95 border-[#5A1212] shadow-sm'
+                      : 'bg-[#0B1220]/95 border-[#2C3E5C] shadow-md'
                   }`}
                 >
-                  <Crosshair className="w-3.5 h-3.5 shrink-0 opacity-80" />
-                  <span>{formatCoordsShort(pickedLat, pickedLon)}</span>
+                  {(
+                    [
+                      { id: 'roadmap', label: '지도' },
+                      { id: 'terrain', label: '지형' },
+                      { id: 'hybrid', label: '위성' },
+                    ] as const
+                  ).map((mt) => (
+                    <button
+                      key={mt.id}
+                      type="button"
+                      onClick={() => setMapType(mt.id)}
+                      className={`px-2 py-1 text-[10.5px] font-medium rounded transition-colors cursor-pointer ${
+                        mapType === mt.id ? ui.buttonActive : ui.textSecondary
+                      }`}
+                    >
+                      {mt.label}
+                    </button>
+                  ))}
                 </div>
-              </APIProvider>
-            ) : (
-              <div
-                className={`w-full h-full flex flex-col items-center justify-center p-6 text-center ${
-                  theme === 'white'
-                    ? 'bg-slate-100 text-slate-700'
-                    : theme === 'red'
-                    ? 'bg-[#120000] text-[#FF6B6B]'
-                    : 'bg-[#070B14] text-slate-300'
-                }`}
-              >
-                {!keyChecked ? (
-                  <div className="flex items-center gap-2 text-xs">
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                    <span>지도 설정 확인 중...</span>
-                  </div>
-                ) : (
-                  <>
-                    <MapPin className="w-8 h-8 mb-2 opacity-60" />
-                    <div className="text-sm font-semibold mb-1">
-                      Google Maps API 키를 찾을 수 없습니다
-                    </div>
-                    <p className="text-xs opacity-75 max-w-sm leading-relaxed">
-                      우측 패널에서 위도·경도를 직접 입력해 관측지를 설정하거나 로컬 파일(.json)로 관측지를 저장·불러오기 할 수 있습니다.
-                    </p>
-                  </>
+
+                {theme === 'red' && (
+                  <button
+                    type="button"
+                    onClick={() => setRedFilterEnabled((v) => !v)}
+                    title="적색 야간 지도 필터 토글"
+                    className={`px-2 py-1.5 border rounded-md text-[10.5px] font-medium cursor-pointer ${
+                      redFilterEnabled ? ui.buttonActive : ui.buttonIdle
+                    }`}
+                  >
+                    {redFilterEnabled ? '적색필터' : '원본색'}
+                  </button>
                 )}
+
+                <button
+                  type="button"
+                  onClick={handleLocateMe}
+                  disabled={locatingGps}
+                  title="현재 GPS 위치로 이동"
+                  className={`px-2 py-1.5 border rounded-md text-[11px] font-medium flex items-center gap-1 shadow-sm cursor-pointer ${
+                    theme === 'white'
+                      ? 'bg-white/95 border-slate-300 text-slate-700 hover:bg-slate-50'
+                      : theme === 'red'
+                      ? 'bg-[#120101]/95 border-[#5A1212] text-[#FF5252] hover:bg-[#240303]'
+                      : 'bg-[#0B1220]/95 border-[#2C3E5C] text-slate-200 hover:bg-[#162235]'
+                  }`}
+                >
+                  {locatingGps ? (
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <LocateFixed className="w-3.5 h-3.5" />
+                  )}
+                  <span className="hidden sm:inline">내 위치</span>
+                </button>
               </div>
-            )}
+            </div>
+
+            {/* Bottom-Left Live Coordinate HUD */}
+            <div
+              className={`absolute bottom-2.5 left-2.5 z-[1040] px-2.5 py-1.5 border rounded-md text-[11px] font-mono tabular-nums flex items-center gap-2 pointer-events-none ${
+                theme === 'white'
+                  ? 'bg-white/95 border-slate-300 text-slate-800 shadow-sm'
+                  : theme === 'red'
+                  ? 'bg-[#120101]/95 border-[#5A1212] text-[#FF6B6B] shadow-sm'
+                  : 'bg-[#0B1220]/95 border-[#2C3E5C] text-cyan-300 shadow-md'
+              }`}
+            >
+              <Crosshair className="w-3.5 h-3.5 shrink-0 opacity-80" />
+              <span>{formatCoordsShort(pickedLat, pickedLon)}</span>
+            </div>
           </div>
 
           {/* Right Side Panel: Selected Coordinates + Save + Saved List + File I/O */}
@@ -951,7 +1040,7 @@ export function ObservingSiteMapModal({
                       setSiteNote('');
                       setSiteBortle('');
                     }}
-                    className={`text-[10px] underline ${ui.textMuted}`}
+                    className={`text-[10px] underline cursor-pointer ${ui.textMuted}`}
                   >
                     새 관측지로 저장
                   </button>
@@ -1017,9 +1106,9 @@ export function ObservingSiteMapModal({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-3 gap-1.5">
-                  <div className="col-span-2">
-                    <label className={`block text-[10.5px] mb-0.5 ${ui.textMuted}`}>
+                <div className="grid grid-cols-12 gap-1.5">
+                  <div className="col-span-7">
+                    <label className={`flex items-center h-4 text-[10.5px] mb-0.5 ${ui.textMuted}`}>
                       메모 (선택)
                     </label>
                     <input
@@ -1030,10 +1119,25 @@ export function ObservingSiteMapModal({
                       className={`w-full px-2 py-1 border rounded text-[11px] ${ui.input}`}
                     />
                   </div>
-                  <div>
-                    <label className={`block text-[10.5px] mb-0.5 ${ui.textMuted}`}>
-                      Bortle
-                    </label>
+                  <div className="col-span-5">
+                    <div className="flex items-center justify-between gap-1 h-4 mb-0.5">
+                      <label className={`text-[10.5px] ${ui.textMuted}`}>
+                        Bortle
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const est = estimateSiteBortleClass(pickedLat, pickedLon, siteName);
+                          setSiteBortle(String(est.bortle));
+                          showNotice(`좌표 기준 보틀 등급이 B${est.bortle}로 자동 추정되었습니다.`);
+                        }}
+                        title="현재 위도·경도 좌표로 보틀 등급 자동 추정"
+                        className={`px-1.5 py-0.5 border rounded text-[9.5px] font-medium leading-none flex items-center gap-0.5 whitespace-nowrap cursor-pointer transition-colors ${ui.buttonIdle}`}
+                      >
+                        <Sparkles className="w-2.5 h-2.5 shrink-0" />
+                        <span>자동추정</span>
+                      </button>
+                    </div>
                     <select
                       value={siteBortle}
                       onChange={(e) => setSiteBortle(e.target.value)}
@@ -1055,7 +1159,7 @@ export function ObservingSiteMapModal({
                 <button
                   type="button"
                   onClick={handleApplyCurrent}
-                  className={`w-full py-2 px-3 border rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors ${primaryCtaCls}`}
+                  className={`w-full py-2 px-3 border rounded-md text-xs font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${primaryCtaCls}`}
                 >
                   <Check className="w-3.5 h-3.5" />
                   <span>이 위치로 관측지 설정</span>
@@ -1065,7 +1169,7 @@ export function ObservingSiteMapModal({
                   <button
                     type="button"
                     onClick={() => handleSaveToList(false)}
-                    className={`py-1.5 px-2 border rounded-md text-[11px] font-medium flex items-center justify-center gap-1 transition-colors ${ui.buttonIdle}`}
+                    className={`py-1.5 px-2 border rounded-md text-[11px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${ui.buttonIdle}`}
                   >
                     <BookmarkPlus className="w-3.5 h-3.5 shrink-0" />
                     <span>{editingSiteId ? '수정 저장' : '목록에 저장'}</span>
@@ -1073,7 +1177,7 @@ export function ObservingSiteMapModal({
                   <button
                     type="button"
                     onClick={() => handleSaveToList(true)}
-                    className={`py-1.5 px-2 border rounded-md text-[11px] font-medium flex items-center justify-center gap-1 transition-colors ${ui.buttonActive}`}
+                    className={`py-1.5 px-2 border rounded-md text-[11px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${ui.buttonActive}`}
                   >
                     <MapPin className="w-3.5 h-3.5 shrink-0" />
                     <span>저장 후 적용</span>
@@ -1127,7 +1231,7 @@ export function ObservingSiteMapModal({
                           <button
                             type="button"
                             onClick={() => handleSelectSavedSite(site)}
-                            className="flex-1 text-left min-w-0"
+                            className="flex-1 text-left min-w-0 cursor-pointer"
                           >
                             <div className="flex items-center gap-1.5 min-w-0">
                               <span
@@ -1174,7 +1278,7 @@ export function ObservingSiteMapModal({
                                 onClose();
                               }}
                               title="이 관측지로 즉시 설정"
-                              className={`px-1.5 py-1 border rounded text-[10px] font-medium ${ui.buttonIdle}`}
+                              className={`px-1.5 py-1 border rounded text-[10px] font-medium cursor-pointer ${ui.buttonIdle}`}
                             >
                               적용
                             </button>
@@ -1186,13 +1290,10 @@ export function ObservingSiteMapModal({
                                 if (editingSiteId === site.id) {
                                   setEditingSiteId(null);
                                 }
-                                if (activeInfoSiteId === site.id) {
-                                  setActiveInfoSiteId(null);
-                                }
                               }}
                               title="삭제"
                               aria-label={`${site.name} 삭제`}
-                              className={`p-1 border rounded ${ui.buttonIdle} hover:text-red-400`}
+                              className={`p-1 border rounded cursor-pointer ${ui.buttonIdle} hover:text-red-400`}
                             >
                               <Trash2 className="w-3 h-3" />
                             </button>
@@ -1205,11 +1306,13 @@ export function ObservingSiteMapModal({
               </div>
 
               {/* Local File Export / Import Footer */}
-              <div className={`pt-2.5 mt-2.5 border-t grid grid-cols-2 gap-1.5 shrink-0 ${ui.divider}`}>
+              <div
+                className={`pt-2.5 mt-2.5 border-t grid grid-cols-2 gap-1.5 shrink-0 ${ui.divider}`}
+              >
                 <button
                   type="button"
                   onClick={handleExportFile}
-                  className={`py-1.5 px-2 border rounded-md text-[10.5px] font-medium flex items-center justify-center gap-1 ${ui.buttonIdle}`}
+                  className={`py-1.5 px-2 border rounded-md text-[10.5px] font-medium flex items-center justify-center gap-1 cursor-pointer transition-colors ${ui.buttonSave}`}
                 >
                   <Download className="w-3.5 h-3.5 shrink-0" />
                   <span>파일 저장 (.json)</span>
@@ -1217,7 +1320,7 @@ export function ObservingSiteMapModal({
                 <button
                   type="button"
                   onClick={() => fileInputRef.current?.click()}
-                  className={`py-1.5 px-2 border rounded-md text-[10.5px] font-medium flex items-center justify-center gap-1 ${ui.buttonIdle}`}
+                  className={`py-1.5 px-2 border rounded-md text-[10.5px] font-medium flex items-center justify-center gap-1 cursor-pointer transition-colors ${ui.buttonLoad}`}
                 >
                   <Upload className="w-3.5 h-3.5 shrink-0" />
                   <span>파일 불러오기</span>

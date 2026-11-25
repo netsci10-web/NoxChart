@@ -52,6 +52,8 @@ export interface CloudActiveSite {
   lon: number;
   minAltitudeDeg: number;
   highlightAboveMinAlt: boolean;
+  bortleEnabled?: boolean;
+  bortleClass?: number;
 }
 
 export interface CloudUserProfile {
@@ -270,7 +272,12 @@ export async function saveUserCloudSubdoc(
 ): Promise<void> {
   const path = `users/${uid}/data/${key}`;
   try {
-    const clean = stripUndefinedDeep(value);
+    const clean =
+      key === 'challenges'
+        ? stripUndefinedDeep(
+            (value as ChallengeTrack[]).map((t) => ({ ...t, activeOnChart: false }))
+          )
+        : stripUndefinedDeep(value);
     const body =
       key === 'challenges'
         ? { tracks: clean, updatedAt: serverTimestamp() }

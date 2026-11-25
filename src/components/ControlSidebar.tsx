@@ -1,7 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import type { User } from 'firebase/auth';
 import {
   BookmarkPlus,
   ChevronDown,
+  Cloud,
+  CloudAlert,
+  CloudCheck,
+  CloudFog,
   Compass,
   Crosshair,
   Download,
@@ -10,14 +15,24 @@ import {
   Layers,
   LayoutGrid,
   Link2,
+  Loader2,
+  LogOut,
   Map as MapIcon,
   MapPin,
+  Minus,
+  Moon,
+  Plus,
+  RefreshCw,
   RotateCcw,
   Search,
+  Settings,
   SlidersHorizontal,
+  Sun,
   Target,
   Trash2,
+  Type,
   Upload,
+  X,
 } from 'lucide-react';
 import { CatalogSnapshot, searchHipparcosCatalog } from '../data/catalogLoader';
 import {
@@ -49,12 +64,27 @@ import {
   ThemeMode,
 } from '../types/astronomy';
 import {
+  computeAtmosphericExtinctionMag,
   equatorialToHorizontal,
   getDsoLimitingMagnitude,
   getLimitingMagnitude,
   getLSTDeg,
   RAD2DEG,
 } from '../utils/astronomy';
+import {
+  BORTLE_SCALE,
+  clampBortleClass,
+  estimateSiteBortleClass,
+  getBortleInfo,
+} from '../utils/bortle';
+import {
+  clampUiFontSizeStep,
+  getUiFontSizeMetrics,
+  UI_FONT_OPTIONS,
+  UI_FONT_SIZE_MAX_STEP,
+  UI_FONT_SIZE_MIN_STEP,
+  UiFontFamily,
+} from '../utils/uiTypography';
 import {
   formatCatalogCode,
   formatObjectDisplayName,
@@ -75,11 +105,19 @@ import {
   formatCoordsShort,
   parseObservingSitesFromJson,
 } from '../utils/observingSites';
-import { getSolarSystemBodies } from '../utils/solarSystem';
+import { CloudSyncStatus } from '../utils/cloudSync';
+import {
+  clearMpcBrightAsteroids,
+  getMpcAsteroidSyncMeta,
+  getSolarSystemBodies,
+  MpcAsteroidSyncMeta,
+  subscribeMpcAsteroids,
+  syncMpcBrightAsteroids,
+} from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
 import { EquipmentLockerPanel } from './EquipmentLockerPanel';
 
-type SidebarTab = 'explore' | 'layers' | 'optics' | 'observer';
+type SidebarTab = 'explore' | 'layers' | 'optics' | 'observer' | 'settings';
 type ExploreCategory = 'all' | 'messier' | 'caldwell' | 'ngcic' | 'solar' | 'constellation';
 
 type GlobalSearchItem =
@@ -167,6 +205,25 @@ interface ControlSidebarProps {
   ) => { addedCount: number; updatedCount: number };
   onImportLayerSettings: (bundle: LayerSettingsBundle) => void;
   onResetLayerSettings: () => void;
+  onChangeTheme: (theme: ThemeMode) => void;
+  redIntensity: number;
+  onChangeRedIntensity: (val: number) => void;
+  uiFontFamily: UiFontFamily;
+  onChangeUiFontFamily: (family: UiFontFamily) => void;
+  uiFontSizeStep: number;
+  onChangeUiFontSizeStep: (step: number) => void;
+  authUser: User | null;
+  authReady: boolean;
+  authBusy: boolean;
+  syncStatus: CloudSyncStatus;
+  lastSyncedAt: number | null;
+  syncError: string | null;
+  authError: string | null;
+  onLogin: () => void;
+  onLogout: () => void;
+  onManualSync: () => void;
+  onDismissAuthError: () => void;
+  requestedTab?: { tab: SidebarTab; seq: number } | null;
 }
 
 function formatCompactRaDec(raDeg: number, decDeg: number): string {
@@ -181,12 +238,21 @@ function formatCompactRaDec(raDeg: number, decDeg: number): string {
 
 const SITE_PRESETS = [
   { name: '서울 (Seoul)', lat: 37.5665, lon: 126.978 },
+  { name: '한우산 (팔각정)', lat: 35.3947, lon: 128.1928 },
+  { name: '황매산 (미리내 공원)', lat: 35.4835, lon: 127.9718 },
   { name: '보현산 천문대', lat: 36.1647, lon: 128.9767 },
   { name: '소백산 천문대', lat: 36.9342, lon: 128.4575 },
   { name: '화천 조경철천문대', lat: 38.1211, lon: 127.4342 },
   { name: '제주 별빛누리공원', lat: 33.4439, lon: 126.5486 },
   { name: '하와이 마우나케아', lat: 19.8207, lon: -155.4681 },
   { name: '칠레 아타카마', lat: -24.6272, lon: -70.4042 },
+];
+
+const EXTINCTION_PRESETS = [
+  { label: '고산', k: 0.15, desc: '고산·건조 맑은 하늘 (k=0.15)' },
+  { label: '표준', k: 0.25, desc: '표준 맑은 밤하늘 (k=0.25)' },
+  { label: '습윤', k: 0.4, desc: '평지·습도 높음 (k=0.40)' },
+  { label: '연무', k: 0.6, desc: '연무·박무·도심 (k=0.60)' },
 ];
 
 const AFOV_PRESETS = [50, 68, 82, 100];
@@ -248,8 +314,32 @@ export function ControlSidebar({
   onImportSites,
   onImportLayerSettings,
   onResetLayerSettings,
+  onChangeTheme,
+  redIntensity,
+  onChangeRedIntensity,
+  uiFontFamily,
+  onChangeUiFontFamily,
+  uiFontSizeStep,
+  onChangeUiFontSizeStep,
+  authUser,
+  authReady,
+  authBusy,
+  syncStatus,
+  lastSyncedAt,
+  syncError,
+  authError,
+  onLogin,
+  onLogout,
+  onManualSync,
+  onDismissAuthError,
+  requestedTab,
 }: ControlSidebarProps) {
   const [tab, setTab] = useState<SidebarTab>('explore');
+  useEffect(() => {
+    if (requestedTab) {
+      setTab(requestedTab.tab);
+    }
+  }, [requestedTab]);
   const [exploreCategory, setExploreCategory] = useState<ExploreCategory>('all');
   const [ngcIcFilter, setNgcIcFilter] = useState<'all' | 'ngc' | 'ic'>('all');
   const [solarGroupFilter, setSolarGroupFilter] = useState<
@@ -552,11 +642,52 @@ export function ControlSidebar({
     };
   }, [exploreCategory, ngcIcList, ngcIcFilter, query]);
 
-  const solarBodies = useMemo(() => getSolarSystemBodies(obsTimeMs), [obsTimeMs]);
+  const [mpcRev, setMpcRev] = useState(0);
+  const [mpcMeta, setMpcMeta] = useState<MpcAsteroidSyncMeta | null>(() => getMpcAsteroidSyncMeta());
+  const [mpcSyncing, setMpcSyncing] = useState(false);
+  const [mpcStatusMsg, setMpcStatusMsg] = useState<{ text: string; isError?: boolean } | null>(null);
+
+  useEffect(() => {
+    return subscribeMpcAsteroids(() => {
+      setMpcMeta(getMpcAsteroidSyncMeta());
+      setMpcRev((r) => r + 1);
+    });
+  }, []);
+
+  const handleSyncMpcAsteroids = async () => {
+    if (mpcSyncing) return;
+    setMpcSyncing(true);
+    setMpcStatusMsg(null);
+    try {
+      const meta = await syncMpcBrightAsteroids(true);
+      setMpcMeta(meta);
+      setMpcStatusMsg({
+        text: `갱신 완료: 기존 ${meta.updatedExistingCount}개 갱신 · 신규 ${meta.addedCount}개 추가`,
+      });
+    } catch (err) {
+      setMpcStatusMsg({
+        text: err instanceof Error ? err.message : 'MPC 소행성 목록 갱신에 실패했습니다.',
+        isError: true,
+      });
+    } finally {
+      setMpcSyncing(false);
+    }
+  };
+
+  const handleResetMpcAsteroids = () => {
+    clearMpcBrightAsteroids();
+    setMpcMeta(null);
+    setMpcStatusMsg({ text: '기본 내장 소행성 목록으로 복원했습니다.' });
+  };
+
+  const solarBodies = useMemo(() => {
+    void mpcRev;
+    return getSolarSystemBodies(obsTimeMs);
+  }, [obsTimeMs, mpcRev]);
 
   const filteredSolar = useMemo(() => {
     const q = query.trim().toLowerCase();
-    return solarBodies.filter((b) => {
+    const matched = solarBodies.filter((b) => {
       if (solarGroupFilter === 'planet' && b.group !== 'planet' && b.group !== 'star') {
         return false;
       }
@@ -570,6 +701,10 @@ export function ControlSidebar({
       if (!q) return true;
       return `${b.id} ${b.name} ${b.koName} ${b.category}`.toLowerCase().includes(q);
     });
+    if (solarGroupFilter === 'asteroid') {
+      return [...matched].sort((a, b) => a.mag - b.mag);
+    }
+    return matched;
   }, [solarBodies, query, solarGroupFilter]);
 
   const sortedConstellations = useMemo(
@@ -1029,11 +1164,11 @@ export function ControlSidebar({
       className={`no-print w-[270px] shrink-0 h-full border-r flex flex-col overflow-hidden ${ui.panel}`}
     >
       {/* Tab Navigation */}
-      <div className={`grid grid-cols-4 border-b p-1 gap-1 ${ui.divider}`}>
+      <div className={`grid grid-cols-5 border-b p-1 gap-1 ${ui.divider}`}>
         <button
           type="button"
           onClick={() => setTab('explore')}
-          className={`flex flex-col items-center justify-center py-1.5 px-0.5 text-[10.5px] tracking-[-0.04em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+          className={`flex flex-col items-center justify-center py-1.5 px-0.5 text-[10px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
             tab === 'explore' ? ui.buttonActive : ui.buttonIdle
           }`}
           style={{ borderRadius: '4px' }}
@@ -1044,18 +1179,18 @@ export function ControlSidebar({
         <button
           type="button"
           onClick={() => setTab('layers')}
-          className={`flex flex-col items-center justify-center py-1.5 px-0.5 text-[10.5px] tracking-[-0.04em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+          className={`flex flex-col items-center justify-center py-1.5 px-0.5 text-[10px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
             tab === 'layers' ? ui.buttonActive : ui.buttonIdle
           }`}
           style={{ borderRadius: '4px' }}
         >
           <Layers className="w-3.5 h-3.5 mb-0.5" />
-          <span>레이어</span>
+          <span>표시</span>
         </button>
         <button
           type="button"
           onClick={() => setTab('optics')}
-          className={`flex flex-col items-center justify-center py-1.5 px-0.5 text-[10.5px] tracking-[-0.04em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+          className={`flex flex-col items-center justify-center py-1.5 px-0.5 text-[10px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
             tab === 'optics' ? ui.buttonActive : ui.buttonIdle
           }`}
           style={{ borderRadius: '4px' }}
@@ -1066,13 +1201,36 @@ export function ControlSidebar({
         <button
           type="button"
           onClick={() => setTab('observer')}
-          className={`flex flex-col items-center justify-center py-1.5 px-0.5 text-[10.5px] tracking-[-0.04em] font-medium border transition-colors whitespace-nowrap shrink-0 ${
+          className={`flex flex-col items-center justify-center py-1.5 px-0.5 text-[10px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
             tab === 'observer' ? ui.buttonActive : ui.buttonIdle
           }`}
           style={{ borderRadius: '4px' }}
         >
           <MapPin className="w-3.5 h-3.5 mb-0.5" />
           <span>관측지</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => setTab('settings')}
+          className={`relative flex flex-col items-center justify-center py-1.5 px-0.5 text-[10px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+            tab === 'settings' ? ui.buttonActive : ui.buttonIdle
+          }`}
+          style={{ borderRadius: '4px' }}
+        >
+          <Settings className="w-3.5 h-3.5 mb-0.5" />
+          <span>설정</span>
+          {(authUser || authError || syncStatus === 'error') && (
+            <span
+              className={`absolute top-1 right-1 w-1.5 h-1.5 rounded-full ${
+                authError || syncStatus === 'error'
+                  ? 'bg-amber-400'
+                  : theme === 'red'
+                  ? 'bg-[#EF4444]'
+                  : 'bg-emerald-400'
+              }`}
+              aria-hidden="true"
+            />
+          )}
         </button>
       </div>
 
@@ -1957,12 +2115,90 @@ export function ControlSidebar({
                   />
                 </label>
               </div>
-              {isSectionOpen('layers_highlight') && (
-                <p className={`px-1 pb-0.5 text-[9.5px] tracking-[-0.04em] leading-snug break-keep ${ui.textMuted}`}>
-                  {sessionPlanCount > 0
-                    ? '관측 목록에 담긴 천체(별·행성·이중성·DSO)를 성도 위에 번호·이중 링·배지 라벨로 눈에 띄게 강조합니다.'
-                    : '활성화 후 관측 목록에 대상을 추가하거나 .skylist를 불러오면 성도 위에 번호·링으로 강조 표시됩니다.'}
-                </p>
+              {(isSectionOpen('layers_highlight') || layers.highlightSessionPlan) && (
+                <div className={`px-1 pt-1 pb-0.5 space-y-2 border-t ${ui.divider}`}>
+                  {/* 진하기 슬라이더 */}
+                  <div className="space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        강조 표시 진하기
+                      </span>
+                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                        {Math.round((layers.sessionPlanOpacity ?? 1) * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={1}
+                      step={0.05}
+                      value={layers.sessionPlanOpacity ?? 1}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          sessionPlanOpacity: Number(e.target.value),
+                        }))
+                      }
+                      aria-label="관측 목록 강조 모드 진하기"
+                      className={`w-full h-1.5 cursor-pointer ${
+                        theme === 'red' ? 'accent-red-600' : 'accent-amber-500'
+                      }`}
+                    />
+                  </div>
+
+                  {/* 표시색 */}
+                  <div className="flex items-center justify-between gap-1.5">
+                    <span className={`text-[10px] whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                      표시색
+                    </span>
+                    <div className="flex items-center gap-1">
+                      {['#F59E0B', '#38BDF8', '#34D399', '#A78BFA', '#FB7185', '#F97316'].map(
+                        (hex) => {
+                          const active =
+                            (layers.sessionPlanColor || '#F59E0B').toUpperCase() === hex;
+                          return (
+                            <button
+                              key={hex}
+                              type="button"
+                              onClick={() =>
+                                onChangeLayers((p) => ({ ...p, sessionPlanColor: hex }))
+                              }
+                              title={`표시색 ${hex}`}
+                              aria-label={`관측 목록 표시색 ${hex}`}
+                              className={`w-3.5 h-3.5 rounded-full border transition-transform cursor-pointer ${
+                                active
+                                  ? 'scale-115 ring-1 ring-offset-1 ring-white/80 border-white'
+                                  : 'border-white/25 hover:scale-110'
+                              }`}
+                              style={{ backgroundColor: hex }}
+                            />
+                          );
+                        }
+                      )}
+                      <input
+                        type="color"
+                        value={layers.sessionPlanColor || '#F59E0B'}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            sessionPlanColor: e.target.value.toUpperCase(),
+                          }))
+                        }
+                        title="사용자 지정 표시색"
+                        aria-label="관측 목록 사용자 지정 표시색"
+                        className="w-4 h-4 p-0 border-0 bg-transparent cursor-pointer rounded"
+                      />
+                    </div>
+                  </div>
+
+                  {isSectionOpen('layers_highlight') && (
+                    <p className={`text-[9.5px] tracking-[-0.04em] leading-snug break-keep ${ui.textMuted}`}>
+                      {sessionPlanCount > 0
+                        ? '오늘 밤 관측목록에 담긴 천체(별·행성·이중성·DSO)를 성도 위에 깔끔한 원으로 표시합니다.'
+                        : '활성화 후 관측 목록에 대상을 추가하거나 .skylist를 불러오면 성도 위에 원으로 표시됩니다.'}
+                    </p>
+                  )}
+                </div>
               )}
             </div>
 
@@ -2262,7 +2498,7 @@ export function ControlSidebar({
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-                  항성 이름 라벨
+                  항성 이름 표시
                 </span>
                 <input
                   type="checkbox"
@@ -2273,6 +2509,34 @@ export function ControlSidebar({
                   className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
                 />
               </label>
+
+              <div className="pl-2 pb-0.5 grid grid-cols-3 gap-1">
+                {(
+                  [
+                    { id: 'ko', label: '한글' },
+                    { id: 'en', label: '영어' },
+                    { id: 'ko_en', label: '한글(영어)' },
+                  ] as const
+                ).map((opt) => {
+                  const active = (layers.starLabelLanguage ?? 'ko') === opt.id;
+                  return (
+                    <button
+                      key={opt.id}
+                      type="button"
+                      onClick={() =>
+                        onChangeLayers((p) => ({ ...p, starLabelLanguage: opt.id }))
+                      }
+                      aria-pressed={active}
+                      className={`py-1 px-1 border text-[9.5px] font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                        active ? ui.buttonActive : ui.buttonIdle
+                      }`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      <span>{opt.label}</span>
+                    </button>
+                  );
+                })}
+              </div>
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -2289,29 +2553,57 @@ export function ControlSidebar({
               </label>
 
               {(layers.showStarLabels || layers.showProperStarNames) && (
-                <div className="pl-2 pb-0.5 space-y-0.5">
-                  <div className="flex items-center justify-between text-[10px]">
-                    <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
-                      화면 밝기 상위 표시
-                    </span>
-                    <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
-                      {layers.starLabelDensityPct}%
-                    </span>
+                <div className="pl-2 pb-0.5 space-y-1.5">
+                  <div className="space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        항성표시밀도
+                      </span>
+                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                        {layers.starLabelDensityPct}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={1}
+                      value={layers.starLabelDensityPct}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          starLabelDensityPct: Number(e.target.value),
+                        }))
+                      }
+                      aria-label="항성표시밀도"
+                      className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                    />
                   </div>
-                  <input
-                    type="range"
-                    min={0}
-                    max={100}
-                    step={1}
-                    value={layers.starLabelDensityPct}
-                    onChange={(e) =>
-                      onChangeLayers((p) => ({
-                        ...p,
-                        starLabelDensityPct: Number(e.target.value),
-                      }))
-                    }
-                    className="w-full h-1.5 accent-cyan-500 cursor-pointer"
-                  />
+                  <div className="space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        항성 이름 표시 진하기
+                      </span>
+                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                        {Math.round((layers.starLabelOpacity ?? 1) * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.05}
+                      max={1}
+                      step={0.05}
+                      value={layers.starLabelOpacity ?? 1}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          starLabelOpacity: Number(e.target.value),
+                        }))
+                      }
+                      aria-label="항성 이름 표시 진하기"
+                      className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                    />
+                  </div>
                 </div>
               )}
 
@@ -2477,6 +2769,32 @@ export function ControlSidebar({
                     />
                   </div>
 
+                  <div className="pl-2 space-y-0.5">
+                    <div className="flex items-center justify-between text-[10px]">
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        이중성 심볼 진하기
+                      </span>
+                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                        {Math.round((layers.doubleStarSymbolOpacity ?? 1) * 100)}%
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.05}
+                      max={1}
+                      step={0.05}
+                      value={layers.doubleStarSymbolOpacity ?? 1}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          doubleStarSymbolOpacity: Number(e.target.value),
+                        }))
+                      }
+                      aria-label="이중성 다중성 심볼 진하기"
+                      className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                    />
+                  </div>
+
                   <div className="space-y-1">
                     <div className="flex items-center justify-between text-[10px] pl-2">
                       <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
@@ -2518,7 +2836,7 @@ export function ControlSidebar({
 
                   <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                     <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-                      이중성 · 다중성 라벨
+                      이중성 · 다중성 이름 라벨
                     </span>
                     <input
                       type="checkbox"
@@ -2531,58 +2849,60 @@ export function ControlSidebar({
                   </label>
 
                   {layers.showDoubleStarLabels && (
-                    <div className="pl-2 pb-0.5 space-y-0.5">
-                      <div className="flex items-center justify-between text-[10px]">
-                        <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
-                          라벨 밀도 (화면 밝기 상위)
-                        </span>
-                        <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
-                          {layers.doubleStarLabelDensityPct}%
-                        </span>
+                    <div className="pl-2 pb-0.5 space-y-1.5">
+                      <div className="space-y-0.5">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                            이름 라벨 밀도 (화면 밝기 상위)
+                          </span>
+                          <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                            {layers.doubleStarLabelDensityPct}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0}
+                          max={100}
+                          step={1}
+                          value={layers.doubleStarLabelDensityPct}
+                          onChange={(e) =>
+                            onChangeLayers((p) => ({
+                              ...p,
+                              doubleStarLabelDensityPct: Number(e.target.value),
+                            }))
+                          }
+                          aria-label="이중성 다중성 이름 라벨 밀도"
+                          className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                        />
                       </div>
-                      <input
-                        type="range"
-                        min={0}
-                        max={100}
-                        step={1}
-                        value={layers.doubleStarLabelDensityPct}
-                        onChange={(e) =>
-                          onChangeLayers((p) => ({
-                            ...p,
-                            doubleStarLabelDensityPct: Number(e.target.value),
-                          }))
-                        }
-                        aria-label="이중성 다중성 라벨 밀도"
-                        className="w-full h-1.5 accent-cyan-500 cursor-pointer"
-                      />
+
+                      <div className="space-y-0.5">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                            이중성 이름 라벨 진하기
+                          </span>
+                          <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                            {Math.round((layers.doubleStarLabelOpacity ?? 1) * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0.05}
+                          max={1}
+                          step={0.05}
+                          value={layers.doubleStarLabelOpacity ?? 1}
+                          onChange={(e) =>
+                            onChangeLayers((p) => ({
+                              ...p,
+                              doubleStarLabelOpacity: Number(e.target.value),
+                            }))
+                          }
+                          aria-label="이중성 다중성 이름 라벨 진하기"
+                          className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                        />
+                      </div>
                     </div>
                   )}
-
-                  <div className="pl-2 pt-0.5 pb-0.5 space-y-0.5">
-                    <div className="flex items-center justify-between text-[10px]">
-                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
-                        표시 · 라벨 진하기
-                      </span>
-                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
-                        {Math.round((layers.doubleStarOpacity ?? 1) * 100)}%
-                      </span>
-                    </div>
-                    <input
-                      type="range"
-                      min={0.05}
-                      max={1}
-                      step={0.05}
-                      value={layers.doubleStarOpacity ?? 1}
-                      onChange={(e) =>
-                        onChangeLayers((p) => ({
-                          ...p,
-                          doubleStarOpacity: Number(e.target.value),
-                        }))
-                      }
-                      aria-label="이중성 다중성 표시 및 라벨 진하기"
-                      className="w-full h-1.5 accent-cyan-500 cursor-pointer"
-                    />
-                  </div>
                 </div>
               )}
 
@@ -2665,13 +2985,54 @@ export function ControlSidebar({
                   </div>
                 )}
 
+                {(() => {
+                  const anyDsoActive =
+                    layers.showDso ||
+                    layers.showMessierCatalog ||
+                    layers.showCaldwellCatalog;
+                  return (
+                    <div
+                      className={`pl-2 pt-0.5 pb-1 space-y-0.5 transition-opacity ${
+                        anyDsoActive ? '' : 'opacity-45 cursor-not-allowed'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                          DSO 심볼 진하기
+                        </span>
+                        <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                          {Math.round(layers.dsoSymbolOpacity * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.05}
+                        max={1}
+                        step={0.05}
+                        disabled={!anyDsoActive}
+                        value={layers.dsoSymbolOpacity}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            dsoSymbolOpacity: Number(e.target.value),
+                          }))
+                        }
+                        aria-label="심우주 천체 심볼 진하기"
+                        className={`w-full h-1.5 accent-cyan-500 ${
+                          anyDsoActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                        }`}
+                      />
+                    </div>
+                  );
+                })()}
+
                 <label
                   className={`flex items-center justify-between gap-1.5 py-0.5 ${
                     layers.showDso ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'
                   }`}
                 >
                   <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-                    DSO 카탈로그 라벨
+                    DSO 이름 라벨
                   </span>
                   <input
                     type="checkbox"
@@ -2706,29 +3067,29 @@ export function ControlSidebar({
                           dsoLabelDensityPct: Number(e.target.value),
                         }))
                       }
-                      aria-label="심우주 천체 라벨 화면 밝기 상위 표시 비율"
+                      aria-label="심우주 천체 이름 라벨 화면 밝기 상위 표시 비율"
                       className="w-full h-1.5 accent-cyan-500 cursor-pointer"
                     />
                   </div>
                 )}
 
                 {(() => {
-                  const anyDsoActive =
-                    layers.showDso ||
+                  const anyDsoLabelActive =
+                    (layers.showDso && layers.showDsoLabels) ||
                     layers.showMessierCatalog ||
                     layers.showCaldwellCatalog;
                   return (
                     <div
                       className={`pl-2 pt-0.5 pb-1 space-y-0.5 transition-opacity ${
-                        anyDsoActive ? '' : 'opacity-45 cursor-not-allowed'
+                        anyDsoLabelActive ? '' : 'opacity-45 cursor-not-allowed'
                       }`}
                     >
                       <div className="flex items-center justify-between text-[10px]">
                         <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
-                          심볼 · 라벨 진하기
+                          DSO 이름 라벨 진하기
                         </span>
                         <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
-                          {Math.round(layers.dsoOpacity * 100)}%
+                          {Math.round(layers.dsoLabelOpacity * 100)}%
                         </span>
                       </div>
                       <input
@@ -2736,17 +3097,17 @@ export function ControlSidebar({
                         min={0.05}
                         max={1}
                         step={0.05}
-                        disabled={!anyDsoActive}
-                        value={layers.dsoOpacity}
+                        disabled={!anyDsoLabelActive}
+                        value={layers.dsoLabelOpacity}
                         onChange={(e) =>
                           onChangeLayers((p) => ({
                             ...p,
-                            dsoOpacity: Number(e.target.value),
+                            dsoLabelOpacity: Number(e.target.value),
                           }))
                         }
-                        aria-label="심우주 천체 심볼 및 라벨 진하기"
+                        aria-label="심우주 천체 이름 라벨 진하기"
                         className={`w-full h-1.5 accent-cyan-500 ${
-                          anyDsoActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                          anyDsoLabelActive ? 'cursor-pointer' : 'cursor-not-allowed'
                         }`}
                       />
                     </div>
@@ -2991,36 +3352,66 @@ export function ControlSidebar({
                 const anyGridActive = layers.showGridEq || layers.showGridAltAz;
                 return (
                   <div
-                    className={`pl-2 pt-0.5 pb-1 space-y-0.5 transition-opacity ${
+                    className={`pl-2 pt-0.5 pb-1 space-y-1.5 transition-opacity ${
                       anyGridActive ? '' : 'opacity-45 cursor-not-allowed'
                     }`}
                   >
-                    <div className="flex items-center justify-between text-[10px]">
-                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
-                        그리드 선 굵기
-                      </span>
-                      <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
-                        {layers.gridLineWidth.toFixed(1)}px
-                      </span>
+                    <div className="space-y-0.5">
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                          그리드 선 굵기
+                        </span>
+                        <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                          {layers.gridLineWidth.toFixed(1)}px
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.2}
+                        max={2.5}
+                        step={0.1}
+                        disabled={!anyGridActive}
+                        value={layers.gridLineWidth}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            gridLineWidth: Number(e.target.value),
+                          }))
+                        }
+                        aria-label="좌표 그리드 선 굵기"
+                        className={`w-full h-1.5 accent-cyan-500 ${
+                          anyGridActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                        }`}
+                      />
                     </div>
-                    <input
-                      type="range"
-                      min={0.2}
-                      max={2.5}
-                      step={0.1}
-                      disabled={!anyGridActive}
-                      value={layers.gridLineWidth}
-                      onChange={(e) =>
-                        onChangeLayers((p) => ({
-                          ...p,
-                          gridLineWidth: Number(e.target.value),
-                        }))
-                      }
-                      aria-label="좌표 그리드 선 굵기"
-                      className={`w-full h-1.5 accent-cyan-500 ${
-                        anyGridActive ? 'cursor-pointer' : 'cursor-not-allowed'
-                      }`}
-                    />
+                    <div className="space-y-0.5">
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                          그리드 선 진하기
+                        </span>
+                        <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                          {Math.round((layers.gridLineOpacity ?? 0.35) * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.05}
+                        max={1}
+                        step={0.05}
+                        disabled={!anyGridActive}
+                        value={layers.gridLineOpacity ?? 0.35}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            gridLineOpacity: Number(e.target.value),
+                          }))
+                        }
+                        aria-label="좌표 그리드 선 진하기"
+                        className={`w-full h-1.5 accent-cyan-500 ${
+                          anyGridActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                        }`}
+                      />
+                    </div>
                   </div>
                 );
               })()}
@@ -3135,7 +3526,115 @@ export function ControlSidebar({
               )}
             </div>
 
-            {/* 6. 레이어 세팅 관리 (파일 저장 / 불러오기 / 자동 로컬 저장) */}
+            {/* 5.5. 대기 소광 효과 (Atmospheric Extinction) */}
+            <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
+              <div
+                className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
+                  isSectionOpen('layers_extinction')
+                )}`}
+              >
+                <button
+                  type="button"
+                  onClick={() => toggleSection('layers_extinction')}
+                  aria-expanded={isSectionOpen('layers_extinction')}
+                  className={`flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
+                >
+                  <ChevronDown
+                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                      isSectionOpen('layers_extinction')
+                    )} ${isSectionOpen('layers_extinction') ? '' : '-rotate-90'}`}
+                  />
+                  <CloudFog className="w-3.5 h-3.5 shrink-0" />
+                  <span>대기 소광 효과</span>
+                </button>
+                <input
+                  type="checkbox"
+                  checked={Boolean(layers.showAtmosphericExtinction)}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    onChangeLayers((p) => ({ ...p, showAtmosphericExtinction: checked }));
+                    if (checked) openSection('layers_extinction');
+                  }}
+                  aria-label="대기 소광 효과 활성화"
+                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
+                />
+              </div>
+
+              {isSectionOpen('layers_extinction') && (
+              <div className={`space-y-2 ${sectionBodyCls}`}>
+                <div className="space-y-1.5 pt-0.5">
+                  <div className="grid grid-cols-4 gap-1">
+                    {EXTINCTION_PRESETS.map((preset) => {
+                      const active = Math.abs((layers.extinctionCoeff ?? 0.25) - preset.k) < 0.01;
+                      return (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          title={preset.desc}
+                          onClick={() =>
+                            onChangeLayers((p) => ({
+                              ...p,
+                              showAtmosphericExtinction: true,
+                              extinctionCoeff: preset.k,
+                            }))
+                          }
+                          className={`py-1 px-0.5 border text-[9.5px] tracking-[-0.05em] font-medium whitespace-nowrap cursor-pointer ${
+                            active && layers.showAtmosphericExtinction
+                              ? ui.buttonActive
+                              : ui.buttonIdle
+                          }`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          {preset.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+
+                  <div>
+                    <div className="flex justify-between mb-1 text-[10px]">
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        소광 계수 (k)
+                      </span>
+                      <span className="font-mono tabular-nums whitespace-nowrap font-semibold">
+                        {(layers.extinctionCoeff ?? 0.25).toFixed(2)} mag/airmass
+                      </span>
+                    </div>
+                    <input
+                      type="range"
+                      min={0.1}
+                      max={0.8}
+                      step={0.05}
+                      value={layers.extinctionCoeff ?? 0.25}
+                      onChange={(e) =>
+                        onChangeLayers((p) => ({
+                          ...p,
+                          showAtmosphericExtinction: true,
+                          extinctionCoeff: Number(e.target.value),
+                        }))
+                      }
+                      aria-label="대기 소광 계수"
+                      className="w-full accent-cyan-500 cursor-pointer"
+                    />
+                  </div>
+
+                  <div
+                    className={`px-2 py-1 rounded border text-[9.5px] font-mono tabular-nums flex items-center justify-between gap-1 ${ui.panelMuted}`}
+                  >
+                    <span className={ui.textMuted}>감광</span>
+                    <span className={ui.textPrimary}>
+                      30° +{computeAtmosphericExtinctionMag(30, layers.extinctionCoeff ?? 0.25).toFixed(2)}m · 10° +{computeAtmosphericExtinctionMag(10, layers.extinctionCoeff ?? 0.25).toFixed(2)}m · 5° +{computeAtmosphericExtinctionMag(5, layers.extinctionCoeff ?? 0.25).toFixed(2)}m
+                    </span>
+                  </div>
+                </div>
+                <p className={`text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
+                  지평선 근처의 두꺼운 대기를 지나는 천체의 밝기 감소(감광)와 적색화 현상을 고도에 따라 실시간 반영합니다.
+                </p>
+              </div>
+              )}
+            </div>
+
+            {/* 6. 표시 설정 관리 (파일 저장 / 불러오기 / 자동 로컬 저장) */}
             <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
               <div
                 className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
@@ -3154,15 +3653,15 @@ export function ControlSidebar({
                     )} ${isSectionOpen('layers_manage') ? '' : '-rotate-90'}`}
                   />
                   <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
-                  <span>레이어 세팅 관리</span>
+                  <span>표시 설정 관리</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => {
                     onResetLayerSettings();
-                    showLayerNotice('레이어 세팅을 기본값으로 복원했습니다.');
+                    showLayerNotice('표시 설정을 기본값으로 복원했습니다.');
                   }}
-                  title="레이어 세팅 기본값 복원"
+                  title="표시 설정 기본값 복원"
                   className={`px-1.5 py-0.5 border text-[10px] tracking-[-0.04em] flex items-center gap-0.5 transition-colors whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
                   style={{ borderRadius: '4px' }}
                 >
@@ -3179,9 +3678,9 @@ export function ControlSidebar({
                   type="button"
                   onClick={() => {
                     downloadLayerSettingsFile(layers, hips);
-                    showLayerNotice('전체 레이어 세팅을 .json 파일로 저장했습니다.');
+                    showLayerNotice('전체 표시 설정을 .json 파일로 저장했습니다.');
                   }}
-                  className={`py-1.5 px-1.5 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors whitespace-nowrap ${ui.buttonIdle}`}
+                  className={`py-1.5 px-1.5 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors whitespace-nowrap cursor-pointer ${ui.buttonSave}`}
                   style={{ borderRadius: '4px' }}
                 >
                   <Download className="w-3 h-3 shrink-0" />
@@ -3190,35 +3689,12 @@ export function ControlSidebar({
                 <button
                   type="button"
                   onClick={() => layerFileInputRef.current?.click()}
-                  className={`py-1.5 px-1.5 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors whitespace-nowrap ${ui.buttonIdle}`}
+                  className={`py-1.5 px-1.5 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors whitespace-nowrap cursor-pointer ${ui.buttonLoad}`}
                   style={{ borderRadius: '4px' }}
                 >
                   <Upload className="w-3 h-3 shrink-0" />
                   <span>파일 불러오기</span>
                 </button>
-                <input
-                  ref={layerFileInputRef}
-                  type="file"
-                  accept=".json,application/json"
-                  onChange={async (e) => {
-                    const file = e.target.files?.[0];
-                    e.target.value = '';
-                    if (!file) return;
-                    try {
-                      const text = await file.text();
-                      const parsed = parseLayerSettingsFromJson(text, layers, hips);
-                      if (parsed.error || !parsed.bundle) {
-                        showLayerNotice(parsed.error || '레이어 세팅을 불러오지 못했습니다.');
-                        return;
-                      }
-                      onImportLayerSettings(parsed.bundle);
-                      showLayerNotice('레이어 세팅 파일을 불러와 적용했습니다.');
-                    } catch {
-                      showLayerNotice('파일을 읽는 중 오류가 발생했습니다.');
-                    }
-                  }}
-                  className="hidden"
-                />
               </div>
 
               {layerStatusMsg && (
@@ -3240,41 +3716,63 @@ export function ControlSidebar({
           <>
             {/* Multi-select FOV Rings (시야 링 - 중복 표시 가능) */}
             <div className="space-y-1.5">
-              <div
-                className={`flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
-                  isSectionOpen('optics_rings')
-                )}`}
-              >
-                <button
-                  type="button"
-                  onClick={() => toggleSection('optics_rings')}
-                  aria-expanded={isSectionOpen('optics_rings')}
-                  className={`flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
-                >
-                  <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+              {(() => {
+                const activeRingCount =
+                  Number(optics.showCrosshair) +
+                  Number(optics.showTelrad) +
+                  Number(optics.showFinder7x50) +
+                  Number(optics.showEyepiece) +
+                  Number(optics.showSensorBox);
+                return (
+                  <div
+                    className={`flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
                       isSectionOpen('optics_rings')
-                    )} ${isSectionOpen('optics_rings') ? '' : '-rotate-90'}`}
-                  />
-                  <span>시야 링 (중복 표시 가능)</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onChangeOptics((p) => ({
-                      ...p,
-                      showCrosshair: false,
-                      showTelrad: false,
-                      showFinder7x50: false,
-                      showEyepiece: false,
-                      showSensorBox: false,
-                    }))
-                  }
-                  className={`text-[10px] tracking-[-0.05em] whitespace-nowrap transition-opacity hover:opacity-100 opacity-80 shrink-0 ${ui.textMuted}`}
-                >
-                  모두 해제
-                </button>
-              </div>
+                    )}`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('optics_rings')}
+                      aria-expanded={isSectionOpen('optics_rings')}
+                      className={`flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
+                    >
+                      <ChevronDown
+                        className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                          isSectionOpen('optics_rings')
+                        )} ${isSectionOpen('optics_rings') ? '' : '-rotate-90'}`}
+                      />
+                      <span>시야 링 (중복 표시 가능)</span>
+                    </button>
+                    {activeRingCount > 0 ? (
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className={`font-mono text-[9.5px] tabular-nums ${ui.accentText}`}>
+                          {activeRingCount}개
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onChangeOptics((p) => ({
+                              ...p,
+                              showCrosshair: false,
+                              showTelrad: false,
+                              showFinder7x50: false,
+                              showEyepiece: false,
+                              showSensorBox: false,
+                            }))
+                          }
+                          title="활성화된 시야 링을 모두 끄기"
+                          className={`px-1.5 py-0.5 border rounded text-[9.5px] leading-none font-medium tracking-[-0.04em] whitespace-nowrap cursor-pointer transition-colors ${ui.buttonIdle}`}
+                        >
+                          전체 끄기
+                        </button>
+                      </div>
+                    ) : (
+                      <span className={`text-[9.5px] whitespace-nowrap shrink-0 ${ui.textMuted}`}>
+                        꺼짐
+                      </span>
+                    )}
+                  </div>
+                );
+              })()}
 
               {isSectionOpen('optics_rings') && (
               <div className={`space-y-2 ${sectionBodyCls}`}>
@@ -5392,7 +5890,7 @@ export function ControlSidebar({
                     downloadObservingSitesFile(savedSites);
                     showSiteNotice(`${savedSites.length}개 관측지를 .json 파일로 저장했습니다.`);
                   }}
-                  className={`py-1.5 px-1.5 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors ${ui.buttonIdle}`}
+                  className={`py-1.5 px-1.5 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${ui.buttonSave}`}
                   style={{ borderRadius: '4px' }}
                 >
                   <Download className="w-3 h-3 shrink-0" />
@@ -5401,7 +5899,7 @@ export function ControlSidebar({
                 <button
                   type="button"
                   onClick={() => siteFileInputRef.current?.click()}
-                  className={`py-1.5 px-1.5 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors ${ui.buttonIdle}`}
+                  className={`py-1.5 px-1.5 border text-[10px] tracking-[-0.04em] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${ui.buttonLoad}`}
                   style={{ borderRadius: '4px' }}
                 >
                   <Upload className="w-3 h-3 shrink-0" />
@@ -5513,55 +6011,192 @@ export function ControlSidebar({
 
             {/* Built-in Observatory Presets */}
             <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
-              <button
-                type="button"
-                onClick={() => toggleSection('observer_presets')}
-                aria-expanded={isSectionOpen('observer_presets')}
-                className={`w-full flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border text-left font-semibold text-[10.5px] tracking-[-0.05em] transition-colors cursor-pointer ${ui.textPrimary} ${sectionHeaderCls(
-                  isSectionOpen('observer_presets')
-                )}`}
-              >
-                <span className="flex items-center gap-1">
-                  <ChevronDown
-                    className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
-                      isSectionOpen('observer_presets')
-                    )} ${isSectionOpen('observer_presets') ? '' : '-rotate-90'}`}
-                  />
-                  <span>기본 추천 관측지</span>
-                </span>
+              <div className="flex items-center justify-between gap-1">
+                <label
+                  htmlFor="preset-site-select"
+                  className={`font-semibold text-[10.5px] tracking-[-0.05em] ${ui.textPrimary}`}
+                >
+                  기본 추천 관측지
+                </label>
                 <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
                   {SITE_PRESETS.length}곳
                 </span>
-              </button>
-              {isSectionOpen('observer_presets') && (
-              <div className={`grid grid-cols-1 gap-1 ${sectionBodyCls}`}>
-                {SITE_PRESETS.map((site) => (
-                  <button
-                    key={site.name}
-                    type="button"
-                    onClick={() =>
-                      onChangeObserver((p) => ({
-                        ...p,
-                        name: site.name,
-                        lat: site.lat,
-                        lon: site.lon,
-                      }))
-                    }
-                    title={site.name}
-                    className={`w-full text-left px-2 py-1.5 border flex items-center justify-between gap-1 text-[10px] tracking-[-0.05em] ${
-                      observer.name === site.name ? ui.buttonActive : ui.buttonIdle
-                    }`}
-                    style={{ borderRadius: '4px' }}
-                  >
-                    <span className="whitespace-nowrap truncate">{site.name}</span>
-                    <span className="font-mono text-[9.5px] tracking-[-0.05em] tabular-nums opacity-80 whitespace-nowrap shrink-0">
-                      {site.lat.toFixed(2)}°, {site.lon.toFixed(2)}°
-                    </span>
-                  </button>
-                ))}
               </div>
-              )}
+              <select
+                id="preset-site-select"
+                value={
+                  SITE_PRESETS.some((s) => s.name === observer.name) ? observer.name : ''
+                }
+                onChange={(e) => {
+                  const chosen = SITE_PRESETS.find((s) => s.name === e.target.value);
+                  if (!chosen) return;
+                  onChangeObserver((p) => ({
+                    ...p,
+                    name: chosen.name,
+                    lat: chosen.lat,
+                    lon: chosen.lon,
+                  }));
+                }}
+                aria-label="기본 추천 관측지 선택"
+                className={`w-full px-2 py-1.5 border text-[10.5px] cursor-pointer ${ui.input}`}
+                style={{ borderRadius: '5px' }}
+              >
+                <option value="">추천 관측지 선택...</option>
+                {SITE_PRESETS.map((site) => (
+                  <option key={site.name} value={site.name}>
+                    {site.name} ({site.lat.toFixed(2)}°, {site.lon.toFixed(2)}°)
+                  </option>
+                ))}
+              </select>
             </div>
+
+            {/* Observing Site Bortle Scale Light Pollution Effect */}
+            {(() => {
+              const siteEstBortle = estimateSiteBortleClass(
+                observer.lat,
+                observer.lon,
+                observer.name
+              ).bortle;
+              const currentBortle = clampBortleClass(observer.bortleClass ?? siteEstBortle);
+              const info = getBortleInfo(currentBortle);
+              const estInfo = getBortleInfo(siteEstBortle);
+              const isManualOverride = currentBortle !== siteEstBortle;
+              return (
+                <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
+                  <div
+                    className={`w-full flex items-center justify-between gap-1 px-2 py-1.5 rounded-md border transition-colors ${sectionHeaderCls(
+                      isSectionOpen('observer_bortle')
+                    )}`}
+                  >
+                    <button
+                      type="button"
+                      onClick={() => toggleSection('observer_bortle')}
+                      aria-expanded={isSectionOpen('observer_bortle')}
+                      className={`flex-1 min-w-0 flex items-center gap-1 font-semibold whitespace-nowrap tracking-[-0.05em] text-left cursor-pointer ${ui.textPrimary}`}
+                    >
+                      <ChevronDown
+                        className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls(
+                          isSectionOpen('observer_bortle')
+                        )} ${isSectionOpen('observer_bortle') ? '' : '-rotate-90'}`}
+                      />
+                      <span
+                        className="w-2.5 h-2.5 rounded-full shrink-0 border border-white/35"
+                        style={{ backgroundColor: info.swatch }}
+                        aria-hidden="true"
+                      />
+                      <span>관측지 보틀 등급 효과</span>
+                    </button>
+                    <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
+                      B{currentBortle}
+                    </span>
+                    <input
+                      type="checkbox"
+                      checked={Boolean(observer.bortleEnabled)}
+                      onChange={(e) => {
+                        const checked = e.target.checked;
+                        onChangeObserver((p) => ({ ...p, bortleEnabled: checked }));
+                        if (checked) openSection('observer_bortle');
+                      }}
+                      aria-label="관측지 보틀 등급 효과 활성화"
+                      className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
+                    />
+                  </div>
+
+                  {isSectionOpen('observer_bortle') && (
+                    <div className={`space-y-2 ${sectionBodyCls}`}>
+                      <div className="flex items-center justify-between gap-1 text-[10px]">
+                        <span className={`truncate tracking-[-0.04em] ${ui.textMuted}`}>
+                          관측지 기준:{' '}
+                          <strong className={ui.textSecondary}>
+                            Bortle {siteEstBortle} ({estInfo.shortLabel})
+                          </strong>
+                        </span>
+                        {isManualOverride && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              onChangeObserver((p) => ({
+                                ...p,
+                                bortleClass: siteEstBortle,
+                              }))
+                            }
+                            className={`px-1.5 py-0.5 border text-[9.5px] whitespace-nowrap shrink-0 cursor-pointer ${ui.buttonIdle}`}
+                            style={{ borderRadius: '4px' }}
+                          >
+                            관측지 기준
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={`whitespace-nowrap tracking-[-0.04em] ${ui.textSecondary}`}>
+                            <span
+                              className="inline-block w-2 h-2 rounded-full mr-1 align-middle border border-white/30"
+                              style={{ backgroundColor: info.swatch }}
+                            />
+                            Bortle {currentBortle} · {info.label}
+                          </span>
+                          <span className={`font-mono tabular-nums ${ui.textMuted}`}>
+                            NELM {info.nelm.toFixed(1)}m
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={1}
+                          max={9}
+                          step={1}
+                          value={currentBortle}
+                          onChange={(e) =>
+                            onChangeObserver((p) => ({
+                              ...p,
+                              bortleClass: clampBortleClass(Number(e.target.value)),
+                            }))
+                          }
+                          aria-label="관측지 보틀 등급 조절 (1~9)"
+                          className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                        />
+                        <div className="grid grid-cols-9 gap-0.5">
+                          {BORTLE_SCALE.map((b) => {
+                            const active = currentBortle === b.bortle;
+                            return (
+                              <button
+                                key={b.bortle}
+                                type="button"
+                                title={`Bortle ${b.bortle}: ${b.label} (SQM ${b.sqm})`}
+                                onClick={() =>
+                                  onChangeObserver((p) => ({
+                                    ...p,
+                                    bortleClass: b.bortle,
+                                  }))
+                                }
+                                className={`py-1 px-0 border text-[9.5px] font-mono tabular-nums text-center cursor-pointer ${
+                                  active ? ui.buttonActive : ui.buttonIdle
+                                }`}
+                                style={{ borderRadius: '3px' }}
+                              >
+                                {b.bortle}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+
+                      <div
+                        className={`px-2 py-1.5 border text-[9.5px] space-y-0.5 ${ui.border} ${ui.textMuted}`}
+                        style={{ borderRadius: '4px' }}
+                      >
+                        <div className="flex items-center justify-between font-mono tabular-nums">
+                          <span>SQM {info.sqm}</span>
+                          <span>은하수 {Math.round(info.milkyWayAlpha * 100)}%</span>
+                        </div>
+                        <div className="tracking-[-0.04em]">{info.milkyWayDesc}</div>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              );
+            })()}
 
             {/* Minimum Altitude Filter */}
             <div className={`pt-2 border-t ${ui.divider} space-y-1.5`}>
@@ -5588,32 +6223,51 @@ export function ControlSidebar({
               </button>
               {isSectionOpen('observer_alt') && (
               <div className={`space-y-2 ${sectionBodyCls}`}>
-              <div className="grid grid-cols-5 gap-0.5">
-                {[
-                  { val: -90, lbl: '전체' },
-                  { val: 0, lbl: '≥0°' },
-                  { val: 15, lbl: '≥15°' },
-                  { val: 30, lbl: '≥30°' },
-                  { val: 45, lbl: '≥45°' },
-                ].map((opt) => (
-                  <button
-                    key={opt.val}
-                    type="button"
-                    onClick={() => {
-                      onChangeObserver((p) => ({ ...p, minAltitudeDeg: opt.val }));
-                      onChangeLayers((p) => ({
-                        ...p,
-                        showTerrain: false,
-                      }));
-                    }}
-                    className={`py-1.5 px-0.5 border text-[10px] tracking-[-0.06em] font-mono tabular-nums whitespace-nowrap shrink-0 ${
-                      observer.minAltitudeDeg === opt.val ? ui.buttonActive : ui.buttonIdle
-                    }`}
-                    style={{ borderRadius: '4px' }}
-                  >
-                    {opt.lbl}
-                  </button>
-                ))}
+              <div className="space-y-1">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onChangeObserver((p) => ({ ...p, minAltitudeDeg: -90 }));
+                    onChangeLayers((p) => ({
+                      ...p,
+                      showTerrain: false,
+                    }));
+                  }}
+                  className={`w-full py-1 px-1.5 border text-[10px] tracking-[-0.05em] font-medium whitespace-nowrap cursor-pointer ${
+                    observer.minAltitudeDeg === -90 ? ui.buttonActive : ui.buttonIdle
+                  }`}
+                  style={{ borderRadius: '4px' }}
+                >
+                  <span>전체 (필터 해제)</span>
+                </button>
+                <div className="grid grid-cols-6 gap-0.5">
+                  {[
+                    { val: 0, lbl: '≥0°' },
+                    { val: 10, lbl: '≥10°' },
+                    { val: 15, lbl: '≥15°' },
+                    { val: 20, lbl: '≥20°' },
+                    { val: 25, lbl: '≥25°' },
+                    { val: 30, lbl: '≥30°' },
+                  ].map((opt) => (
+                    <button
+                      key={opt.val}
+                      type="button"
+                      onClick={() => {
+                        onChangeObserver((p) => ({ ...p, minAltitudeDeg: opt.val }));
+                        onChangeLayers((p) => ({
+                          ...p,
+                          showTerrain: false,
+                        }));
+                      }}
+                      className={`py-1.5 px-0.5 border text-[9.5px] tracking-[-0.06em] font-mono tabular-nums whitespace-nowrap shrink-0 cursor-pointer ${
+                        observer.minAltitudeDeg === opt.val ? ui.buttonActive : ui.buttonIdle
+                      }`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      {opt.lbl}
+                    </button>
+                  ))}
+                </div>
               </div>
               <label
                 className={`flex items-center justify-between gap-1.5 py-0.5 ${
@@ -5673,8 +6327,552 @@ export function ControlSidebar({
             </div>
           </>
         )}
+
+        {tab === 'settings' && (() => {
+          const activeAuthNotice = authError || (syncStatus === 'error' ? syncError : null);
+          const displayName =
+            authUser?.displayName || authUser?.email?.split('@')[0] || '사용자';
+          const initialChar = displayName.trim().charAt(0).toUpperCase() || 'U';
+          const lastSyncLabel = lastSyncedAt
+            ? (() => {
+                const d = new Date(lastSyncedAt);
+                return `${String(d.getHours()).padStart(2, '0')}:${String(
+                  d.getMinutes()
+                ).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`;
+              })()
+            : '';
+          const syncText =
+            syncStatus === 'loading'
+              ? '불러오는 중...'
+              : syncStatus === 'checking'
+              ? '동기화 확인 중...'
+              : syncStatus === 'saving' || syncStatus === 'pending'
+              ? '클라우드 저장 중...'
+              : syncStatus === 'updated'
+              ? `최신 데이터 반영됨${lastSyncLabel ? ` (${lastSyncLabel})` : ''}`
+              : syncStatus === 'saved'
+              ? `클라우드 저장됨${lastSyncLabel ? ` (${lastSyncLabel})` : ''}`
+              : syncStatus === 'error'
+              ? '동기화 오류'
+              : '실시간 동기화 준비됨';
+
+          return (
+            <div className="space-y-3">
+              {/* Account & Cloud Sync Section */}
+              <div className={`border rounded-md p-2.5 space-y-2.5 ${cardIdleCls}`}>
+                <div className="flex items-center justify-between gap-1.5">
+                  <span className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}>
+                    <Cloud className="w-3.5 h-3.5 shrink-0" />
+                    <span>계정 · 클라우드 동기화</span>
+                  </span>
+                </div>
+
+                {!authReady ? (
+                  <div className={`flex items-center gap-2 py-2 text-[10.5px] ${ui.textMuted}`}>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    <span>로그인 상태 확인 중...</span>
+                  </div>
+                ) : !authUser ? (
+                  <div className="space-y-2">
+                    <p className={`text-[10px] leading-relaxed break-keep ${ui.textMuted}`}>
+                      Google 계정으로 로그인하면 관측지, 장비, 관측목록, 챌린지, 성군 작도, 관측기록 및 설정이 여러 기기에 실시간 동기화됩니다.
+                    </p>
+                    <button
+                      type="button"
+                      onClick={onLogin}
+                      disabled={authBusy}
+                      className={`w-full py-2 px-3 rounded-md border flex items-center justify-center gap-2 text-[11.5px] font-semibold transition-colors cursor-pointer disabled:opacity-60 ${
+                        theme === 'white'
+                          ? 'bg-white border-slate-300 text-slate-800 hover:bg-slate-50 shadow-xs'
+                          : theme === 'red'
+                          ? 'bg-[#260404] border-[#7F1D1D] text-[#FF6B6B] hover:bg-[#380707]'
+                          : 'bg-[#122038] border-cyan-500/50 text-slate-100 hover:bg-[#1A2D4F]'
+                      }`}
+                    >
+                      {authBusy ? (
+                        <Loader2 className="w-4 h-4 animate-spin shrink-0" />
+                      ) : (
+                        <svg viewBox="0 0 18 18" className="w-4 h-4 shrink-0" aria-hidden="true">
+                          {theme === 'red' ? (
+                            <path
+                              fill="#FF5A5A"
+                              d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615zM9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18zM3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332zM9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"
+                            />
+                          ) : (
+                            <>
+                              <path
+                                fill="#4285F4"
+                                d="M17.64 9.2c0-.637-.057-1.251-.164-1.84H9v3.481h4.844c-.209 1.125-.843 2.078-1.796 2.717v2.258h2.908c1.702-1.567 2.684-3.874 2.684-6.615z"
+                              />
+                              <path
+                                fill="#34A853"
+                                d="M9 18c2.43 0 4.467-.806 5.956-2.18l-2.908-2.259c-.806.54-1.837.86-3.048.86-2.344 0-4.328-1.584-5.036-3.711H.957v2.332A8.997 8.997 0 0 0 9 18z"
+                              />
+                              <path
+                                fill="#FBBC05"
+                                d="M3.964 10.71A5.41 5.41 0 0 1 3.682 9c0-.593.102-1.17.282-1.71V4.958H.957A8.996 8.996 0 0 0 0 9c0 1.452.348 2.827.957 4.042l3.007-2.332z"
+                              />
+                              <path
+                                fill="#EA4335"
+                                d="M9 3.58c1.321 0 2.508.454 3.44 1.345l2.582-2.58C13.463.891 11.426 0 9 0A8.997 8.997 0 0 0 .957 4.958L3.964 7.29C4.672 5.163 6.656 3.58 9 3.58z"
+                              />
+                            </>
+                          )}
+                        </svg>
+                      )}
+                      <span>Google 로그인</span>
+                    </button>
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-2">
+                      {authUser.photoURL ? (
+                        <img
+                          src={authUser.photoURL}
+                          alt={displayName}
+                          referrerPolicy="no-referrer"
+                          className={`w-8 h-8 rounded-full object-cover shrink-0 border ${
+                            theme === 'red'
+                              ? 'border-[#7F1D1D] opacity-80 sepia hue-rotate-[-50deg]'
+                              : theme === 'white'
+                              ? 'border-slate-300'
+                              : 'border-cyan-400/50'
+                          }`}
+                        />
+                      ) : (
+                        <span
+                          className={`w-8 h-8 rounded-full flex items-center justify-center text-xs font-bold shrink-0 ${
+                            theme === 'white'
+                              ? 'bg-blue-600 text-white'
+                              : theme === 'red'
+                              ? 'bg-[#7F1D1D] text-[#FCA5A5]'
+                              : 'bg-cyan-500/25 text-cyan-200 border border-cyan-400/40'
+                          }`}
+                        >
+                          {initialChar}
+                        </span>
+                      )}
+                      <div className="min-w-0 flex-1">
+                        <div className={`text-[11.5px] font-semibold truncate ${ui.textPrimary}`}>
+                          {displayName}
+                        </div>
+                        {authUser.email && (
+                          <div className={`text-[10px] truncate ${ui.textMuted}`}>
+                            {authUser.email}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    <div
+                      className={`px-2 py-1.5 rounded border flex items-center gap-1.5 text-[10px] ${
+                        syncStatus === 'error'
+                          ? theme === 'white'
+                            ? 'bg-rose-50 border-rose-200 text-rose-700'
+                            : theme === 'red'
+                            ? 'bg-[#2A0505] border-[#7F1D1D] text-[#FF6B6B]'
+                            : 'bg-amber-500/10 border-amber-500/40 text-amber-300'
+                          : theme === 'white'
+                          ? 'bg-emerald-50/70 border-emerald-200 text-emerald-700'
+                          : theme === 'red'
+                          ? 'bg-[#1A0303] border-[#5A1212] text-[#EF4444]'
+                          : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-300'
+                      }`}
+                    >
+                      {syncStatus === 'loading' ||
+                      syncStatus === 'checking' ||
+                      syncStatus === 'saving' ||
+                      syncStatus === 'pending' ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                      ) : syncStatus === 'error' ? (
+                        <CloudAlert className="w-3.5 h-3.5 shrink-0" />
+                      ) : (
+                        <CloudCheck className="w-3.5 h-3.5 shrink-0" />
+                      )}
+                      <span className="truncate font-medium">{syncText}</span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-1.5">
+                      <button
+                        type="button"
+                        onClick={onManualSync}
+                        disabled={authBusy}
+                        className={`py-1.5 px-2 border rounded text-[10.5px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer disabled:opacity-50 ${ui.buttonIdle}`}
+                      >
+                        <Cloud className="w-3.5 h-3.5 shrink-0" />
+                        <span>지금 동기화</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={onLogout}
+                        disabled={authBusy}
+                        className={`py-1.5 px-2 border rounded text-[10.5px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer disabled:opacity-50 ${ui.buttonIdle}`}
+                      >
+                        <LogOut className="w-3.5 h-3.5 shrink-0" />
+                        <span>로그아웃</span>
+                      </button>
+                    </div>
+                  </div>
+                )}
+
+                {activeAuthNotice && (
+                  <div
+                    className={`p-2 rounded border text-[10px] leading-snug flex items-start gap-1.5 ${
+                      theme === 'white'
+                        ? 'bg-rose-50 border-rose-300 text-rose-800'
+                        : theme === 'red'
+                        ? 'bg-[#2A0505] border-[#991B1B] text-[#FCA5A5]'
+                        : 'bg-amber-500/10 border-amber-500/50 text-amber-200'
+                    }`}
+                  >
+                    <CloudAlert className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span className="flex-1 break-keep">{activeAuthNotice}</span>
+                    <button
+                      type="button"
+                      onClick={onDismissAuthError}
+                      aria-label="오류 닫기"
+                      className="shrink-0 opacity-75 hover:opacity-100 cursor-pointer"
+                    >
+                      <X className="w-3 h-3" />
+                    </button>
+                  </div>
+                )}
+              </div>
+
+              {/* Theme Mode Quick Switcher */}
+              <div className={`border rounded-md p-2.5 space-y-2 ${cardIdleCls}`}>
+                <div className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}>
+                  <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+                  <span>화면 테마</span>
+                </div>
+                <div className="grid grid-cols-3 gap-1">
+                  <button
+                    type="button"
+                    onClick={() => onChangeTheme('dark')}
+                    className={`py-1.5 px-1 border rounded text-[10.5px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                      theme === 'dark' ? ui.buttonActive : ui.buttonIdle
+                    }`}
+                  >
+                    <Moon className="w-3 h-3 shrink-0" />
+                    <span>다크</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onChangeTheme('white')}
+                    className={`py-1.5 px-1 border rounded text-[10.5px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                      theme === 'white' ? ui.buttonActive : ui.buttonIdle
+                    }`}
+                  >
+                    <Sun className="w-3 h-3 shrink-0" />
+                    <span>화이트</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onChangeTheme('red')}
+                    className={`py-1.5 px-1 border rounded text-[10.5px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
+                      theme === 'red' ? ui.buttonActive : ui.buttonIdle
+                    }`}
+                  >
+                    <span className="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0" />
+                    <span>적색</span>
+                  </button>
+                </div>
+
+                {theme === 'red' && (
+                  <div className={`pt-2 border-t space-y-1.5 ${ui.divider}`}>
+                    <div className="flex items-center justify-between gap-1 text-[10px]">
+                      <span className={`font-medium ${ui.textSecondary}`}>적색 정도</span>
+                      <div className="flex items-center gap-1.5">
+                        <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
+                          {redIntensity}%
+                        </span>
+                        {redIntensity !== 50 && (
+                          <button
+                            type="button"
+                            onClick={() => onChangeRedIntensity(50)}
+                            title="적색 정도 기본값(50%) 복원"
+                            className={`px-1 py-0.5 border rounded text-[9px] cursor-pointer ${ui.buttonIdle}`}
+                          >
+                            기본
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                    <input
+                      type="range"
+                      min={0}
+                      max={100}
+                      step={5}
+                      value={redIntensity}
+                      onChange={(e) => onChangeRedIntensity(Number(e.target.value))}
+                      aria-label="적색 정도 조절"
+                      className="w-full h-1.5 cursor-pointer accent-red-600"
+                    />
+                    <div className={`flex items-center justify-between text-[9px] ${ui.textMuted}`}>
+                      <span>연하게 (밝음)</span>
+                      <span>표준</span>
+                      <span>진하게 (암적응)</span>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Font Family & Font Size +/- with Auto Single-Line Condensation */}
+              {(() => {
+                const fontMetrics = getUiFontSizeMetrics(uiFontSizeStep);
+                const canDec = fontMetrics.step > UI_FONT_SIZE_MIN_STEP;
+                const canInc = fontMetrics.step < UI_FONT_SIZE_MAX_STEP;
+                return (
+                  <div className={`border rounded-md p-2.5 space-y-2.5 ${cardIdleCls}`}>
+                    <div className="flex items-center justify-between gap-1">
+                      <div
+                        className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}
+                      >
+                        <Type className="w-3.5 h-3.5 shrink-0" />
+                        <span>글꼴 및 크기</span>
+                      </div>
+                      {(uiFontFamily !== 'default' || fontMetrics.step !== 0) && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onChangeUiFontFamily('default');
+                            onChangeUiFontSizeStep(0);
+                          }}
+                          title="글꼴 및 크기를 기본값으로 복원"
+                          className={`px-1.5 py-0.5 border rounded text-[9.5px] cursor-pointer ${ui.buttonIdle}`}
+                        >
+                          기본 복원
+                        </button>
+                      )}
+                    </div>
+
+                    {/* Font Family Selector */}
+                    <div className="space-y-1">
+                      <div className={`text-[10px] font-medium ${ui.textSecondary}`}>글꼴</div>
+                      <select
+                        value={uiFontFamily}
+                        onChange={(e) => onChangeUiFontFamily(e.target.value as UiFontFamily)}
+                        aria-label="화면 글꼴 선택"
+                        className={`w-full px-2 py-1.5 border rounded text-[11px] focus:outline-none cursor-pointer ${ui.input}`}
+                      >
+                        {UI_FONT_OPTIONS.map((opt) => (
+                          <option
+                            key={opt.id}
+                            value={opt.id}
+                            style={{ fontFamily: opt.cssFamily }}
+                          >
+                            {opt.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+
+                    {/* Font Size - / Actual Size / + / 100% */}
+                    <div className={`pt-2 border-t space-y-1.5 ${ui.divider}`}>
+                      <div className={`text-[10px] font-medium ${ui.textSecondary}`}>글꼴 크기</div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          type="button"
+                          disabled={!canDec}
+                          onClick={() =>
+                            onChangeUiFontSizeStep(clampUiFontSizeStep(fontMetrics.step - 1))
+                          }
+                          title="글꼴 크기 작게 (-)"
+                          aria-label="글꼴 크기 줄이기"
+                          className={`w-8 py-1.5 border rounded text-[11px] font-semibold flex items-center justify-center shrink-0 transition-colors ${
+                            canDec
+                              ? `${ui.buttonIdle} cursor-pointer`
+                              : `${ui.buttonIdle} opacity-40 cursor-not-allowed`
+                          }`}
+                        >
+                          <Minus className="w-3.5 h-3.5 shrink-0" />
+                        </button>
+                        <div
+                          className={`flex-1 min-w-0 py-1.5 px-1.5 border rounded text-center font-mono tabular-nums text-[11px] font-semibold ${ui.panelMuted} ${ui.border} ${ui.textPrimary}`}
+                          title="현재 글꼴 크기"
+                        >
+                          {fontMetrics.pct}%
+                        </div>
+                        <button
+                          type="button"
+                          disabled={!canInc}
+                          onClick={() =>
+                            onChangeUiFontSizeStep(clampUiFontSizeStep(fontMetrics.step + 1))
+                          }
+                          title="글꼴 크기 크게 (+)"
+                          aria-label="글꼴 크기 키우기"
+                          className={`w-8 py-1.5 border rounded text-[11px] font-semibold flex items-center justify-center shrink-0 transition-colors ${
+                            canInc
+                              ? `${ui.buttonIdle} cursor-pointer`
+                              : `${ui.buttonIdle} opacity-40 cursor-not-allowed`
+                          }`}
+                        >
+                          <Plus className="w-3.5 h-3.5 shrink-0" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onChangeUiFontSizeStep(0)}
+                          title="글꼴 크기 기본(100%)으로 초기화"
+                          aria-label="글꼴 크기 100%로 초기화"
+                          className={`px-2 py-1.5 border rounded text-[10.5px] font-mono tabular-nums font-medium shrink-0 transition-colors cursor-pointer ${
+                            fontMetrics.step === 0 ? ui.buttonActive : ui.buttonIdle
+                          }`}
+                        >
+                          <span>100%</span>
+                        </button>
+                      </div>
+                      {fontMetrics.step > 0 && (
+                        <div className={`text-[9.5px] leading-snug break-keep ${ui.textMuted}`}>
+                          한 줄 유지를 위해 자간({fontMetrics.letterSpacingEm}em)·장평(
+                          {fontMetrics.condensePct}%)이 자동 보정됩니다.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })()}
+
+              {/* IAU MPC Bright Minor Planets (Soft00Bright.txt) Orbital Elements Update */}
+              <div className={`border rounded-md p-2.5 space-y-2 ${cardIdleCls}`}>
+                <div className="flex items-center justify-between gap-1.5">
+                  <div className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}>
+                    <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${mpcSyncing ? 'animate-spin' : ''}`} />
+                    <span>MPC 밝은 소행성 궤도 갱신</span>
+                  </div>
+                  {mpcMeta && (
+                    <span className={`font-mono text-[9.5px] tabular-nums shrink-0 ${ui.accentText}`}>
+                      {mpcMeta.totalCount}개
+                    </span>
+                  )}
+                </div>
+                <p className={`text-[10px] leading-relaxed break-keep ${ui.textMuted}`}>
+                  국제천문연맹 소행성센터(MPC)의 최신 Soft00Bright.txt를 내려받아 기존 소행성 궤도 요소를 갱신하고 밝은 소행성을 일괄 추가합니다.
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={mpcSyncing}
+                    onClick={handleSyncMpcAsteroids}
+                    className={`flex-1 py-1.5 px-2 border rounded text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60 ${ui.buttonActive}`}
+                  >
+                    {mpcSyncing ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    ) : (
+                      <RefreshCw className="w-3 h-3 shrink-0" />
+                    )}
+                    <span>{mpcSyncing ? 'MPC 목록 내려받는 중...' : '최신 소행성 갱신'}</span>
+                  </button>
+                  {mpcMeta && (
+                    <button
+                      type="button"
+                      disabled={mpcSyncing}
+                      onClick={handleResetMpcAsteroids}
+                      title="내장 기본 소행성 궤도로 복원"
+                      className={`py-1.5 px-2 border rounded text-[10px] font-medium flex items-center justify-center gap-1 shrink-0 cursor-pointer disabled:opacity-60 ${ui.buttonIdle}`}
+                    >
+                      <RotateCcw className="w-3 h-3 shrink-0" />
+                      <span>복원</span>
+                    </button>
+                  )}
+                </div>
+                {mpcMeta && (
+                  <div className={`px-2 py-1.5 rounded border text-[9.5px] space-y-0.5 ${ui.panelMuted} ${ui.border}`}>
+                    <div className={`flex items-center justify-between gap-1 ${ui.textSecondary}`}>
+                      <span>기존 갱신 {mpcMeta.updatedExistingCount}개 · 신규 추가 {mpcMeta.addedCount}개</span>
+                      {mpcMeta.epochIso && (
+                        <span className="font-mono tabular-nums">역기점 {mpcMeta.epochIso}</span>
+                      )}
+                    </div>
+                    <div className={`font-mono tabular-nums text-[9px] ${ui.textMuted}`}>
+                      최근 갱신: {new Date(mpcMeta.updatedAt).toLocaleString('ko-KR', { hour12: false })}
+                    </div>
+                  </div>
+                )}
+                {mpcStatusMsg && (
+                  <div
+                    className={`text-[10px] leading-snug ${
+                      mpcStatusMsg.isError
+                        ? theme === 'white'
+                          ? 'text-red-600'
+                          : 'text-red-400'
+                        : ui.accentText
+                    }`}
+                  >
+                    {mpcStatusMsg.text}
+                  </div>
+                )}
+              </div>
+
+              {/* Layer Settings File Backup & Reset */}
+              <div className={`border rounded-md p-2.5 space-y-2 ${cardIdleCls}`}>
+                <div className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}>
+                  <Download className="w-3.5 h-3.5 shrink-0" />
+                  <span>표시 설정 파일 관리</span>
+                </div>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      downloadLayerSettingsFile(layers, hips);
+                      showLayerNotice('표시 설정을 .json 파일로 저장했습니다.');
+                    }}
+                    className={`py-1.5 px-2 border rounded text-[10px] font-medium flex items-center justify-center gap-1 cursor-pointer transition-colors ${ui.buttonSave}`}
+                  >
+                    <Download className="w-3 h-3 shrink-0" />
+                    <span>설정 저장</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => layerFileInputRef.current?.click()}
+                    className={`py-1.5 px-2 border rounded text-[10px] font-medium flex items-center justify-center gap-1 cursor-pointer transition-colors ${ui.buttonLoad}`}
+                  >
+                    <Upload className="w-3 h-3 shrink-0" />
+                    <span>불러오기</span>
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    onResetLayerSettings();
+                    showLayerNotice('표시 설정을 기본값으로 복원했습니다.');
+                  }}
+                  className={`w-full py-1.5 px-2 border rounded text-[10px] font-medium flex items-center justify-center gap-1 cursor-pointer ${ui.buttonIdle}`}
+                >
+                  <RotateCcw className="w-3 h-3 shrink-0" />
+                  <span>표시 설정 기본값 복원</span>
+                </button>
+                {layerStatusMsg && (
+                  <div className={`text-[10px] ${ui.accentText}`}>{layerStatusMsg}</div>
+                )}
+              </div>
+            </div>
+          );
+        })()}
       </div>
       )}
+      <input
+        ref={layerFileInputRef}
+        type="file"
+        accept=".json,application/json"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          e.target.value = '';
+          if (!file) return;
+          try {
+            const text = await file.text();
+            const parsed = parseLayerSettingsFromJson(text, layers, hips);
+            if (parsed.error || !parsed.bundle) {
+              showLayerNotice(parsed.error || '레이어 세팅을 불러오지 못했습니다.');
+              return;
+            }
+            onImportLayerSettings(parsed.bundle);
+            showLayerNotice('레이어 세팅 파일을 불러와 적용했습니다.');
+          } catch {
+            showLayerNotice('파일을 읽는 중 오류가 발생했습니다.');
+          }
+        }}
+        className="hidden"
+      />
     </aside>
   );
 }

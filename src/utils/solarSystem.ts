@@ -494,6 +494,291 @@ const MINOR_BODY_ELEMENTS: OrbitalElements[] = [
   },
 ];
 
+export interface MpcAsteroidElement {
+  packedId: string;
+  number?: number;
+  name: string;
+  H0: number;
+  slopeG: number;
+  epochJd: number;
+  epochIso: string;
+  M0: number;
+  w0: number;
+  N0: number;
+  i0: number;
+  e0: number;
+  Md: number;
+  a0: number;
+}
+
+export interface MpcAsteroidSyncMeta {
+  totalCount: number;
+  updatedExistingCount: number;
+  addedCount: number;
+  epochIso: string;
+  sourceYear: number;
+  sourceUrl: string;
+  updatedAt: number;
+}
+
+interface StoredMpcAsteroidBundle {
+  meta: MpcAsteroidSyncMeta;
+  asteroids: MpcAsteroidElement[];
+}
+
+const MPC_ASTEROID_STORAGE_KEY = 'noxchart_mpc_bright_asteroids_v1';
+
+const KNOWN_ASTEROID_KO_NAMES: Record<number, string> = {
+  1: '세레스',
+  2: '팔라스',
+  3: '주노',
+  4: '베스타',
+  5: '아스트라이아',
+  6: '헤베',
+  7: '아이리스',
+  8: '플로라',
+  9: '메티스',
+  10: '히기에이아',
+  11: '파르테노페',
+  12: '빅토리아',
+  13: '에게리아',
+  14: '이레네',
+  15: '유노미아',
+  16: '프시케',
+  18: '멜포메네',
+  19: '포르투나',
+  20: '마살리아',
+  21: '루테티아',
+  22: '칼리오페',
+  23: '탈리아',
+  25: '포카이아',
+  27: '에우테르페',
+  29: '암피트리테',
+  39: '라에티티아',
+  40: '하르모니아',
+  44: '니사',
+  51: '네마우사',
+  52: '유로파(소행성)',
+  63: '아우소니아',
+  89: '율리아',
+  192: '나우시카아',
+  324: '밤베르가',
+  349: '뎀보우스카',
+  433: '에로스',
+  511: '다비다',
+  532: '헤르쿨리나',
+  704: '인테람니아',
+};
+
+const extractLeadingCatalogNumber = (name: string): number | undefined => {
+  const m = name.trim().match(/^(\d+)\b/);
+  return m ? Number(m[1]) : undefined;
+};
+
+let mpcSyncMeta: MpcAsteroidSyncMeta | null = null;
+let effectiveMinorBodyElements: OrbitalElements[] = MINOR_BODY_ELEMENTS;
+const mpcSubscribers = new Set<() => void>();
+
+const notifyMpcSubscribers = () => {
+  for (const fn of mpcSubscribers) {
+    try {
+      fn();
+    } catch {
+      // ignore subscriber errors
+    }
+  }
+};
+
+function buildMergedMinorBodyElements(
+  mpcAsteroids: MpcAsteroidElement[]
+): {
+  elements: OrbitalElements[];
+  updatedExistingCount: number;
+  addedCount: number;
+} {
+  if (!mpcAsteroids || mpcAsteroids.length === 0) {
+    return {
+      elements: MINOR_BODY_ELEMENTS,
+      updatedExistingCount: 0,
+      addedCount: 0,
+    };
+  }
+
+  const mpcByNumber = new Map<number, MpcAsteroidElement>();
+  for (const item of mpcAsteroids) {
+    if (typeof item.number === 'number' && Number.isFinite(item.number)) {
+      mpcByNumber.set(item.number, item);
+    }
+  }
+
+  const matchedNumbers = new Set<number>();
+  let updatedExistingCount = 0;
+
+  const mergedBase: OrbitalElements[] = MINOR_BODY_ELEMENTS.map((baseEl) => {
+    const num = extractLeadingCatalogNumber(baseEl.name);
+    if (num !== undefined) {
+      const fresh = mpcByNumber.get(num);
+      if (fresh) {
+        matchedNumbers.add(num);
+        updatedExistingCount++;
+        return {
+          ...baseEl,
+          N0: fresh.N0,
+          Nd: 0,
+          i0: fresh.i0,
+          id_: 0,
+          w0: fresh.w0,
+          wd: 0,
+          a0: fresh.a0,
+          ad: 0,
+          e0: fresh.e0,
+          ed: 0,
+          M0: fresh.M0,
+          Md: fresh.Md,
+          H0: fresh.H0,
+          slopeG: fresh.slopeG,
+          epochJd: fresh.epochJd,
+        };
+      }
+    }
+    return baseEl;
+  });
+
+  const addedEntries: OrbitalElements[] = [];
+  for (const item of mpcAsteroids) {
+    if (item.number !== undefined && matchedNumbers.has(item.number)) continue;
+    const koLabel =
+      item.number !== undefined && KNOWN_ASTEROID_KO_NAMES[item.number]
+        ? `${KNOWN_ASTEROID_KO_NAMES[item.number]} (${item.number})`
+        : item.name;
+    addedEntries.push({
+      id: item.number !== undefined ? `MPC_${item.number}` : `MPC_${item.packedId}`,
+      name: item.name,
+      koName: koLabel,
+      symbol: '◇',
+      color: '#6EE7B7',
+      group: 'asteroid',
+      category: '소행성 (MPC 밝은 목록)',
+      N0: item.N0,
+      Nd: 0,
+      i0: item.i0,
+      id_: 0,
+      w0: item.w0,
+      wd: 0,
+      a0: item.a0,
+      ad: 0,
+      e0: item.e0,
+      ed: 0,
+      M0: item.M0,
+      Md: item.Md,
+      H0: item.H0,
+      slopeG: item.slopeG,
+      epochJd: item.epochJd,
+    });
+  }
+
+  return {
+    elements: [...mergedBase, ...addedEntries],
+    updatedExistingCount,
+    addedCount: addedEntries.length,
+  };
+}
+
+function hydrateMpcFromStorage() {
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = window.localStorage.getItem(MPC_ASTEROID_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as StoredMpcAsteroidBundle;
+    if (!parsed || !Array.isArray(parsed.asteroids) || parsed.asteroids.length === 0) return;
+    const merged = buildMergedMinorBodyElements(parsed.asteroids);
+    effectiveMinorBodyElements = merged.elements;
+    mpcSyncMeta = {
+      ...parsed.meta,
+      totalCount: parsed.asteroids.length,
+      updatedExistingCount: merged.updatedExistingCount,
+      addedCount: merged.addedCount,
+    };
+  } catch {
+    // Ignore corrupted storage
+  }
+}
+
+hydrateMpcFromStorage();
+
+export function subscribeMpcAsteroids(listener: () => void): () => void {
+  mpcSubscribers.add(listener);
+  return () => {
+    mpcSubscribers.delete(listener);
+  };
+}
+
+export function getMpcAsteroidSyncMeta(): MpcAsteroidSyncMeta | null {
+  return mpcSyncMeta;
+}
+
+export async function syncMpcBrightAsteroids(force = true): Promise<MpcAsteroidSyncMeta> {
+  const res = await fetch(`/api/mpc/bright-asteroids${force ? '?force=1' : ''}`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  const payload = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    sourceUrl?: string;
+    year?: number;
+    epochIso?: string;
+    fetchedAt?: number;
+    asteroids?: MpcAsteroidElement[];
+  };
+  if (!res.ok || !Array.isArray(payload.asteroids) || payload.asteroids.length === 0) {
+    throw new Error(
+      payload.error || 'MPC 밝은 소행성 목록(Soft00Bright.txt)을 불러오지 못했습니다.'
+    );
+  }
+
+  const merged = buildMergedMinorBodyElements(payload.asteroids);
+  const meta: MpcAsteroidSyncMeta = {
+    totalCount: payload.asteroids.length,
+    updatedExistingCount: merged.updatedExistingCount,
+    addedCount: merged.addedCount,
+    epochIso: payload.epochIso || payload.asteroids[0].epochIso || '',
+    sourceYear: payload.year || new Date().getUTCFullYear(),
+    sourceUrl: payload.sourceUrl || '',
+    updatedAt: Date.now(),
+  };
+
+  effectiveMinorBodyElements = merged.elements;
+  mpcSyncMeta = meta;
+
+  if (typeof window !== 'undefined') {
+    try {
+      const bundle: StoredMpcAsteroidBundle = {
+        meta,
+        asteroids: payload.asteroids,
+      };
+      window.localStorage.setItem(MPC_ASTEROID_STORAGE_KEY, JSON.stringify(bundle));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+
+  notifyMpcSubscribers();
+  return meta;
+}
+
+export function clearMpcBrightAsteroids(): void {
+  effectiveMinorBodyElements = MINOR_BODY_ELEMENTS;
+  mpcSyncMeta = null;
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.removeItem(MPC_ASTEROID_STORAGE_KEY);
+    } catch {
+      // Ignore
+    }
+  }
+  notifyMpcSubscribers();
+}
+
 interface PlanetaryMoonDef {
   id: string;
   name: string;
@@ -872,7 +1157,7 @@ export function getSolarSystemBodies(timestampMs: number): SolarSystemBody[] {
   }
 
   // 3. Planets, Dwarf Planets, Asteroids — with each planet's moons immediately following their host
-  const allKeplerBodies = [...PLANET_ELEMENTS, ...MINOR_BODY_ELEMENTS];
+  const allKeplerBodies = [...PLANET_ELEMENTS, ...effectiveMinorBodyElements];
   for (const el of allKeplerBodies) {
     const dt = el.epochJd ? jd - el.epochJd : d;
     const N = norm360(el.N0 + el.Nd * dt);

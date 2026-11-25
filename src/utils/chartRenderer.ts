@@ -5,6 +5,13 @@ import {
 } from '../data/catalogLoader';
 import { getFieldStarsInBounds } from './fieldStars';
 import {
+  clampBortleClass,
+  computeBortleDsoAttenuation,
+  computeBortleDsoMagPenalty,
+  computeBortleMagPenalty,
+  getBortleInfo,
+} from './bortle';
+import {
   AsterismDraftState,
   AsterismSnapPreview,
   AsterismStoreState,
@@ -32,6 +39,8 @@ import {
 import {
   angularDistanceDeg,
   bvToStarColor,
+  computeAltitudeDegFast,
+  computeAtmosphericExtinctionMag,
   createProjectionParams,
   DEG2RAD,
   equatorialToHorizontal,
@@ -141,15 +150,15 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       darkNebulaFill: 'rgba(51, 65, 85, 0.11)',
       darkNebulaStroke: 'rgba(51, 65, 85, 0.62)',
       gridEq: 'rgba(15, 23, 42, 0.14)',
-      gridEqText: 'rgba(15, 23, 42, 0.58)',
+      gridEqText: 'rgba(15, 23, 42, 0.85)',
       gridAltAz: 'rgba(37, 99, 235, 0.17)',
-      gridAltAzText: 'rgba(29, 78, 216, 0.65)',
+      gridAltAzText: 'rgba(29, 78, 216, 0.88)',
       horizonStroke: '#DC2626',
       horizonText: '#B91C1C',
       eclipticStroke: 'rgba(180, 83, 9, 0.48)',
       constellationLine: 'rgb(30, 58, 138)',
       constellationBoundary: 'rgb(71, 85, 105)',
-      constellationName: 'rgb(30, 41, 59)',
+      constellationName: 'rgb(15, 23, 42)',
       dsoColor: {
         GX: '#B91C1C',
         OC: '#B45309',
@@ -160,8 +169,8 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
         SNR: '#6D28D9',
         AST: '#475569',
       },
-      dsoLabel: '#0F172A',
-      starLabel: '#334155',
+      dsoLabel: '#020617',
+      starLabel: '#0F172A',
       doubleStarStroke: '#B45309',
       multipleStarStroke: '#1D4ED8',
       doubleStarLabel: '#92400E',
@@ -195,15 +204,15 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       darkNebulaFill: 'rgba(20, 2, 2, 0.55)',
       darkNebulaStroke: 'rgba(185, 28, 28, 0.55)',
       gridEq: 'rgba(220, 38, 38, 0.16)',
-      gridEqText: 'rgba(239, 68, 68, 0.58)',
+      gridEqText: 'rgba(255, 107, 107, 0.85)',
       gridAltAz: 'rgba(239, 68, 68, 0.22)',
-      gridAltAzText: 'rgba(248, 113, 113, 0.65)',
+      gridAltAzText: 'rgba(255, 138, 138, 0.88)',
       horizonStroke: 'rgba(239, 68, 68, 0.72)',
       horizonText: '#F87171',
       eclipticStroke: 'rgba(185, 28, 28, 0.40)',
       constellationLine: 'rgb(220, 38, 38)',
       constellationBoundary: 'rgb(185, 28, 28)',
-      constellationName: 'rgb(239, 68, 68)',
+      constellationName: 'rgb(255, 107, 107)',
       dsoColor: {
         GX: '#EF4444',
         OC: '#DC2626',
@@ -214,8 +223,8 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
         SNR: '#DC2626',
         AST: '#B91C1C',
       },
-      dsoLabel: '#EF4444',
-      starLabel: '#DC2626',
+      dsoLabel: '#FF7070',
+      starLabel: '#FF5A5A',
       doubleStarStroke: '#EF4444',
       multipleStarStroke: '#FCA5A5',
       doubleStarLabel: '#F87171',
@@ -249,15 +258,15 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
     darkNebulaFill: 'rgba(3, 5, 10, 0.52)',
     darkNebulaStroke: 'rgba(148, 163, 184, 0.46)',
     gridEq: 'rgba(148, 163, 184, 0.14)',
-    gridEqText: 'rgba(148, 163, 184, 0.56)',
+    gridEqText: 'rgba(203, 213, 225, 0.86)',
     gridAltAz: 'rgba(6, 182, 212, 0.16)',
-    gridAltAzText: 'rgba(34, 211, 238, 0.62)',
+    gridAltAzText: 'rgba(103, 232, 249, 0.88)',
     horizonStroke: 'rgba(245, 158, 11, 0.65)',
     horizonText: '#F59E0B',
     eclipticStroke: 'rgba(245, 158, 11, 0.32)',
     constellationLine: 'rgb(100, 149, 237)',
     constellationBoundary: 'rgb(148, 163, 184)',
-    constellationName: 'rgb(148, 163, 184)',
+    constellationName: 'rgb(226, 232, 240)',
     dsoColor: {
       GX: '#FB7185',
       OC: '#FBBF24',
@@ -268,8 +277,8 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       SNR: '#A78BFA',
       AST: '#94A3B8',
     },
-    dsoLabel: '#E2E8F0',
-    starLabel: '#94A3B8',
+    dsoLabel: '#FFFFFF',
+    starLabel: '#F8FAFC',
     doubleStarStroke: '#FCD34D',
     multipleStarStroke: '#38BDF8',
     doubleStarLabel: '#FDE68A',
@@ -488,9 +497,10 @@ function drawNebulaContours(
   proj: ProjectionParams,
   palette: ThemePalette,
   observer: ObserverConfig,
-  lstDeg: number
+  lstDeg: number,
+  opacityScale = 1
 ) {
-  if (contours.length === 0) return;
+  if (contours.length === 0 || opacityScale <= 0.02) return;
   const viewHalfRadius = proj.fovDeg * 0.85;
   const jumpThreshold = Math.max(proj.width, proj.height) * 0.45;
   const altFilterActive = observer.minAltitudeDeg > -90;
@@ -547,7 +557,7 @@ function drawNebulaContours(
 
       if (!broken && validPts >= 3) {
         ctx.closePath();
-        ctx.globalAlpha = dimmed ? 0.22 : 1.0;
+        ctx.globalAlpha = (dimmed ? 0.22 : 1.0) * opacityScale;
         ctx.fill();
         ctx.stroke();
       }
@@ -918,6 +928,311 @@ function drawTerrainSilhouette(
   renderRidgeBand(() => 0, grad, horizonEdgeStroke);
 }
 
+// Reusable offscreen buffer for smooth continuous altitude-based atmospheric & Bortle gradients
+let altGradientCanvas: HTMLCanvasElement | null = null;
+let altGradientCtx: CanvasRenderingContext2D | null = null;
+let altGradientImageData: ImageData | null = null;
+
+// 4x4 Bayer matrix normalized for subtle sub-LSB dithering (eliminates 8-bit dark gradient banding)
+const BAYER_4X4 = [
+  0, 8, 2, 10,
+  12, 4, 14, 6,
+  3, 11, 1, 9,
+  15, 7, 13, 5,
+];
+
+function getAltGradientBuffer(gw: number, gh: number): {
+  canvas: HTMLCanvasElement;
+  gctx: CanvasRenderingContext2D;
+  imageData: ImageData;
+} | null {
+  if (typeof document === 'undefined') return null;
+  if (!altGradientCanvas) {
+    altGradientCanvas = document.createElement('canvas');
+    altGradientCtx = altGradientCanvas.getContext('2d');
+  }
+  if (!altGradientCtx) return null;
+  if (altGradientCanvas.width !== gw || altGradientCanvas.height !== gh) {
+    altGradientCanvas.width = gw;
+    altGradientCanvas.height = gh;
+    altGradientImageData = altGradientCtx.createImageData(gw, gh);
+  }
+  if (!altGradientImageData) {
+    altGradientImageData = altGradientCtx.createImageData(gw, gh);
+  }
+  return {
+    canvas: altGradientCanvas,
+    gctx: altGradientCtx,
+    imageData: altGradientImageData,
+  };
+}
+
+/**
+ * Computes the local Zenith unit vector in the stereographic projection basis (E, N, F)
+ * so sin(altitude) can be evaluated continuously for every pixel without trig calls.
+ */
+function getZenithBasis(
+  view: ChartViewState,
+  proj: ProjectionParams,
+  lstDeg: number,
+  observerLat: number
+): { zF: number; zE: number; zN: number; invScaleX: number; invScaleY: number } {
+  const isHoriz = view.coordSystem === 'horizontal';
+  const dirX = isHoriz ? (proj.flipH ? -1 : 1) : (proj.flipH ? 1 : -1);
+  const dirY = proj.flipV ? 1 : -1;
+  const invScaleX = 1 / (proj.scale * dirX);
+  const invScaleY = 1 / (proj.scale * dirY);
+
+  if (isHoriz) {
+    const alt0 = proj.alt0Deg * DEG2RAD;
+    return {
+      zF: Math.sin(alt0),
+      zE: 0,
+      zN: Math.cos(alt0),
+      invScaleX,
+      invScaleY,
+    };
+  }
+
+  const a0 = proj.ra0Deg * DEG2RAD;
+  const d0 = proj.dec0Deg * DEG2RAD;
+  const lst = lstDeg * DEG2RAD;
+  const lat = observerLat * DEG2RAD;
+  const dA = lst - a0;
+  const sinD0 = Math.sin(d0);
+  const cosD0 = Math.cos(d0);
+  const sinLat = Math.sin(lat);
+  const cosLat = Math.cos(lat);
+  const cosDA = Math.cos(dA);
+
+  return {
+    zF: sinD0 * sinLat + cosD0 * cosLat * cosDA,
+    zE: cosLat * Math.sin(dA),
+    zN: cosD0 * sinLat - sinD0 * cosLat * cosDA,
+    invScaleX,
+    invScaleY,
+  };
+}
+
+/**
+ * Draw continuous, smooth horizon atmospheric extinction haze above Alt = 0°
+ * when Atmospheric Extinction mode is active, scaling smoothly with k.
+ */
+function drawAtmosphericExtinctionBand(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  view: ChartViewState,
+  theme: ThemeMode,
+  proj: ProjectionParams,
+  lstDeg: number,
+  observerLat: number,
+  extinctionCoeff: number
+) {
+  if (width < 2 || height < 2) return;
+  const kNorm = Math.max(0.15, Math.min(1.0, (extinctionCoeff - 0.05) / 0.7));
+  const maxAlpha =
+    theme === 'white'
+      ? 0.07 + 0.14 * kNorm
+      : theme === 'red'
+      ? 0.10 + 0.24 * kNorm
+      : 0.09 + 0.28 * kNorm;
+  if (maxAlpha < 0.008) return;
+
+  const gw = Math.max(64, Math.min(180, Math.round(width / 7)));
+  const gh = Math.max(48, Math.min(136, Math.round(height / 7)));
+  const buf = getAltGradientBuffer(gw, gh);
+  if (!buf) return;
+
+  const { zF, zE, zN, invScaleX, invScaleY } = getZenithBasis(view, proj, lstDeg, observerLat);
+  const hasRot = proj.rotationDeg !== 0;
+  const cosRot = proj.cosRot;
+  const sinRot = proj.sinRot;
+  const halfW = width * 0.5;
+  const halfH = height * 0.5;
+  const stepX = width / gw;
+  const stepY = height / gh;
+
+  const data = buf.imageData.data;
+  const isWhite = theme === 'white';
+  const isRed = theme === 'red';
+  let idx = 0;
+
+  for (let iy = 0; iy < gh; iy++) {
+    const dy = (iy + 0.5) * stepY - halfH;
+    const bayerRow = (iy & 3) * 4;
+    for (let ix = 0; ix < gw; ix++) {
+      const dx = (ix + 0.5) * stepX - halfW;
+      const u = hasRot ? dx * cosRot + dy * sinRot : dx;
+      const v = hasRot ? -dx * sinRot + dy * cosRot : dy;
+      const px = u * invScaleX;
+      const py = v * invScaleY;
+      const t2 = 0.25 * (px * px + py * py);
+      const sinAlt = ((1 - t2) * zF + px * zE + py * zN) / (1 + t2);
+
+      if (sinAlt <= -0.09) {
+        data[idx++] = 0;
+        data[idx++] = 0;
+        data[idx++] = 0;
+        data[idx++] = 0;
+        continue;
+      }
+
+      const belowFade =
+        sinAlt >= 0 ? 1.0 : Math.exp(-((sinAlt / 0.032) * (sinAlt / 0.032)));
+      const sPos = sinAlt > 0 ? sinAlt : 0;
+      const haze = Math.exp(-sPos / 0.115) * belowFade;
+      const alpha = maxAlpha * haze;
+
+      if (alpha < 0.002) {
+        data[idx++] = 0;
+        data[idx++] = 0;
+        data[idx++] = 0;
+        data[idx++] = 0;
+        continue;
+      }
+
+      const dither = (BAYER_4X4[bayerRow + (ix & 3)] - 7.5) / 16;
+      if (isWhite) {
+        data[idx++] = 148;
+        data[idx++] = 163;
+        data[idx++] = 184;
+      } else if (isRed) {
+        data[idx++] = 42;
+        data[idx++] = 4;
+        data[idx++] = 4;
+      } else {
+        const lowTint = Math.exp(-sPos / 0.065);
+        data[idx++] = Math.round(26 + (56 - 26) * lowTint);
+        data[idx++] = Math.round(39 + (46 - 39) * lowTint);
+        data[idx++] = Math.round(64 + (58 - 64) * lowTint);
+      }
+      data[idx++] = Math.max(0, Math.min(255, Math.round(alpha * 255 + dither)));
+    }
+  }
+
+  buf.gctx.putImageData(buf.imageData, 0, 0);
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(buf.canvas, 0, 0, width, height);
+  ctx.restore();
+}
+
+/**
+ * Renders a smooth, band-free urban skyglow wash & horizon light-pollution dome
+ * for Bortle scale classes 2–9 using a continuous stereographic altitude gradient.
+ */
+function drawBortleLightDome(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  view: ChartViewState,
+  theme: ThemeMode,
+  proj: ProjectionParams,
+  lstDeg: number,
+  observerLat: number,
+  bortleClass: number
+) {
+  if (theme === 'white' || width < 2 || height < 2) return;
+  const info = getBortleInfo(bortleClass);
+  if (info.skyGlowAlpha <= 0.005 && info.horizonDomeAlpha <= 0.005) return;
+
+  const gw = Math.max(72, Math.min(184, Math.round(width / 7)));
+  const gh = Math.max(54, Math.min(140, Math.round(height / 7)));
+  const buf = getAltGradientBuffer(gw, gh);
+  if (!buf) return;
+
+  const { zF, zE, zN, invScaleX, invScaleY } = getZenithBasis(view, proj, lstDeg, observerLat);
+  const hasRot = proj.rotationDeg !== 0;
+  const cosRot = proj.cosRot;
+  const sinRot = proj.sinRot;
+  const halfW = width * 0.5;
+  const halfH = height * 0.5;
+  const stepX = width / gw;
+  const stepY = height / gh;
+
+  const isRed = theme === 'red';
+  const bNorm = Math.max(0, Math.min(1, (bortleClass - 2) / 7));
+
+  // Continuous zenith skyglow floor + broad mid-sky dome + warm low-horizon dome
+  const floorAlphaMax = info.skyGlowAlpha * (isRed ? 0.36 : 0.48);
+  const midAlphaMax = info.horizonDomeAlpha * (isRed ? 0.22 : 0.30);
+  const warmAlphaMax = info.horizonDomeAlpha * (isRed ? 0.28 : 0.42);
+
+  // Smoothly interpolated RGB palettes (no discrete color jumps)
+  const floorR = isRed ? 74 : 28 + 34 * bNorm;
+  const floorG = isRed ? 10 : 40 + 28 * bNorm;
+  const floorB = isRed ? 10 : 68 + 18 * bNorm;
+
+  const midR = isRed ? 104 : 74 + 22 * bNorm;
+  const midG = isRed ? 14 : 84 + 14 * bNorm;
+  const midB = isRed ? 12 : 112 + 8 * bNorm;
+
+  const warmR = isRed ? 132 : 152 + 22 * bNorm;
+  const warmG = isRed ? 22 : 116 + 16 * bNorm;
+  const warmB = isRed ? 14 : 84 + 4 * bNorm;
+
+  const data = buf.imageData.data;
+  let idx = 0;
+
+  for (let iy = 0; iy < gh; iy++) {
+    const dy = (iy + 0.5) * stepY - halfH;
+    const bayerRow = (iy & 3) * 4;
+    for (let ix = 0; ix < gw; ix++) {
+      const dx = (ix + 0.5) * stepX - halfW;
+      const u = hasRot ? dx * cosRot + dy * sinRot : dx;
+      const v = hasRot ? -dx * sinRot + dy * cosRot : dy;
+      const px = u * invScaleX;
+      const py = v * invScaleY;
+      const t2 = 0.25 * (px * px + py * py);
+      const sinAlt = ((1 - t2) * zF + px * zE + py * zN) / (1 + t2);
+
+      // Gentle Gaussian roll-off below Alt = 0° so there is no hard cut when ground mask is off
+      const horizonMask =
+        sinAlt >= 0 ? 1.0 : Math.exp(-((sinAlt / 0.055) * (sinAlt / 0.055)));
+      const skyFloorMask =
+        sinAlt >= 0 ? 1.0 : 0.22 + 0.78 * Math.exp(-((sinAlt / 0.14) * (sinAlt / 0.14)));
+
+      const sPos = sinAlt > 0 ? sinAlt : 0;
+      const midCurve = Math.exp(-sPos / 0.42);
+      const warmCurve = Math.exp(-sPos / 0.135);
+
+      const aFloor = floorAlphaMax * skyFloorMask;
+      const aMid = midAlphaMax * midCurve * horizonMask;
+      const aWarm = warmAlphaMax * warmCurve * horizonMask;
+
+      const totalA = 1 - (1 - aFloor) * (1 - aMid) * (1 - aWarm);
+      if (totalA < 0.002) {
+        data[idx++] = 0;
+        data[idx++] = 0;
+        data[idx++] = 0;
+        data[idx++] = 0;
+        continue;
+      }
+
+      const wSum = aFloor + aMid + aWarm;
+      const invW = 1 / wSum;
+      const r = (aFloor * floorR + aMid * midR + aWarm * warmR) * invW;
+      const g = (aFloor * floorG + aMid * midG + aWarm * warmG) * invW;
+      const b = (aFloor * floorB + aMid * midB + aWarm * warmB) * invW;
+
+      const dither = (BAYER_4X4[bayerRow + (ix & 3)] - 7.5) / 16;
+      data[idx++] = Math.max(0, Math.min(255, Math.round(r + dither * 0.5)));
+      data[idx++] = Math.max(0, Math.min(255, Math.round(g + dither * 0.5)));
+      data[idx++] = Math.max(0, Math.min(255, Math.round(b + dither * 0.5)));
+      data[idx++] = Math.max(0, Math.min(255, Math.round(Math.min(0.74, totalA) * 255 + dither)));
+    }
+  }
+
+  buf.gctx.putImageData(buf.imageData, 0, 0);
+  ctx.save();
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(buf.canvas, 0, 0, width, height);
+  ctx.restore();
+}
+
 export interface RenderResult {
   targets: ScreenTarget[];
   magLimit: number;
@@ -936,6 +1251,7 @@ interface DrawableStar {
   isBright: boolean;
   isSelected: boolean;
   dimmed: boolean;
+  extMag: number;
 }
 
 function getOpticalFlipTag(flipH: boolean, flipV: boolean): string {
@@ -1305,9 +1621,17 @@ function renderStarChartPass(
   const isSensorPhoto = Boolean(passOptions?.sensorPhotoMode);
 
   const pxPerDeg = getPixelsPerDeg(view.fsz, width, height);
-  const magLimit = getLimitingMagnitude(view.fsz, layers.magOffset);
+  const bortleActive = Boolean(observer.bortleEnabled) && !isSensorPhoto;
+  const bortleClass = clampBortleClass(observer.bortleClass ?? 4);
+  const bortleInfo = getBortleInfo(bortleClass);
+  const bortleMagPenalty = bortleActive ? computeBortleMagPenalty(bortleClass, view.fsz) : 0;
+  const magLimit = Math.max(2.2, getLimitingMagnitude(view.fsz, layers.magOffset) - bortleMagPenalty);
   const hipsVisible = hips.enabled && hips.opacity > 0.02;
   const altFilterActive = observer.minAltitudeDeg > -90;
+  const extActive = Boolean(layers.showAtmosphericExtinction);
+  const extK = Math.max(0.1, Math.min(0.8, layers.extinctionCoeff ?? 0.25));
+  const sinObsLat = Math.sin(observer.lat * DEG2RAD);
+  const cosObsLat = Math.cos(observer.lat * DEG2RAD);
 
   // 1. Background Fill (Transparent when HiPS survey is active behind canvas)
   const halfSkyRadius = (Math.min(width, height) / 2) / Math.tan((view.fsz / 4) * DEG2RAD);
@@ -1336,9 +1660,26 @@ function renderStarChartPass(
     }
   }
 
+  // 1.5. Bortle Scale Light Pollution Skyglow & Horizon Light Dome
+  if (bortleActive && bortleClass >= 2) {
+    drawBortleLightDome(
+      ctx,
+      width,
+      height,
+      view,
+      theme,
+      proj,
+      lstDeg,
+      observer.lat,
+      bortleClass
+    );
+  }
+
   // 2. Milky Way (Galactic Plane band + layered star-cloud contours)
-  if (layers.showMilkyWay) {
+  const mwBortleAlpha = bortleActive ? bortleInfo.milkyWayAlpha : 1.0;
+  if (layers.showMilkyWay && mwBortleAlpha > 0.01) {
     ctx.save();
+    ctx.globalAlpha = mwBortleAlpha;
     ctx.strokeStyle = palette.milkyWayFill;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
@@ -1365,19 +1706,32 @@ function renderStarChartPass(
       eqPts.push(galacticToEquatorial(l, 0));
     }
     drawProjectedCurve(ctx, eqPts, proj, true);
-    ctx.restore();
 
     if (catalogs.milkyWay.length > 0 && view.fsz >= 12) {
       drawMilkyWayContours(ctx, catalogs.milkyWay, proj, palette.milkyWayFill);
     }
+    ctx.restore();
   }
 
   // 2.5. Real Multi-Level Nebula Contours (FChart3 / CZSky — 513 polygons across 193 nebulae)
   if (layers.showNebulaContours && catalogs.nebulaContours.length > 0 && view.fsz <= 95) {
-    drawNebulaContours(ctx, catalogs.nebulaContours, proj, palette, observer, lstDeg);
+    const nebBortleScale = bortleActive ? computeBortleDsoAttenuation(bortleClass, 'DN') : 1;
+    drawNebulaContours(ctx, catalogs.nebulaContours, proj, palette, observer, lstDeg, nebBortleScale);
   }
 
   const gridLineWidth = Math.max(0.2, Math.min(2.5, layers.gridLineWidth ?? 0.8));
+  const gridLineOpacity = Math.max(0.05, Math.min(1.0, layers.gridLineOpacity ?? 0.35));
+  const gridAlphaMul = gridLineOpacity / 0.35;
+  const scaleRgbaAlpha = (color: string, mul: number, maxAlpha: number): string => {
+    const m = color.match(/^rgba\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*([0-9.]+)\s*\)$/);
+    if (!m) return color;
+    const nextA = Math.max(0.015, Math.min(maxAlpha, Number(m[4]) * mul));
+    return `rgba(${m[1]}, ${m[2]}, ${m[3]}, ${nextA.toFixed(3)})`;
+  };
+  const effGridEqStroke = scaleRgbaAlpha(palette.gridEq, gridAlphaMul, 0.72);
+  const effGridEqText = scaleRgbaAlpha(palette.gridEqText, gridAlphaMul, 0.96);
+  const effGridAltAzStroke = scaleRgbaAlpha(palette.gridAltAz, gridAlphaMul, 0.75);
+  const effGridAltAzText = scaleRgbaAlpha(palette.gridAltAzText, gridAlphaMul, 0.96);
 
   const gridAspect = Math.max(width, height) / Math.max(1, Math.min(width, height));
   const formatGridDeg = (deg: number, signed: boolean): string => {
@@ -1429,9 +1783,9 @@ function renderStarChartPass(
     const useEqCull = eqViewRadius < 50 && Math.abs(proj.dec0Deg) + eqViewRadius < 82;
 
     ctx.save();
-    ctx.strokeStyle = palette.gridEq;
+    ctx.strokeStyle = effGridEqStroke;
     ctx.lineWidth = gridLineWidth;
-    ctx.fillStyle = palette.gridEqText;
+    ctx.fillStyle = effGridEqText;
     ctx.font = '10px "IBM Plex Mono", monospace';
 
     for (let idx = decStartIdx; idx <= decEndIdx; idx++) {
@@ -1607,9 +1961,9 @@ function renderStarChartPass(
     const useHzCull = hzViewRadius < 50 && Math.abs(proj.alt0Deg) + hzViewRadius < 82;
 
     ctx.save();
-    ctx.strokeStyle = palette.gridAltAz;
+    ctx.strokeStyle = effGridAltAzStroke;
     ctx.lineWidth = gridLineWidth;
-    ctx.fillStyle = palette.gridAltAzText;
+    ctx.fillStyle = effGridAltAzText;
     ctx.font = '10px "IBM Plex Mono", monospace';
 
     for (let idx = altStartIdx; idx <= altEndIdx; idx++) {
@@ -1822,7 +2176,7 @@ function renderStarChartPass(
       const pt = projectStereographic(con.ra, con.dec, proj, 0);
       if (!pt) continue;
       const text = view.fsz > 105 ? con.abbr.toUpperCase() : `${con.koName} (${con.abbr})`;
-      ctx.fillText(text, pt.x, pt.y);
+      ctx.fillText(text, Math.round(pt.x), Math.round(pt.y));
     }
     ctx.restore();
   }
@@ -1857,6 +2211,7 @@ function renderStarChartPass(
       isOnScreen: boolean;
       isKnownForced: boolean;
       labelPrefix?: string;
+      extMag: number;
     }
 
     const normDsoId = (s?: string) => (s ? s.replace(/\s+/g, '').toUpperCase() : '');
@@ -1911,12 +2266,28 @@ function renderStarChartPass(
       if (!pt) return;
 
       let belowMinAlt = false;
-      if (altFilterActive) {
-        const { altDeg } = equatorialToHorizontal(dso.ra, dso.dec, lstDeg, observer.lat);
-        belowMinAlt = altDeg < observer.minAltitudeDeg;
-        if (belowMinAlt && !observer.highlightAboveMinAlt && !isSelected) {
-          return;
+      let extMag = 0;
+      if (altFilterActive || extActive) {
+        const altDeg = computeAltitudeDegFast(
+          dso.ra,
+          dso.dec,
+          lstDeg,
+          sinObsLat,
+          cosObsLat
+        );
+        if (altFilterActive) {
+          belowMinAlt = altDeg < observer.minAltitudeDeg;
+          if (belowMinAlt && !observer.highlightAboveMinAlt && !isSelected) {
+            return;
+          }
         }
+        if (extActive) {
+          extMag = computeAtmosphericExtinctionMag(altDeg, extK);
+        }
+      }
+      const bortleDsoPen = bortleActive ? computeBortleDsoMagPenalty(bortleClass, dso.type) : 0;
+      if (!isSelected && !isKnownForced && dso.mag + extMag + bortleDsoPen > dsoMagCutoff) {
+        return;
       }
 
       markSeenDso(dso, extraSeenKey);
@@ -1929,6 +2300,7 @@ function renderStarChartPass(
         isOnScreen,
         isKnownForced,
         labelPrefix,
+        extMag,
       };
       pendingDsos.push(entry);
       if (isOnScreen && !belowMinAlt && !isKnownForced) {
@@ -2023,11 +2395,25 @@ function renderStarChartPass(
       candidate: LabelCandidate;
     }[] = [];
 
-    const dsoOpacity = Math.max(0.05, Math.min(1, layers.dsoOpacity ?? 1));
+    const dsoSymbolOpacity = Math.max(0.05, Math.min(1, layers.dsoSymbolOpacity ?? 1));
+    const dsoLabelOpacity = Math.max(0.05, Math.min(1, layers.dsoLabelOpacity ?? 1));
 
     for (const entry of pendingDsos) {
       if (!allowedDsoSet.has(entry)) continue;
-      const { dso, pt, belowMinAlt, isSelected, isOnScreen, isKnownForced, labelPrefix } = entry;
+      const { dso, pt, belowMinAlt, isSelected, isOnScreen, isKnownForced, labelPrefix, extMag } =
+        entry;
+      const dsoExtScale =
+        extActive && !isSelected && extMag > 0.05
+          ? Math.max(0.14, Math.pow(10, -0.28 * extMag))
+          : 1.0;
+      const dsoBortleScale =
+        bortleActive && !isSelected ? computeBortleDsoAttenuation(bortleClass, dso.type) : 1.0;
+      const effDsoSymbolOpacity = Math.max(0.05, dsoSymbolOpacity * dsoExtScale * dsoBortleScale);
+      // Keep DSO label opacity faithful to the user's slider setting instead of washing it out with Bortle dimming
+      const effDsoLabelOpacity = Math.max(
+        0.05,
+        dsoLabelOpacity * (0.82 + 0.18 * dsoExtScale)
+      );
 
       visibleDsoCount++;
       const hideDsoSymbol = Boolean(layers.hideDsoSymbols) || isSensorPhoto;
@@ -2047,20 +2433,10 @@ function renderStarChartPass(
           palette,
           proj,
           belowMinAlt,
-          dsoOpacity
+          effDsoSymbolOpacity
         );
         if (dso.mag < 11.5 && dso.type !== 'DARK' && !belowMinAlt) {
           placer.registerObstacle(pt.x, pt.y, symR);
-        }
-
-        if (sessionIds.has(dso.id)) {
-          ctx.save();
-          ctx.strokeStyle = palette.selectionRing;
-          ctx.lineWidth = 1.2;
-          ctx.beginPath();
-          ctx.arc(pt.x, pt.y, symR + 3.5, 0, Math.PI * 2);
-          ctx.stroke();
-          ctx.restore();
         }
       }
 
@@ -2084,15 +2460,15 @@ function renderStarChartPass(
         const primaryCode = labelPrefix && labelPrefix !== dso.id ? labelPrefix : dso.id;
         const text = showCommon ? `${primaryCode} ${dso.koName}` : primaryCode;
         onScreenDsoItems.push({
-          mag: dso.mag,
+          mag: dso.mag + extMag,
           isSelected,
           isKnownForced,
           candidate: {
             priority: isSelected
               ? -100
               : isKnownForced
-              ? -10 + dso.mag * 0.25
-              : dso.mag - (dso.id.startsWith('M') || labelPrefix ? 0.8 : 0),
+              ? -10 + (dso.mag + extMag) * 0.25
+              : dso.mag + extMag - (dso.id.startsWith('M') || labelPrefix ? 0.8 : 0),
             x: pt.x,
             y: pt.y,
             radius: Math.min(24, symR),
@@ -2102,7 +2478,7 @@ function renderStarChartPass(
               isSelected || isKnownForced
                 ? '600 10.5px "IBM Plex Mono", monospace'
                 : '500 10.5px "IBM Plex Mono", monospace',
-            alpha: isSensorPhoto ? 1 : dsoOpacity,
+            alpha: isSensorPhoto ? 1 : effDsoLabelOpacity,
           },
         });
       }
@@ -2176,13 +2552,26 @@ function renderStarChartPass(
   const evalStarAltitude = (
     raDeg: number,
     decDeg: number,
-    isSelected: boolean
-  ): { skip: boolean; dimmed: boolean } => {
-    if (!altFilterActive) return { skip: false, dimmed: false };
-    const { altDeg } = equatorialToHorizontal(raDeg, decDeg, lstDeg, observer.lat);
-    if (altDeg >= observer.minAltitudeDeg) return { skip: false, dimmed: false };
-    if (!observer.highlightAboveMinAlt && !isSelected) return { skip: true, dimmed: false };
-    return { skip: false, dimmed: true };
+    isSelected: boolean,
+    starMag?: number
+  ): { skip: boolean; dimmed: boolean; extMag: number } => {
+    if (!altFilterActive && !extActive) return { skip: false, dimmed: false, extMag: 0 };
+    const altDeg = computeAltitudeDegFast(raDeg, decDeg, lstDeg, sinObsLat, cosObsLat);
+    let dimmed = false;
+    if (altFilterActive && altDeg < observer.minAltitudeDeg) {
+      if (!observer.highlightAboveMinAlt && !isSelected) {
+        return { skip: true, dimmed: false, extMag: 0 };
+      }
+      dimmed = true;
+    }
+    let extMag = 0;
+    if (extActive) {
+      extMag = computeAtmosphericExtinctionMag(altDeg, extK);
+      if (starMag !== undefined && !isSelected && starMag + extMag > magLimit + 0.35) {
+        return { skip: true, dimmed, extMag };
+      }
+    }
+    return { skip: false, dimmed, extMag };
   };
 
   // 8a. Optional procedural ultra-faint fill ONLY when Gaia live isn't covering the region
@@ -2206,16 +2595,17 @@ function renderStarChartPass(
       if (star.mag <= 10.2) continue;
       const pt = projectStereographic(star.ra, star.dec, proj, 10);
       if (!pt) continue;
-      const altCheck = evalStarAltitude(star.ra, star.dec, false);
+      const altCheck = evalStarAltitude(star.ra, star.dec, false, star.mag);
       if (altCheck.skip) continue;
       drawableStars.push({
         star,
         x: pt.x,
         y: pt.y,
-        radius: getStarRadiusPogson(star.mag, magLimit, view.fsz),
+        radius: getStarRadiusPogson(star.mag + altCheck.extMag, magLimit, view.fsz),
         isBright: false,
         isSelected: false,
         dimmed: altCheck.dimmed,
+        extMag: altCheck.extMag,
       });
     }
   }
@@ -2231,9 +2621,9 @@ function renderStarChartPass(
       const pt = projectStereographic(star.ra, star.dec, proj, 10);
       if (!pt) continue;
       const isSelected = selected?.kind === 'star' && selected.data.id === star.id;
-      const altCheck = evalStarAltitude(star.ra, star.dec, isSelected);
+      const altCheck = evalStarAltitude(star.ra, star.dec, isSelected, star.mag);
       if (altCheck.skip) continue;
-      const r = getStarRadiusPogson(star.mag, magLimit, view.fsz);
+      const r = getStarRadiusPogson(star.mag + altCheck.extMag, magLimit, view.fsz);
       drawableStars.push({
         star,
         x: pt.x,
@@ -2242,6 +2632,7 @@ function renderStarChartPass(
         isBright: false,
         isSelected,
         dimmed: altCheck.dimmed,
+        extMag: altCheck.extMag,
       });
       if (
         (isSelected || (view.fsz <= 4.5 && star.mag <= gaiaClickMagCutoff && gaiaClickableCount < 1000))
@@ -2274,9 +2665,9 @@ function renderStarChartPass(
         const pt = projectStereographic(star.ra, star.dec, proj, 10);
         if (!pt) continue;
         const isSelected = selected?.kind === 'star' && selected.data.id === star.id;
-        const altCheck = evalStarAltitude(star.ra, star.dec, isSelected);
+        const altCheck = evalStarAltitude(star.ra, star.dec, isSelected, star.mag);
         if (altCheck.skip) continue;
-        const r = getStarRadiusPogson(star.mag, magLimit, view.fsz);
+        const r = getStarRadiusPogson(star.mag + altCheck.extMag, magLimit, view.fsz);
         drawableStars.push({
           star,
           x: pt.x,
@@ -2285,6 +2676,7 @@ function renderStarChartPass(
           isBright: false,
           isSelected,
           dimmed: altCheck.dimmed,
+          extMag: altCheck.extMag,
         });
         if (view.fsz <= 12 && star.mag <= Math.min(13.8, magLimit)) {
           targets.push({
@@ -2311,9 +2703,9 @@ function renderStarChartPass(
       const pt = projectStereographic(star.ra, star.dec, proj, 12);
       if (!pt) continue;
       const isSelected = selected?.kind === 'star' && selected.data.id === star.id;
-      const altCheck = evalStarAltitude(star.ra, star.dec, isSelected);
+      const altCheck = evalStarAltitude(star.ra, star.dec, isSelected, star.mag);
       if (altCheck.skip) continue;
-      const r = getStarRadiusPogson(star.mag, magLimit, view.fsz);
+      const r = getStarRadiusPogson(star.mag + altCheck.extMag, magLimit, view.fsz);
       drawableStars.push({
         star,
         x: pt.x,
@@ -2322,6 +2714,7 @@ function renderStarChartPass(
         isBright: false,
         isSelected,
         dimmed: altCheck.dimmed,
+        extMag: altCheck.extMag,
       });
       if (view.fsz <= 25 && star.mag <= 8.0) {
         targets.push({
@@ -2348,10 +2741,10 @@ function renderStarChartPass(
     }
     const pt = projectStereographic(star.ra, star.dec, proj, 20);
     if (!pt) continue;
-    const altCheck = evalStarAltitude(star.ra, star.dec, isSelected);
+    const altCheck = evalStarAltitude(star.ra, star.dec, isSelected, star.mag);
     if (altCheck.skip) continue;
 
-    const r = getStarRadiusPogson(star.mag, magLimit, view.fsz);
+    const r = getStarRadiusPogson(star.mag + altCheck.extMag, magLimit, view.fsz);
     drawableStars.push({
       star,
       x: pt.x,
@@ -2360,6 +2753,7 @@ function renderStarChartPass(
       isBright: true,
       isSelected,
       dimmed: altCheck.dimmed,
+      extMag: altCheck.extMag,
     });
 
     if (star.mag < 3.4 && !altCheck.dimmed) {
@@ -2395,6 +2789,7 @@ function renderStarChartPass(
         isBright: selStar.mag <= 6.0,
         isSelected: true,
         dimmed: false,
+        extMag: 0,
       });
       targets.push({
         kind: 'star',
@@ -2416,6 +2811,22 @@ function renderStarChartPass(
     if (onScreenStars.length > 0) {
       onScreenStars.sort((a, b) => a.star.mag - b.star.mag);
       const starPct = Math.max(0, Math.min(100, layers.starLabelDensityPct ?? 10));
+      const starLabelOpacity = Math.max(0.05, Math.min(1, layers.starLabelOpacity ?? 1));
+      const starLabelLang = layers.starLabelLanguage ?? 'ko';
+      const formatStarLabelByLang = (koName?: string, enName?: string): string | null => {
+        const ko = koName?.trim() || '';
+        const en = enName?.trim() || '';
+        if (starLabelLang === 'en') {
+          return en || ko || null;
+        }
+        if (starLabelLang === 'ko_en') {
+          if (ko && en && ko.toLowerCase() !== en.toLowerCase()) {
+            return `${ko}(${en})`;
+          }
+          return ko || en || null;
+        }
+        return ko || en || null;
+      };
       const labeledStarIds = new Set<string>();
 
       // Known proper star names (works even when general showStarLabels is off, still respects top-N% brightness)
@@ -2430,7 +2841,7 @@ function renderStarChartPass(
           const item = onScreenProperStars[i];
           if (i >= maxProperCandidates && !item.isSelected) continue;
           const { star, x, y, radius, isSelected } = item;
-          const properText = star.koName || star.name;
+          const properText = formatStarLabelByLang(star.koName, star.name);
           if (!properText) continue;
 
           labeledStarIds.add(star.id);
@@ -2443,8 +2854,9 @@ function renderStarChartPass(
             color: palette.starLabel,
             font:
               star.mag < 1.5
-                ? '600 11px "IBM Plex Sans", "Noto Sans KR", sans-serif'
-                : '400 10px "IBM Plex Sans", "Noto Sans KR", sans-serif',
+                ? '600 11.5px "IBM Plex Sans", "Noto Sans KR", sans-serif'
+                : '500 10.5px "IBM Plex Sans", "Noto Sans KR", sans-serif',
+            alpha: isSensorPhoto ? 1 : starLabelOpacity,
           });
         }
       }
@@ -2457,10 +2869,11 @@ function renderStarChartPass(
           if (i >= maxStarCandidates && !item.isSelected) continue;
           const { star, x, y, radius, isSelected } = item;
           if (labeledStarIds.has(star.id)) continue;
+          const namedLabel = formatStarLabelByLang(star.koName, star.name);
           let text: string | null = null;
-          if (star.name && view.fsz < 95) text = star.name;
+          if (namedLabel && view.fsz < 95) text = namedLabel;
           else if (star.bayer) text = star.bayer;
-          else if (star.name) text = star.name;
+          else if (namedLabel) text = namedLabel;
           else if (star.hip) text = `HIP ${star.hip}`;
           else if (star.gaiaId) text = `Gaia ${star.gaiaId.slice(-6)}`;
           else if (star.id && !star.id.startsWith('field_')) text = star.id;
@@ -2476,8 +2889,9 @@ function renderStarChartPass(
             color: palette.starLabel,
             font:
               star.mag < 1.5
-                ? '600 11px "IBM Plex Sans", sans-serif'
-                : '400 10px "IBM Plex Sans", sans-serif',
+                ? '600 11.5px "IBM Plex Sans", "Noto Sans KR", sans-serif'
+                : '500 10.5px "IBM Plex Sans", "Noto Sans KR", sans-serif',
+            alpha: isSensorPhoto ? 1 : starLabelOpacity,
           });
         }
       }
@@ -2536,21 +2950,30 @@ function renderStarChartPass(
     ctx.strokeStyle = palette.starHaloStroke;
 
     for (let i = 0; i < renderStars.length; i++) {
-      const { star, x, y, radius, isBright, dimmed, isSelected } = renderStars[i];
-      const color = bvToStarColor(star.bv, theme, layers.showStarColors);
+      const { star, x, y, radius, isBright, dimmed, isSelected, extMag } = renderStars[i];
+      const reddenBv =
+        extActive && theme === 'dark' && layers.showStarColors && extMag > 0.25
+          ? Math.min(1.25, extMag * 0.42)
+          : 0;
+      const color = bvToStarColor(star.bv + reddenBv, theme, layers.showStarColors);
 
       // Gentle faint-end luminance roll-off near magLimit keeps 17-20m fields refined and legible
       let starAlpha = dimmed ? 0.16 : 1.0;
+      const effMag = star.mag + extMag;
       if (!dimmed && !isSelected && deepAlphaActive) {
-        const dm = magLimit - star.mag;
+        const dm = magLimit - effMag;
         if (dm < 1.8) {
           const t = Math.max(0, Math.min(1, dm / 1.8));
           starAlpha = faintMinAlpha + (1 - faintMinAlpha) * (t * t * (3 - 2 * t));
         }
       }
+      if (extActive && !dimmed && !isSelected && extMag > 0.05) {
+        const extAlpha = Math.max(0.12, Math.pow(10, -0.22 * extMag));
+        starAlpha *= extAlpha;
+      }
       ctx.globalAlpha = starAlpha;
 
-      if (theme === 'dark' && isBright && star.mag < 2.1 && !hipsVisible && !dimmed) {
+      if (theme === 'dark' && isBright && effMag < 2.1 && !hipsVisible && !dimmed) {
         const glowR = radius * 2.6;
         const grad = ctx.createRadialGradient(x, y, radius * 0.35, x, y, glowR);
         grad.addColorStop(0, color);
@@ -2608,14 +3031,14 @@ function renderStarChartPass(
       }
       const pt = projectStereographic(sys.ra, sys.dec, proj, 24);
       if (!pt) continue;
-      const altCheck = evalStarAltitude(sys.ra, sys.dec, isSelected);
+      const altCheck = evalStarAltitude(sys.ra, sys.dec, isSelected, sys.mag);
       if (altCheck.skip) continue;
 
       const isOnScreen = pt.x >= 0 && pt.x <= width && pt.y >= 0 && pt.y <= height;
       const entry: PendingDouble = {
         sys,
         pt,
-        dimmed: altCheck.dimmed,
+        dimmed: altCheck.dimmed || (extActive && altCheck.extMag > 1.8),
         isSelected,
         isOnScreen,
       };
@@ -2648,7 +3071,14 @@ function renderStarChartPass(
       }
     }
 
-    const doubleStarOpacity = Math.max(0.05, Math.min(1, layers.doubleStarOpacity ?? 1));
+    const doubleStarSymbolOpacity = Math.max(
+      0.05,
+      Math.min(1, layers.doubleStarSymbolOpacity ?? 1)
+    );
+    const doubleStarLabelOpacity = Math.max(
+      0.05,
+      Math.min(1, layers.doubleStarLabelOpacity ?? 1)
+    );
     const renderedOnScreenDoubles: { entry: PendingDouble; markerR: number }[] = [];
 
     ctx.save();
@@ -2662,7 +3092,7 @@ function renderStarChartPass(
       if (!isSensorPhoto) {
         const strokeCol = sys.isMultiple ? palette.multipleStarStroke : palette.doubleStarStroke;
 
-        ctx.globalAlpha = (dimmed ? 0.2 : isSelected ? 1.0 : 0.88) * doubleStarOpacity;
+        ctx.globalAlpha = (dimmed ? 0.2 : isSelected ? 1.0 : 0.88) * doubleStarSymbolOpacity;
         ctx.strokeStyle = strokeCol;
         ctx.lineWidth = isSelected ? 1.55 : sys.isMultiple ? 1.2 : 1.1;
 
@@ -2704,7 +3134,8 @@ function renderStarChartPass(
           if (isSelected || hoveredId === sys.id || sepPx >= 9) {
             ctx.save();
             ctx.strokeStyle = strokeCol;
-            ctx.globalAlpha = (dimmed ? 0.15 : isSelected ? 0.65 : 0.35) * doubleStarOpacity;
+            ctx.globalAlpha =
+              (dimmed ? 0.15 : isSelected ? 0.65 : 0.35) * doubleStarSymbolOpacity;
             ctx.lineWidth = 0.85;
             ctx.setLineDash([2, 2]);
             ctx.beginPath();
@@ -2715,7 +3146,7 @@ function renderStarChartPass(
           }
 
           ctx.save();
-          ctx.globalAlpha = (dimmed ? 0.2 : 0.96) * doubleStarOpacity;
+          ctx.globalAlpha = (dimmed ? 0.2 : 0.96) * doubleStarSymbolOpacity;
           ctx.fillStyle = theme === 'white' ? '#1E293B' : theme === 'red' ? '#FCA5A5' : '#F8FAFC';
           ctx.strokeStyle = strokeCol;
           ctx.lineWidth = 0.9;
@@ -2772,7 +3203,7 @@ function renderStarChartPass(
           text,
           color: sys.isMultiple ? palette.multipleStarStroke : palette.doubleStarLabel,
           font: '500 9.5px "IBM Plex Mono", "Noto Sans KR", monospace',
-          alpha: isSensorPhoto ? 1 : doubleStarOpacity,
+          alpha: isSensorPhoto ? 1 : doubleStarLabelOpacity,
         });
       }
     }
@@ -3053,18 +3484,34 @@ function renderStarChartPass(
 
       // Visibility gating so wide-field views stay clean while zoomed/selected targets shine
       if (isPlanetaryMoon && !isSelected && view.fsz > 12) continue;
-      if (isMinorBody && !isSelected && view.fsz > 65 && body.mag > magLimit + 2.0) continue;
+      if (isMinorBody && !isSelected) {
+        const isMpcExtra = body.id.startsWith('MPC_');
+        if (isMpcExtra) {
+          if (view.fsz > 55 && body.mag > Math.min(magLimit, 9.8)) continue;
+          if (view.fsz > 15 && body.mag > magLimit + 0.8) continue;
+        } else if (view.fsz > 65 && body.mag > magLimit + 2.0) {
+          continue;
+        }
+      }
 
       const projMargin = Math.max(80, Math.min(width, height) * 0.52);
       const pt = projectStereographic(body.ra, body.dec, proj, projMargin);
       if (!pt) continue;
 
       let dimmed = false;
-      if (altFilterActive) {
+      let bodyExtAlpha = 1.0;
+      if (altFilterActive || extActive) {
         const hz = equatorialToHorizontal(body.ra, body.dec, lstDeg, observer.lat);
-        if (hz.altDeg < observer.minAltitudeDeg) {
+        if (altFilterActive && hz.altDeg < observer.minAltitudeDeg) {
           if (!observer.highlightAboveMinAlt) continue;
           dimmed = true;
+        }
+        if (extActive && !isSelected) {
+          const bExt = computeAtmosphericExtinctionMag(hz.altDeg, extK);
+          if (bExt > 0.15) {
+            const minA = body.id === 'Sun' || body.id === 'Moon' ? 0.52 : 0.24;
+            bodyExtAlpha = Math.max(minA, Math.pow(10, -0.16 * bExt));
+          }
         }
       }
 
@@ -3134,7 +3581,7 @@ function renderStarChartPass(
             : '#1D4ED8'
           : body.color;
 
-      ctx.globalAlpha = dimmed ? 0.2 : 1.0;
+      ctx.globalAlpha = (dimmed ? 0.2 : 1.0) * bodyExtAlpha;
 
       if (isMinorBody) {
         // Distinct diamond reticle + core for Dwarf Planets & Asteroids
@@ -3815,7 +4262,7 @@ function renderStarChartPass(
     );
   }
 
-  // 11.5. Observing Session Plan Highlight Mode (관측 목록 강조 모드)
+  // 11.5. Observing Session Plan Highlight Mode (오늘 밤 관측목록 성도 표시 - 깔끔한 원형 표시)
   if (layers.highlightSessionPlan && sessionPlan && sessionPlan.length > 0) {
     const allDsos: DeepSkyObject[] = [
       ...catalogs.dsosBright,
@@ -3834,47 +4281,46 @@ function renderStarChartPass(
     const sessionSolarBodies = getSolarSystemBodies(obsTimeMs);
     const existingTargetIds = new Set(targets.map((t) => `${t.kind}:${t.id}`));
 
+    const sessionOpacity = Math.max(0.1, Math.min(1.0, layers.sessionPlanOpacity ?? 1.0));
+    const customSessionColor =
+      layers.sessionPlanColor && /^#[0-9a-fA-F]{6}$/.test(layers.sessionPlanColor)
+        ? layers.sessionPlanColor
+        : null;
     const pendingColor =
-      theme === 'white' ? '#D97706' : theme === 'red' ? '#FF3B3B' : '#F59E0B';
+      theme === 'red'
+        ? '#FF3B3B'
+        : customSessionColor ?? (theme === 'white' ? '#D97706' : '#F59E0B');
     const doneColor =
       theme === 'white' ? '#059669' : theme === 'red' ? '#B91C1C' : '#10B981';
-    const pillBg =
-      theme === 'white'
-        ? 'rgba(255, 255, 255, 0.92)'
-        : theme === 'red'
-        ? 'rgba(22, 2, 2, 0.90)'
-        : 'rgba(10, 15, 28, 0.88)';
 
     ctx.save();
-    ctx.font = '600 10.5px "IBM Plex Mono", "Pretendard", monospace';
-
-    sessionPlan.forEach((entry, idx) => {
+    sessionPlan.forEach((entry) => {
       let item: SelectedItem | null = null;
-      let labelName = entry.id;
+      let ringRadius = 9.5;
       if (entry.kind === 'dso') {
         const found = allDsos.find((d) => d.id === entry.id);
         if (found) {
           item = { kind: 'dso', data: found };
-          labelName =
-            view.fsz < 75 && found.koName ? `${found.id} ${found.koName}` : found.id;
+          const symR = Math.max(5.0, Math.min(36, (found.majAx / 60) * pxPerDeg * 0.5));
+          ringRadius = symR + 3.5;
         }
       } else if (entry.kind === 'planet') {
         const found = sessionSolarBodies.find((b) => b.id === entry.id);
         if (found) {
           item = { kind: 'planet', data: found };
-          labelName = found.koName || found.name;
+          ringRadius = 10.5;
         }
       } else if (entry.kind === 'double') {
         const found = catalogs.doubleStars.find((d) => d.id === entry.id);
         if (found) {
           item = { kind: 'double', data: found };
-          labelName = found.koName || found.name || found.bayer || found.disc;
+          ringRadius = 9.5;
         }
       } else {
         const found = allStars.find((s) => s.id === entry.id);
         if (found) {
           item = { kind: 'star', data: found };
-          labelName = found.koName || found.name || found.bayer || found.id;
+          ringRadius = 9.0;
         }
       }
       if (!item) return;
@@ -3890,84 +4336,22 @@ function renderStarChartPass(
           id: item.data.id,
           x: pt.x,
           y: pt.y,
-          radius: 16,
+          radius: Math.max(10, Math.min(28, ringRadius + 2)),
           mag: item.data.mag,
           item,
         });
       }
 
       const accent = entry.observed ? doneColor : pendingColor;
-
-      // Translucent highlight halo
       ctx.save();
-      ctx.fillStyle = accent;
-      ctx.globalAlpha = entry.observed ? 0.1 : 0.17;
-      ctx.beginPath();
-      ctx.arc(pt.x, pt.y, entry.observed ? 14 : 18, 0, Math.PI * 2);
-      ctx.fill();
-
-      // Concentric reticle ring + cardinal ticks
       ctx.strokeStyle = accent;
-      ctx.globalAlpha = entry.observed ? 0.85 : 0.98;
-      if (entry.observed) {
-        ctx.lineWidth = 1.4;
-        ctx.setLineDash([4, 3]);
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 13, 0, Math.PI * 2);
-        ctx.stroke();
-      } else {
-        ctx.lineWidth = 1.65;
-        ctx.setLineDash([5, 3]);
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 15.5, 0, Math.PI * 2);
-        ctx.stroke();
-
-        ctx.setLineDash([]);
-        ctx.lineWidth = 1.2;
-        ctx.beginPath();
-        ctx.arc(pt.x, pt.y, 10.5, 0, Math.PI * 2);
-        ctx.moveTo(pt.x - 20, pt.y);
-        ctx.lineTo(pt.x - 14.5, pt.y);
-        ctx.moveTo(pt.x + 14.5, pt.y);
-        ctx.lineTo(pt.x + 20, pt.y);
-        ctx.moveTo(pt.x, pt.y - 20);
-        ctx.lineTo(pt.x, pt.y - 14.5);
-        ctx.moveTo(pt.x, pt.y + 14.5);
-        ctx.lineTo(pt.x, pt.y + 20);
-        ctx.stroke();
-      }
+      ctx.globalAlpha = sessionOpacity;
+      ctx.lineWidth = 1.3;
+      ctx.beginPath();
+      ctx.arc(pt.x, pt.y, ringRadius, 0, Math.PI * 2);
+      ctx.stroke();
       ctx.restore();
-
-      // Upright numbered badge pill next to the target
-      if (pt.x >= -20 && pt.x <= width + 20 && pt.y >= -20 && pt.y <= height + 20) {
-        const badgeText = entry.observed
-          ? `✓ #${idx + 1} ${labelName}`
-          : `#${idx + 1} ${labelName}`;
-        const tw = ctx.measureText(badgeText).width;
-        const padX = 5;
-        const pillH = 16;
-        const pillW = tw + padX * 2;
-        let bx = pt.x + 17;
-        let by = pt.y - pillH / 2 - 8;
-        if (bx + pillW > width - 8) bx = pt.x - 17 - pillW;
-        if (by < 8) by = pt.y + 12;
-
-        ctx.save();
-        ctx.fillStyle = pillBg;
-        ctx.strokeStyle = accent;
-        ctx.lineWidth = 1.1;
-        ctx.beginPath();
-        ctx.roundRect(bx, by, pillW, pillH, 4);
-        ctx.fill();
-        ctx.stroke();
-        ctx.fillStyle = accent;
-        ctx.textAlign = 'left';
-        ctx.textBaseline = 'middle';
-        ctx.fillText(badgeText, bx + padX, by + pillH / 2 + 0.5);
-        ctx.restore();
-      }
     });
-
     ctx.restore();
   }
 
@@ -4109,15 +4493,17 @@ function renderStarChartPass(
     const jumpThreshold = Math.max(width, height) * 0.45;
     const challengeAlpha = Math.max(0.05, Math.min(1.0, layers.challengeOpacity ?? 1.0));
     const challengeLineW = Math.max(0.3, Math.min(3.0, layers.challengeLineWidth ?? 0.8));
+    const customChallengeColor =
+      layers.challengeColor && /^#[0-9a-fA-F]{6}$/.test(layers.challengeColor)
+        ? layers.challengeColor
+        : null;
 
     ctx.save();
     for (const track of activeChallenges) {
       const baseLineColor =
         theme === 'red'
           ? '#DC2626'
-          : theme === 'white'
-          ? '#2563EB'
-          : track.lineColor || '#38BDF8';
+          : customChallengeColor ?? (theme === 'white' ? '#2563EB' : track.lineColor || '#38BDF8');
 
       // A. Dual-Layer Background Geometry (e.g., Winter Hexagon & Winter Triangle)
       if (track.guidePolygons && track.guidePolygons.length > 0) {
@@ -4125,10 +4511,12 @@ function renderStarChartPass(
         for (const poly of track.guidePolygons) {
           if (poly.points.length < 2) continue;
           const polyStroke =
-            theme === 'white'
-              ? 'rgba(37, 99, 235, 0.38)'
-              : theme === 'red'
+            theme === 'red'
               ? 'rgba(248, 113, 113, 0.35)'
+              : customChallengeColor
+              ? customChallengeColor
+              : theme === 'white'
+              ? 'rgba(37, 99, 235, 0.38)'
               : poly.color || 'rgba(147, 197, 253, 0.45)';
           ctx.strokeStyle = polyStroke;
           ctx.lineWidth = Math.max(0.35, challengeLineW * 0.85);
@@ -4484,20 +4872,46 @@ function renderStarChartPass(
     }
   }
 
-  // 12. Collision-Free Label Pass
+  // 11.8. Subtle Horizon Atmospheric Extinction Band (drawn BEFORE labels so horizon haze does not blur/dim text)
+  if (extActive && !isSensorPhoto) {
+    drawAtmosphericExtinctionBand(
+      ctx,
+      width,
+      height,
+      view,
+      theme,
+      proj,
+      lstDeg,
+      observer.lat,
+      extK
+    );
+  }
+
+  // 12. Collision-Free Label Pass (integer-snapped coordinates + crisp halo for high legibility)
   labelCandidates.sort((a, b) => a.priority - b.priority);
   ctx.save();
   ctx.textBaseline = 'top';
   ctx.textAlign = 'left';
-  if (hipsVisible) {
-    ctx.lineWidth = 2.6;
-    ctx.strokeStyle = theme === 'white' ? 'rgba(255,255,255,0.85)' : 'rgba(5,7,12,0.85)';
-  }
+  ctx.lineJoin = 'round';
+  ctx.miterLimit = 2;
+  const labelHaloWidth = hipsVisible ? 2.6 : 1.8;
+  const labelHaloStroke =
+    theme === 'white'
+      ? 'rgba(255,255,255,0.88)'
+      : theme === 'red'
+      ? hipsVisible
+        ? 'rgba(6,0,0,0.88)'
+        : 'rgba(6,0,0,0.68)'
+      : hipsVisible
+      ? 'rgba(5,7,12,0.88)'
+      : 'rgba(5,7,12,0.68)';
+  ctx.lineWidth = labelHaloWidth;
+  ctx.strokeStyle = labelHaloStroke;
 
   for (const cand of labelCandidates) {
     ctx.font = cand.font;
     const textW = ctx.measureText(cand.text).width;
-    const textH = 12;
+    const textH = 13;
     const pos = placer.placeLabel(
       cand.x,
       cand.y,
@@ -4508,10 +4922,12 @@ function renderStarChartPass(
       height
     );
     if (pos) {
+      const drawX = Math.round(pos.x);
+      const drawY = Math.round(pos.y);
       ctx.globalAlpha = cand.alpha ?? 1;
-      if (hipsVisible) ctx.strokeText(cand.text, pos.x, pos.y);
+      ctx.strokeText(cand.text, drawX, drawY);
       ctx.fillStyle = cand.color;
-      ctx.fillText(cand.text, pos.x, pos.y);
+      ctx.fillText(cand.text, drawX, drawY);
     }
   }
   ctx.restore();

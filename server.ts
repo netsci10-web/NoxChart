@@ -279,6 +279,418 @@ async function createServer() {
     });
   });
 
+  // IAU Minor Planet Center (MPC) Bright Minor Planets (Soft00Bright.txt) live orbital elements proxy
+  interface ParsedMpcAsteroid {
+    packedId: string;
+    number?: number;
+    name: string;
+    H0: number;
+    slopeG: number;
+    epochJd: number;
+    epochIso: string;
+    M0: number;
+    w0: number;
+    N0: number;
+    i0: number;
+    e0: number;
+    Md: number;
+    a0: number;
+  }
+
+  let mpcBrightCache: {
+    sourceUrl: string;
+    year: number;
+    epochIso: string;
+    fetchedAt: number;
+    asteroids: ParsedMpcAsteroid[];
+  } | null = null;
+
+  const decodeMpcPackedChar = (ch: string): number | null => {
+    if (!ch) return null;
+    const code = ch.charCodeAt(0);
+    if (code >= 48 && code <= 57) return code - 48; // '0'-'9'
+    if (code >= 65 && code <= 90) return code - 55; // 'A'-'Z' -> 10..35
+    if (code >= 97 && code <= 122) return code - 61; // 'a'-'z' -> 36..61
+    return null;
+  };
+
+  const decodeMpcPackedEpoch = (packed: string): { jd: number; iso: string } | null => {
+    const s = packed.trim();
+    if (s.length !== 5) return null;
+    const centuryMap: Record<string, number> = {
+      I: 1800,
+      J: 1900,
+      K: 2000,
+      L: 2100,
+    };
+    const century = centuryMap[s[0]];
+    const yy = Number(s.slice(1, 3));
+    const month = decodeMpcPackedChar(s[3]);
+    const day = decodeMpcPackedChar(s[4]);
+    if (
+      century === undefined ||
+      !Number.isInteger(yy) ||
+      month === null ||
+      day === null ||
+      month < 1 ||
+      month > 12 ||
+      day < 1 ||
+      day > 31
+    ) {
+      return null;
+    }
+    const year = century + yy;
+    const utcMs = Date.UTC(year, month - 1, day, 0, 0, 0);
+    if (!Number.isFinite(utcMs)) return null;
+    const jd = utcMs / 86400000 + 2440587.5;
+    const iso = `${year}-${String(month).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    return { jd, iso };
+  };
+
+  const decodeMpcPackedNumber = (packed: string): number | undefined => {
+    const s = packed.trim();
+    if (/^\d{1,5}$/.test(s)) return Number(s);
+    if (s.length === 5 && /^[A-Za-z]\d{4}$/.test(s)) {
+      const lead = decodeMpcPackedChar(s[0]);
+      if (lead !== null && lead >= 10) {
+        return lead * 10000 + Number(s.slice(1));
+      }
+    }
+    return undefined;
+  };
+
+  const parseMpcSoft00Bright = (rawText: string): ParsedMpcAsteroid[] => {
+    const lines = rawText.split(/\r?\n/);
+    const out: ParsedMpcAsteroid[] = [];
+    for (const line of lines) {
+      if (line.length < 103) continue;
+      const packedId = line.slice(0, 7).trim();
+      if (!packedId || packedId.startsWith('#') || packedId.startsWith('-')) continue;
+
+      const H0 = parseFloat(line.slice(8, 13).trim());
+      const slopeGRaw = parseFloat(line.slice(14, 19).trim());
+      const epoch = decodeMpcPackedEpoch(line.slice(20, 25));
+      const M0 = parseFloat(line.slice(26, 35).trim());
+      const w0 = parseFloat(line.slice(37, 46).trim());
+      const N0 = parseFloat(line.slice(48, 57).trim());
+      const i0 = parseFloat(line.slice(59, 68).trim());
+      const e0 = parseFloat(line.slice(70, 79).trim());
+      const MdRaw = parseFloat(line.slice(80, 91).trim());
+      const a0 = parseFloat(line.slice(92, 103).trim());
+
+      if (
+        !epoch ||
+        !Number.isFinite(H0) ||
+        !Number.isFinite(M0) ||
+        !Number.isFinite(w0) ||
+        !Number.isFinite(N0) ||
+        !Number.isFinite(i0) ||
+        !Number.isFinite(e0) ||
+        !Number.isFinite(a0) ||
+        a0 <= 0.05 ||
+        e0 < 0 ||
+        e0 >= 0.999
+      ) {
+        continue;
+      }
+
+      // Mean daily motion n (deg/day): use column value or Kepler's 3rd law fallback
+      const Md =
+        Number.isFinite(MdRaw) && MdRaw > 0
+          ? MdRaw
+          : 0.9856076686 / Math.pow(a0, 1.5);
+      const slopeG = Number.isFinite(slopeGRaw) ? slopeGRaw : 0.15;
+
+      const readableRaw = line.length >= 167 ? line.slice(166, 194).trim() : '';
+      let num = decodeMpcPackedNumber(packedId);
+      let displayName = readableRaw;
+
+      const numMatch = readableRaw.match(/^\((\d+)\)\s*(.*)$/);
+      if (numMatch) {
+        num = Number(numMatch[1]);
+        const rest = numMatch[2].trim();
+        displayName = rest ? `${num} ${rest}` : `(${num})`;
+      } else if (!displayName) {
+        displayName = num !== undefined ? `(${num})` : packedId;
+      }
+
+      out.push({
+        packedId,
+        number: num,
+        name: displayName,
+        H0,
+        slopeG,
+        epochJd: epoch.jd,
+        epochIso: epoch.iso,
+        M0,
+        w0,
+        N0,
+        i0,
+        e0,
+        Md,
+        a0,
+      });
+    }
+    return out;
+  };
+
+  app.get('/api/mpc/bright-asteroids', async (req, res) => {
+    const force = req.query.force === '1' || req.query.force === 'true';
+    const MPC_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
+    if (!force && mpcBrightCache && Date.now() - mpcBrightCache.fetchedAt < MPC_TTL_MS) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ ...mpcBrightCache, count: mpcBrightCache.asteroids.length, cached: true });
+      return;
+    }
+
+    const nowYear = new Date().getUTCFullYear();
+    const candidateYears = [nowYear, nowYear - 1, nowYear + 1];
+
+    let fetchedText = '';
+    let resolvedUrl = '';
+    let resolvedYear = nowYear;
+
+    for (const yr of candidateYears) {
+      const url = `https://minorplanetcenter.net/iau/Ephemerides/Bright/${yr}/Soft00Bright.txt`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 12000);
+      try {
+        const upstream = await fetch(url, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: {
+            Accept: 'text/plain,*/*;q=0.8',
+            'User-Agent': 'NoxChart-StarAtlas/1.0 (+https://noxchart.app)',
+          },
+        });
+        clearTimeout(timer);
+        if (upstream.ok) {
+          const text = await upstream.text();
+          if (text.length > 200 && !text.trimStart().startsWith('<')) {
+            fetchedText = text;
+            resolvedUrl = url;
+            resolvedYear = yr;
+            break;
+          }
+        }
+      } catch {
+        clearTimeout(timer);
+      }
+    }
+
+    if (!fetchedText) {
+      if (mpcBrightCache) {
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({
+          ...mpcBrightCache,
+          count: mpcBrightCache.asteroids.length,
+          cached: true,
+          stale: true,
+        });
+        return;
+      }
+      res.status(502).json({
+        error: 'IAU MPC 서버에서 Soft00Bright.txt 목록을 불러오지 못했습니다.',
+      });
+      return;
+    }
+
+    const asteroids = parseMpcSoft00Bright(fetchedText);
+    if (asteroids.length === 0) {
+      res.status(502).json({
+        error: 'MPC Soft00Bright.txt 궤도 요소를 해석하지 못했습니다.',
+      });
+      return;
+    }
+
+    const epochIso = asteroids[0].epochIso;
+    mpcBrightCache = {
+      sourceUrl: resolvedUrl,
+      year: resolvedYear,
+      epochIso,
+      fetchedAt: Date.now(),
+      asteroids,
+    };
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      ...mpcBrightCache,
+      count: asteroids.length,
+      cached: false,
+    });
+  });
+
+  // Open API Geocoding proxy (OpenStreetMap Nominatim with Komoot Photon fallback)
+  interface GeocodeResultItem {
+    id: string;
+    name: string;
+    detail: string;
+    lat: number;
+    lon: number;
+    boundingbox?: [number, number, number, number]; // [south, north, west, east]
+  }
+  const geocodeCache = new Map<string, { results: GeocodeResultItem[]; at: number }>();
+
+  app.get('/api/geocode', async (req, res) => {
+    const rawQ = String(req.query.q || '').trim().slice(0, 120);
+    if (rawQ.length < 2) {
+      res.json({ results: [] });
+      return;
+    }
+
+    const cacheKey = rawQ.toLowerCase();
+    const cached = geocodeCache.get(cacheKey);
+    if (cached && Date.now() - cached.at < 15 * 60 * 1000) {
+      res.setHeader('Cache-Control', 'public, max-age=600');
+      res.json({ results: cached.results, cached: true });
+      return;
+    }
+
+    const fetchWithTimeout = async (url: string, headers: Record<string, string>, ms = 6000) => {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), ms);
+      try {
+        return await fetch(url, { method: 'GET', headers, signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+
+    let results: GeocodeResultItem[] = [];
+
+    // 1. Primary: OpenStreetMap Nominatim Open API
+    try {
+      const nomUrl =
+        'https://nominatim.openstreetmap.org/search?' +
+        new URLSearchParams({
+          format: 'jsonv2',
+          addressdetails: '1',
+          limit: '8',
+          'accept-language': 'ko',
+          q: rawQ,
+        }).toString();
+      const upstream = await fetchWithTimeout(nomUrl, {
+        Accept: 'application/json',
+        'Accept-Language': 'ko,en;q=0.8',
+        'User-Agent': 'NoxChart-StarAtlas/1.0 (+https://noxchart.app)',
+      });
+      if (upstream.ok) {
+        const rows = (await upstream.json()) as Array<{
+          place_id?: number | string;
+          name?: string;
+          display_name?: string;
+          lat?: string;
+          lon?: string;
+          boundingbox?: [string, string, string, string];
+        }>;
+        if (Array.isArray(rows)) {
+          results = rows
+            .map((r, idx): GeocodeResultItem | null => {
+              const lat = Number(r.lat);
+              const lon = Number(r.lon);
+              if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+              const full = String(r.display_name || '').trim();
+              const parts = full.split(',').map((s) => s.trim()).filter(Boolean);
+              const name = (r.name && r.name.trim()) || parts[0] || rawQ;
+              const detail = parts.length > 1 ? parts.slice(1).join(', ') : full;
+              let bbox: [number, number, number, number] | undefined;
+              if (Array.isArray(r.boundingbox) && r.boundingbox.length === 4) {
+                const nums = r.boundingbox.map(Number);
+                if (nums.every(Number.isFinite)) {
+                  bbox = [nums[0], nums[1], nums[2], nums[3]];
+                }
+              }
+              return {
+                id: `nom_${r.place_id ?? idx}`,
+                name,
+                detail: detail === name ? '' : detail,
+                lat,
+                lon,
+                boundingbox: bbox,
+              };
+            })
+            .filter((x): x is GeocodeResultItem => x !== null);
+        }
+      }
+    } catch {
+      // Fall through to Photon open API
+    }
+
+    // 2. Fallback: Komoot Photon Open API (OSM-based, fast fuzzy matching)
+    if (results.length === 0) {
+      try {
+        const photonUrl =
+          'https://photon.komoot.io/api/?' +
+          new URLSearchParams({
+            q: rawQ,
+            limit: '8',
+          }).toString();
+        const upstream = await fetchWithTimeout(photonUrl, {
+          Accept: 'application/json',
+          'User-Agent': 'NoxChart-StarAtlas/1.0 (+https://noxchart.app)',
+        });
+        if (upstream.ok) {
+          const payload = (await upstream.json()) as {
+            features?: Array<{
+              geometry?: { coordinates?: [number, number] };
+              properties?: {
+                osm_id?: number;
+                name?: string;
+                street?: string;
+                city?: string;
+                county?: string;
+                state?: string;
+                country?: string;
+                extent?: [number, number, number, number];
+              };
+            }>;
+          };
+          const feats = Array.isArray(payload?.features) ? payload.features : [];
+          results = feats
+            .map((f, idx): GeocodeResultItem | null => {
+              const coords = f.geometry?.coordinates;
+              if (!coords || coords.length < 2) return null;
+              const lon = Number(coords[0]);
+              const lat = Number(coords[1]);
+              if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+              const p = f.properties || {};
+              const name = p.name || p.street || p.city || p.state || rawQ;
+              const detailParts = [p.city, p.county, p.state, p.country].filter(
+                (v): v is string => Boolean(v && v !== name)
+              );
+              let bbox: [number, number, number, number] | undefined;
+              if (Array.isArray(p.extent) && p.extent.length === 4) {
+                const [west, north, east, south] = p.extent.map(Number);
+                if ([west, north, east, south].every(Number.isFinite)) {
+                  bbox = [south, north, west, east];
+                }
+              }
+              return {
+                id: `pho_${p.osm_id ?? idx}_${lat.toFixed(4)}`,
+                name,
+                detail: detailParts.join(', '),
+                lat,
+                lon,
+                boundingbox: bbox,
+              };
+            })
+            .filter((x): x is GeocodeResultItem => x !== null);
+        }
+      } catch {
+        // Return empty results
+      }
+    }
+
+    if (geocodeCache.size >= 200) {
+      const oldest = geocodeCache.keys().next().value;
+      if (oldest) geocodeCache.delete(oldest);
+    }
+    geocodeCache.set(cacheKey, { results, at: Date.now() });
+
+    res.setHeader('Cache-Control', 'public, max-age=600');
+    res.json({ results });
+  });
+
   // Single pre-gzipped core catalog bundle (replaces multiple simultaneous boot fetches)
   app.get('/api/catalogs/core', (req, res) => {
     const asset = getCoreBundleAsset();

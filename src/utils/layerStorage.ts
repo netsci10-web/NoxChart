@@ -44,6 +44,14 @@ function readBool(val: unknown, fallback: boolean): boolean {
   return typeof val === 'boolean' ? val : fallback;
 }
 
+function readHexColor(val: unknown, fallback: string, allowEmpty = false): string {
+  if (typeof val !== 'string') return fallback;
+  const trimmed = val.trim();
+  if (allowEmpty && trimmed === '') return '';
+  if (/^#[0-9a-fA-F]{6}$/.test(trimmed)) return trimmed.toUpperCase();
+  return fallback;
+}
+
 export function sanitizeLayerSettings(
   raw: unknown,
   fallback: LayerSettings
@@ -67,6 +75,7 @@ export function sanitizeLayerSettings(
     showGridEq: readBool(obj.showGridEq, fallback.showGridEq),
     showGridAltAz: readBool(obj.showGridAltAz, fallback.showGridAltAz),
     gridLineWidth: clampNum(obj.gridLineWidth, fallback.gridLineWidth, 0.2, 2.5),
+    gridLineOpacity: clampNum(obj.gridLineOpacity, fallback.gridLineOpacity, 0.05, 1.0),
     showHorizon: readBool(obj.showHorizon, fallback.showHorizon),
     showTerrain: readBool(obj.showTerrain, fallback.showTerrain),
     showEcliptic: readBool(obj.showEcliptic, fallback.showEcliptic),
@@ -127,9 +136,15 @@ export function sanitizeLayerSettings(
       0,
       100
     ),
-    doubleStarOpacity: clampNum(
-      obj.doubleStarOpacity,
-      fallback.doubleStarOpacity,
+    doubleStarSymbolOpacity: clampNum(
+      obj.doubleStarSymbolOpacity ?? obj.doubleStarOpacity,
+      fallback.doubleStarSymbolOpacity,
+      0.05,
+      1.0
+    ),
+    doubleStarLabelOpacity: clampNum(
+      obj.doubleStarLabelOpacity ?? obj.doubleStarOpacity,
+      fallback.doubleStarLabelOpacity,
       0.05,
       1.0
     ),
@@ -149,8 +164,25 @@ export function sanitizeLayerSettings(
       0,
       100
     ),
-    dsoOpacity: clampNum(obj.dsoOpacity, fallback.dsoOpacity, 0.05, 1.0),
+    dsoSymbolOpacity: clampNum(
+      obj.dsoSymbolOpacity ?? obj.dsoOpacity,
+      fallback.dsoSymbolOpacity,
+      0.05,
+      1.0
+    ),
+    dsoLabelOpacity: clampNum(
+      obj.dsoLabelOpacity ?? obj.dsoOpacity,
+      fallback.dsoLabelOpacity,
+      0.05,
+      1.0
+    ),
     showStarLabels: readBool(obj.showStarLabels, fallback.showStarLabels),
+    starLabelLanguage:
+      obj.starLabelLanguage === 'ko' ||
+      obj.starLabelLanguage === 'en' ||
+      obj.starLabelLanguage === 'ko_en'
+        ? obj.starLabelLanguage
+        : fallback.starLabelLanguage ?? 'ko',
     showProperStarNames: readBool(
       obj.showProperStarNames,
       fallback.showProperStarNames
@@ -160,6 +192,12 @@ export function sanitizeLayerSettings(
       fallback.starLabelDensityPct,
       0,
       100
+    ),
+    starLabelOpacity: clampNum(
+      obj.starLabelOpacity,
+      fallback.starLabelOpacity,
+      0.05,
+      1.0
     ),
     showFieldStars: readBool(obj.showFieldStars, fallback.showFieldStars),
     enableGaiaLive: readBool(obj.enableGaiaLive, fallback.enableGaiaLive),
@@ -172,6 +210,22 @@ export function sanitizeLayerSettings(
       obj.highlightSessionPlan,
       fallback.highlightSessionPlan
     ),
+    sessionPlanColor: readHexColor(
+      obj.sessionPlanColor,
+      fallback.sessionPlanColor,
+      false
+    ),
+    sessionPlanOpacity: clampNum(
+      obj.sessionPlanOpacity,
+      fallback.sessionPlanOpacity,
+      0.1,
+      1.0
+    ),
+    challengeColor: readHexColor(
+      obj.challengeColor,
+      fallback.challengeColor,
+      true
+    ),
     challengeOpacity: clampNum(
       obj.challengeOpacity,
       fallback.challengeOpacity,
@@ -183,6 +237,16 @@ export function sanitizeLayerSettings(
       fallback.challengeLineWidth,
       0.3,
       3.0
+    ),
+    showAtmosphericExtinction: readBool(
+      obj.showAtmosphericExtinction,
+      fallback.showAtmosphericExtinction
+    ),
+    extinctionCoeff: clampNum(
+      obj.extinctionCoeff,
+      fallback.extinctionCoeff,
+      0.1,
+      0.8
     ),
   };
 }
@@ -286,10 +350,11 @@ export function downloadLayerSettingsFile(
   window.setTimeout(() => URL.revokeObjectURL(url), 1000);
 }
 
-const RECOGNIZED_LAYER_KEYS: (keyof LayerSettings)[] = [
+const RECOGNIZED_LAYER_KEYS: readonly string[] = [
   'showGridEq',
   'showGridAltAz',
   'gridLineWidth',
+  'gridLineOpacity',
   'showHorizon',
   'showTerrain',
   'showEcliptic',
@@ -298,13 +363,25 @@ const RECOGNIZED_LAYER_KEYS: (keyof LayerSettings)[] = [
   'showConstellationNames',
   'showSolarSystem',
   'showDoubleStars',
+  'doubleStarSymbolOpacity',
+  'doubleStarLabelOpacity',
   'doubleStarOpacity',
   'showDso',
+  'dsoSymbolOpacity',
+  'dsoLabelOpacity',
   'dsoOpacity',
   'showStarLabels',
+  'starLabelLanguage',
+  'starLabelOpacity',
   'showFieldStars',
   'magOffset',
   'dsoMagOffset',
+  'highlightSessionPlan',
+  'sessionPlanColor',
+  'sessionPlanOpacity',
+  'challengeColor',
+  'showAtmosphericExtinction',
+  'extinctionCoeff',
 ];
 
 function looksLikeLayerObject(obj: unknown): boolean {

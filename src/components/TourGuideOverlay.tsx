@@ -74,7 +74,7 @@ export function TourGuideOverlay({
 
   return (
     <div
-      className={`no-print pointer-events-auto absolute z-30 bottom-3 left-1/2 -translate-x-1/2 w-[min(460px,calc(100%-24px))] border shadow-2xl backdrop-blur-md overflow-hidden ${ui.hudOverlay}`}
+      className={`no-print pointer-events-auto absolute z-30 bottom-7 left-1/2 -translate-x-1/2 w-[min(460px,calc(100%-24px))] border shadow-2xl backdrop-blur-md overflow-hidden ${ui.hudOverlay}`}
       style={{ borderRadius: '10px' }}
       role="region"
       aria-label="챌린지 투어 안내 및 재생 제어"

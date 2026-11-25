@@ -595,15 +595,33 @@ export function EquipmentLockerPanel({
           type="button"
           onClick={handleTogglePanelOpen}
           aria-expanded={panelOpen}
-          className={`flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer ${ui.textPrimary}`}
+          className="flex-1 flex items-center gap-1 min-w-0 text-left font-semibold whitespace-nowrap tracking-[-0.05em] cursor-pointer"
         >
           <ChevronDown
             className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${sectionChevronCls} ${
               panelOpen ? '' : '-rotate-90'
             }`}
           />
-          <Package className="w-3.5 h-3.5 shrink-0" />
-          <span>내 장비함 ({locker.items.length})</span>
+          <Package
+            className={`w-3.5 h-3.5 shrink-0 ${
+              theme === 'white'
+                ? 'text-cyan-700'
+                : theme === 'red'
+                ? 'text-[#FF5555]'
+                : 'text-cyan-400'
+            }`}
+          />
+          <span
+            className={
+              theme === 'white'
+                ? 'text-cyan-700'
+                : theme === 'red'
+                ? 'text-[#FF6666]'
+                : 'text-cyan-400'
+            }
+          >
+            내 장비함 ({locker.items.length})
+          </span>
         </button>
         <div className="flex items-center gap-1 shrink-0">
           <input
@@ -617,7 +635,7 @@ export function EquipmentLockerPanel({
             type="button"
             onClick={() => fileInputRef.current?.click()}
             title="로컬 .skylist 장비 파일 불러오기"
-            className={`px-1.5 py-0.5 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center gap-0.5 whitespace-nowrap ${ui.buttonIdle}`}
+            className={`px-1.5 py-0.5 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center gap-0.5 whitespace-nowrap cursor-pointer transition-colors ${ui.buttonLoad}`}
             style={{ borderRadius: '4px' }}
           >
             <Upload className="w-2.5 h-2.5 shrink-0" />
@@ -627,7 +645,7 @@ export function EquipmentLockerPanel({
             type="button"
             onClick={handleExportSkylist}
             title="내 장비함을 .skylist 파일로 로컬 저장"
-            className={`px-1.5 py-0.5 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center gap-0.5 whitespace-nowrap ${ui.buttonIdle}`}
+            className={`px-1.5 py-0.5 border text-[9.5px] tracking-[-0.05em] font-medium flex items-center gap-0.5 whitespace-nowrap cursor-pointer transition-colors ${ui.buttonSave}`}
             style={{ borderRadius: '4px' }}
           >
             <Download className="w-2.5 h-2.5 shrink-0" />

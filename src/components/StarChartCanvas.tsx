@@ -72,14 +72,14 @@ import { formatLinkedReticleTitle, hitTestAsterisms } from '../utils/asterismRen
 import { formatCatalogCode, formatObjectDisplayName } from '../utils/catalogNames';
 import { renderStarChart, RenderResult } from '../utils/chartRenderer';
 import { getPlanetRenderer } from '../utils/planetRenderer';
-import { getSolarSystemBodies } from '../utils/solarSystem';
+import { getSolarSystemBodies, subscribeMpcAsteroids } from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
 import { AsterismToolbox } from './AsterismToolbox';
 import { HipsBackground, HipsBackgroundHandle } from './HipsBackground';
 
 export interface StarChartCanvasHandle {
   exportPng: () => void;
-  exportSensorFovPng: (equipmentName?: string) => void;
+  exportSensorFovPng: (equipmentName?: string) => Promise<void>;
   renderPrintableChart: (options?: { title?: string }) => string | null;
   cancelSmoothCenter: () => void;
   smoothCenterOn: (
@@ -603,6 +603,10 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       northAngleDeg: number;
     }>({ magLimit: 6.2, dsoMagLimit: 9.7, stars: 0, dsos: 0, northAngleDeg: 0 });
     const [planetTexRev, setPlanetTexRev] = useState(0);
+    const [mpcCatalogRev, setMpcCatalogRev] = useState(0);
+    useEffect(() => {
+      return subscribeMpcAsteroids(() => setMpcCatalogRev((r) => r + 1));
+    }, []);
     const [fovEditing, setFovEditing] = useState(false);
     const [fovInputDraft, setFovInputDraft] = useState('');
     const fovCancelRef = useRef(false);
@@ -925,7 +929,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         outCtx.restore();
         return outCanvas.toDataURL('image/png');
       },
-      exportSensorFovPng: (equipmentName?: string) => {
+      exportSensorFovPng: async (equipmentName?: string) => {
         if (
           !optics.showSensorBox ||
           optics.sensorWidthDeg <= 0 ||
@@ -1113,6 +1117,16 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
         const emptySessionIds = new Set<string>();
         const hipsVisible = hips.enabled && hips.opacity > 0.02;
+
+        if (hipsVisible && hipsRef.current) {
+          await hipsRef.current.preloadSnapshotTiles(
+            outW,
+            photoH,
+            sensorView,
+            exportRotDeg,
+            15000
+          );
+        }
 
         // Render sky photograph into exact (0, 0, outW, photoH) region
         outCtx.save();
@@ -1401,6 +1415,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       challenges,
       solarTrails,
       planetTexRev,
+      mpcCatalogRev,
       asterismStore,
       asterismMode,
       asterismTool,
@@ -2216,7 +2231,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       const y = e.clientY - rect.top;
 
       const hit = findHitTarget(x, y, 8);
-      const target = hit ? hit.item : null;
+      const target = hit ? hit.item : selected;
 
       // In Asterism Drawing Mode:
       // Show the drawing menu (tools, props/layers, delete) + divider + original star chart menu.
@@ -2275,8 +2290,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           }
         }
 
-        const menuW = target ? 186 : 156;
-        const menuH = target ? 464 : 374;
+        const menuW = target ? 196 : 156;
+        const menuH = target ? 496 : 374;
         const clampedX = Math.max(8, Math.min(size.width - menuW - 8, x));
         const clampedY = Math.max(8, Math.min(size.height - menuH - 8, y));
         setContextMenu({
@@ -2289,8 +2304,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         return;
       }
 
-      const menuW = target ? 186 : 124;
-      const menuH = target ? 240 : 132;
+      const menuW = target ? 196 : 124;
+      const menuH = target ? 272 : 132;
       const clampedX = Math.max(8, Math.min(size.width - menuW - 8, x));
       const clampedY = Math.max(8, Math.min(size.height - menuH - 8, y));
 
@@ -2453,10 +2468,36 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
 
               const renderOriginalChartMenu = (target: SelectedItem | null) => {
                 const inTonight = target ? sessionIds.has(target.data.id) : false;
+                const targetTitle = target
+                  ? formatSelectedFooterObject(target, catalogs.caldwell).label
+                  : '';
+                const targetMagStr =
+                  target && Number.isFinite(target.data.mag)
+                    ? `${target.data.mag.toFixed(1)}m`
+                    : null;
                 return (
                   <>
                     {target && (
                       <>
+                        <div
+                          className={`px-2.5 py-1.5 mb-0.5 border-b flex items-center justify-between gap-2 select-none ${dividerCls} ${
+                            theme === 'white'
+                              ? 'bg-slate-100/80 text-slate-900'
+                              : theme === 'red'
+                              ? 'bg-[#220404]/90 text-[#FCA5A5]'
+                              : 'bg-[#131E33]/90 text-cyan-200'
+                          }`}
+                          title={targetTitle}
+                        >
+                          <span className="text-[11.5px] font-semibold truncate max-w-[148px]">
+                            {targetTitle}
+                          </span>
+                          {targetMagStr && (
+                            <span className="font-mono text-[10px] opacity-75 shrink-0 tabular-nums">
+                              {targetMagStr}
+                            </span>
+                          )}
+                        </div>
                         <button
                           type="button"
                           role="menuitem"

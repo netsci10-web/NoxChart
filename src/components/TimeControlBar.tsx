@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import {
+  ChevronDown,
   ChevronsLeft,
   ChevronsRight,
   Minus,
@@ -81,12 +82,14 @@ interface TimeControlBarProps {
   theme: ThemeMode;
   observer: ObserverConfig;
   onChangeObserver: (updater: (prev: ObserverConfig) => ObserverConfig) => void;
+  onCollapse?: () => void;
 }
 
 export function TimeControlBar({
   theme,
   observer,
   onChangeObserver,
+  onCollapse,
 }: TimeControlBarProps) {
   const [selectedUnit, setSelectedUnit] = useState<TimeUnit>('hour');
 
@@ -170,7 +173,7 @@ export function TimeControlBar({
 
   const barCls =
     theme === 'white'
-      ? 'bg-slate-50 border-slate-200 text-slate-800'
+      ? 'bg-slate-200 border-slate-300 text-slate-800'
       : theme === 'red'
       ? 'bg-[#070000] border-[#300808] text-[#DC2626]'
       : 'bg-[#070B14] border-[#1B273D] text-slate-200';
@@ -272,12 +275,32 @@ export function TimeControlBar({
 
   const activeUnitLabel = TIME_UNIT_LABELS[selectedUnit];
 
+  const collapseBtnCls =
+    theme === 'white'
+      ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500 shadow-xs'
+      : theme === 'red'
+      ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-[0_0_8px_rgba(239,68,68,0.35)]'
+      : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 border-cyan-300 shadow-[0_0_8px_rgba(34,211,238,0.35)]';
+
   return (
     <div
-      className={`no-print shrink-0 border-t px-3 py-1.5 flex items-center justify-center gap-2 flex-wrap select-none ${barCls}`}
+      className={`no-print shrink-0 border-t px-3 pt-1.5 flex items-center justify-center gap-2 flex-wrap select-none ${barCls}`}
+      style={{ paddingBottom: 'max(6px, env(safe-area-inset-bottom, 0px))' }}
     >
-      {/* Left: [-] [YYYY년 MM월 DD일  HH시 MM분 SS초] [+] */}
+      {/* Left: [v] [-] [YYYY년 MM월 DD일  HH시 MM분 SS초] [+] */}
       <div className="flex items-center justify-center gap-1.5 shrink-0">
+        {onCollapse && (
+          <button
+            type="button"
+            onClick={onCollapse}
+            title="시간 조절바 아래로 숨기기"
+            aria-label="시간 조절바 숨기기"
+            aria-expanded={true}
+            className={`h-7 w-7 rounded-md border flex items-center justify-center transition-colors shrink-0 cursor-pointer ${collapseBtnCls}`}
+          >
+            <ChevronDown className="w-4 h-4 stroke-[2.5]" />
+          </button>
+        )}
         <button
           type="button"
           onClick={() => stepSelectedUnit(-1)}

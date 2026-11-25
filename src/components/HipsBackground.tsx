@@ -417,6 +417,7 @@ interface TileCacheItem {
   tex: WebGLTexture | null;
   status: 'loading' | 'ready' | 'error';
   lastUsed: number;
+  promise?: Promise<void>;
 }
 
 interface GlState {
@@ -427,6 +428,7 @@ interface GlState {
   meshBuf: WebGLBuffer;
   allskyTextures: Partial<Record<HipsSurveyId, WebGLTexture>>;
   allskyLoading: Set<HipsSurveyId>;
+  allskyPromises: Partial<Record<HipsSurveyId, Promise<void>>>;
   tileTextures: Map<string, TileCacheItem>;
 }
 
@@ -441,6 +443,13 @@ interface HipsBackgroundProps {
 }
 
 export interface HipsBackgroundHandle {
+  preloadSnapshotTiles: (
+    outWidth: number,
+    outHeight: number,
+    customView: ChartViewState,
+    customRotationDeg?: number,
+    timeoutMs?: number
+  ) => Promise<void>;
   renderSnapshotToCanvas: (
     targetCtx: CanvasRenderingContext2D,
     outWidth: number,
@@ -450,7 +459,49 @@ export interface HipsBackgroundHandle {
   ) => boolean;
 }
 
-const MAX_CACHED_TILES = 72;
+const MAX_CACHED_TILES = 96;
+
+function getHipsTileOrder(fsz: number): number {
+  return fsz <= 0.55
+    ? 8
+    : fsz <= 1.1
+    ? 7
+    : fsz <= 2.2
+    ? 6
+    : fsz <= 6
+    ? 5
+    : fsz <= 14
+    ? 4
+    : 3;
+}
+
+function collectVisibleTilePixels(
+  rWidth: number,
+  rHeight: number,
+  tileProj: ProjectionParams,
+  order: number,
+  eyepieceBoundsOnly: boolean,
+  epRadiusCss: number
+): Set<number> {
+  const visiblePix = new Set<number>();
+  const gridN = eyepieceBoundsOnly ? 6 : 12;
+  const minX = eyepieceBoundsOnly ? Math.max(0, rWidth / 2 - epRadiusCss * 1.08) : -0.06 * rWidth;
+  const maxX = eyepieceBoundsOnly ? Math.min(rWidth, rWidth / 2 + epRadiusCss * 1.08) : 1.06 * rWidth;
+  const minY = eyepieceBoundsOnly ? Math.max(0, rHeight / 2 - epRadiusCss * 1.08) : -0.06 * rHeight;
+  const maxY = eyepieceBoundsOnly ? Math.min(rHeight, rHeight / 2 + epRadiusCss * 1.08) : 1.06 * rHeight;
+
+  for (let gy = 0; gy <= gridN; gy++) {
+    for (let gx = 0; gx <= gridN; gx++) {
+      const sx = minX + (gx / gridN) * (maxX - minX);
+      const sy = minY + (gy / gridN) * (maxY - minY);
+      const eq = unprojectStereographic(sx, sy, tileProj);
+      if (eq) {
+        visiblePix.add(ang2pixNest(eq.raDeg, eq.decDeg, order));
+      }
+    }
+  }
+  return visiblePix;
+}
 
 /**
  * Native WebGL1 HEALPix HiPS real sky survey background renderer (DSS2 / 2MASS / AllWISE)
@@ -475,7 +526,200 @@ export const HipsBackground = forwardRef<HipsBackgroundHandle, HipsBackgroundPro
       ) => boolean
     >(() => false);
 
+    const latestPropsRef = useRef({ hips, observer });
+    latestPropsRef.current = { hips, observer };
+
+    const ensureAllskyLoaded = (survey: HipsSurveyId): Promise<void> => {
+      const st = glStateRef.current;
+      if (!st) return Promise.resolve();
+      if (st.allskyTextures[survey]) return Promise.resolve();
+      const existing = st.allskyPromises[survey];
+      if (existing) return existing;
+
+      st.allskyLoading.add(survey);
+      const promise = new Promise<void>((resolve) => {
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          const cur = glStateRef.current;
+          if (!cur) {
+            resolve();
+            return;
+          }
+          cur.allskyLoading.delete(survey);
+          delete cur.allskyPromises[survey];
+          const tex = uploadTexture(cur.gl, img);
+          if (tex) {
+            cur.allskyTextures[survey] = tex;
+            renderTriggerRef.current();
+          }
+          resolve();
+        };
+        img.onerror = () => {
+          const cur = glStateRef.current;
+          if (cur) {
+            cur.allskyLoading.delete(survey);
+            delete cur.allskyPromises[survey];
+          }
+          resolve();
+        };
+        img.src = `${SURVEY_URLS[survey]}/Norder3/Allsky.jpg`;
+      });
+      st.allskyPromises[survey] = promise;
+      return promise;
+    };
+
+    const ensureTileLoaded = (
+      survey: HipsSurveyId,
+      order: number,
+      ipix: number,
+      nowMs: number,
+      retryError = false
+    ): TileCacheItem | null => {
+      const st = glStateRef.current;
+      if (!st) return null;
+      const key = `${survey}_${order}_${ipix}`;
+      let entry = st.tileTextures.get(key);
+      if (entry && retryError && entry.status === 'error' && nowMs - entry.lastUsed > 4000) {
+        st.tileTextures.delete(key);
+        entry = undefined;
+      }
+      if (entry) {
+        entry.lastUsed = nowMs;
+        return entry;
+      }
+
+      if (st.tileTextures.size >= MAX_CACHED_TILES) {
+        let oldestKey: string | null = null;
+        let oldestTime = Infinity;
+        for (const [k, v] of st.tileTextures.entries()) {
+          if (v.status === 'loading') continue;
+          if (v.lastUsed < oldestTime) {
+            oldestTime = v.lastUsed;
+            oldestKey = k;
+          }
+        }
+        if (oldestKey) {
+          const old = st.tileTextures.get(oldestKey);
+          if (old?.tex) st.gl.deleteTexture(old.tex);
+          st.tileTextures.delete(oldestKey);
+        }
+      }
+
+      const newEntry: TileCacheItem = { tex: null, status: 'loading', lastUsed: nowMs };
+      const promise = new Promise<void>((resolve) => {
+        const dir = Math.floor(ipix / 10000) * 10000;
+        const img = new Image();
+        img.crossOrigin = 'anonymous';
+        img.onload = () => {
+          const cur = glStateRef.current;
+          if (!cur) {
+            resolve();
+            return;
+          }
+          const rec = cur.tileTextures.get(key);
+          if (!rec) {
+            resolve();
+            return;
+          }
+          const tex = uploadTexture(cur.gl, img);
+          if (tex) {
+            rec.tex = tex;
+            rec.status = 'ready';
+            rec.promise = undefined;
+            renderTriggerRef.current();
+          } else {
+            rec.status = 'error';
+            rec.promise = undefined;
+          }
+          resolve();
+        };
+        img.onerror = () => {
+          const rec = glStateRef.current?.tileTextures.get(key);
+          if (rec) {
+            rec.status = 'error';
+            rec.promise = undefined;
+          }
+          resolve();
+        };
+        img.src = `${SURVEY_URLS[survey]}/Norder${order}/Dir${dir}/Npix${ipix}.jpg`;
+      });
+      newEntry.promise = promise;
+      st.tileTextures.set(key, newEntry);
+      return newEntry;
+    };
+
     useImperativeHandle(ref, () => ({
+      preloadSnapshotTiles: async (
+        outWidth,
+        outHeight,
+        customView,
+        customRotationDeg = 0,
+        timeoutMs = 15000
+      ) => {
+        const { hips: curHips, observer: curObserver } = latestPropsRef.current;
+        if (!curHips.enabled || curHips.opacity <= 0.02) return;
+        const st = glStateRef.current;
+        if (!st) return;
+
+        const pending: Promise<void>[] = [];
+        pending.push(ensureAllskyLoaded(curHips.survey));
+
+        if (customView.fsz <= 28) {
+          const lstDeg = getLSTDeg(curObserver.timestampMs, curObserver.lon);
+          const rawFlipActive = customView.flipH || customView.flipV;
+          const fullRotDeg = ((customRotationDeg % 360) + 360) % 360;
+          const unflippedView: ChartViewState = { ...customView, flipH: false, flipV: false };
+          const baseProj =
+            rawFlipActive || fullRotDeg > 0
+              ? createProjectionParams(
+                  rawFlipActive ? customView : unflippedView,
+                  outWidth,
+                  outHeight,
+                  lstDeg,
+                  curObserver.lat,
+                  fullRotDeg
+                )
+              : createProjectionParams(
+                  unflippedView,
+                  outWidth,
+                  outHeight,
+                  lstDeg,
+                  curObserver.lat,
+                  0
+                );
+          const order = getHipsTileOrder(customView.fsz);
+          const visiblePix = collectVisibleTilePixels(
+            outWidth,
+            outHeight,
+            baseProj,
+            order,
+            false,
+            0
+          );
+          const nowMs = Date.now();
+          for (const ipix of visiblePix) {
+            const entry = ensureTileLoaded(curHips.survey, order, ipix, nowMs, true);
+            if (entry?.status === 'loading' && entry.promise) {
+              pending.push(entry.promise);
+            }
+          }
+        }
+
+        if (pending.length === 0) return;
+
+        await new Promise<void>((resolve) => {
+          let settled = false;
+          const finish = () => {
+            if (settled) return;
+            settled = true;
+            window.clearTimeout(timerId);
+            resolve();
+          };
+          const timerId = window.setTimeout(finish, timeoutMs);
+          Promise.all(pending).then(finish, finish);
+        });
+      },
       renderSnapshotToCanvas: (
         targetCtx,
         outWidth,
@@ -483,7 +727,8 @@ export const HipsBackground = forwardRef<HipsBackgroundHandle, HipsBackgroundPro
         customView,
         customRotationDeg = 0
       ) => {
-        if (!hips.enabled || hips.opacity <= 0.02) return false;
+        const { hips: curHips } = latestPropsRef.current;
+        if (!curHips.enabled || curHips.opacity <= 0.02) return false;
         const canvas = canvasRef.current;
         const st = glStateRef.current;
         if (!canvas || !st) return false;
@@ -559,6 +804,7 @@ export const HipsBackground = forwardRef<HipsBackgroundHandle, HipsBackgroundPro
       meshBuf,
       allskyTextures: {},
       allskyLoading: new Set(),
+      allskyPromises: {},
       tileTextures: new Map(),
     };
   }, [hips.enabled]);
@@ -566,28 +812,7 @@ export const HipsBackground = forwardRef<HipsBackgroundHandle, HipsBackgroundPro
   // Ensure Allsky.jpg texture is fetched for active survey
   useEffect(() => {
     if (!hips.enabled) return;
-    const st = glStateRef.current;
-    if (!st) return;
-    const survey = hips.survey;
-    if (st.allskyTextures[survey] || st.allskyLoading.has(survey)) return;
-
-    st.allskyLoading.add(survey);
-    const img = new Image();
-    img.crossOrigin = 'anonymous';
-    img.onload = () => {
-      const cur = glStateRef.current;
-      if (!cur) return;
-      cur.allskyLoading.delete(survey);
-      const tex = uploadTexture(cur.gl, img);
-      if (tex) {
-        cur.allskyTextures[survey] = tex;
-        renderTriggerRef.current();
-      }
-    };
-    img.onerror = () => {
-      glStateRef.current?.allskyLoading.delete(survey);
-    };
-    img.src = `${SURVEY_URLS[survey]}/Norder3/Allsky.jpg`;
+    void ensureAllskyLoaded(hips.survey);
   }, [hips.enabled, hips.survey]);
 
   // Render HiPS background whenever view / observer / theme / survey / size updates
@@ -731,18 +956,7 @@ export const HipsBackground = forwardRef<HipsBackgroundHandle, HipsBackgroundPro
 
       // Pass 2: Stream & overlay high-resolution 512x512 HiPS tiles when zoomed in (<= 28°)
       if (rView.fsz <= 28) {
-        const order =
-          rView.fsz <= 0.55
-            ? 8
-            : rView.fsz <= 1.1
-            ? 7
-            : rView.fsz <= 2.2
-            ? 6
-            : rView.fsz <= 6
-            ? 5
-            : rView.fsz <= 14
-            ? 4
-            : 3;
+        const order = getHipsTileOrder(rView.fsz);
         const nside = 1 << order;
 
         const drawTilesForProj = (
@@ -750,76 +964,22 @@ export const HipsBackground = forwardRef<HipsBackgroundHandle, HipsBackgroundPro
           clipMode: number,
           eyepieceBoundsOnly: boolean
         ) => {
-          const visiblePix = new Set<number>();
-          const gridN = eyepieceBoundsOnly ? 6 : 10;
-          const minX = eyepieceBoundsOnly ? Math.max(0, rWidth / 2 - epRadiusCss * 1.08) : -0.06 * rWidth;
-          const maxX = eyepieceBoundsOnly ? Math.min(rWidth, rWidth / 2 + epRadiusCss * 1.08) : 1.06 * rWidth;
-          const minY = eyepieceBoundsOnly ? Math.max(0, rHeight / 2 - epRadiusCss * 1.08) : -0.06 * rHeight;
-          const maxY = eyepieceBoundsOnly ? Math.min(rHeight, rHeight / 2 + epRadiusCss * 1.08) : 1.06 * rHeight;
-
-          for (let gy = 0; gy <= gridN; gy++) {
-            for (let gx = 0; gx <= gridN; gx++) {
-              const sx = minX + (gx / gridN) * (maxX - minX);
-              const sy = minY + (gy / gridN) * (maxY - minY);
-              const eq = unprojectStereographic(sx, sy, tileProj);
-              if (eq) {
-                visiblePix.add(ang2pixNest(eq.raDeg, eq.decDeg, order));
-              }
-            }
-          }
+          const visiblePix = collectVisibleTilePixels(
+            rWidth,
+            rHeight,
+            tileProj,
+            order,
+            eyepieceBoundsOnly,
+            epRadiusCss
+          );
 
           const nowMs = Date.now();
           const readyTiles: { ipix: number; tex: WebGLTexture }[] = [];
 
           for (const ipix of visiblePix) {
-            const key = `${hips.survey}_${order}_${ipix}`;
-            let entry = st.tileTextures.get(key);
-            if (!entry) {
-              if (st.tileTextures.size >= MAX_CACHED_TILES) {
-                let oldestKey: string | null = null;
-                let oldestTime = Infinity;
-                for (const [k, v] of st.tileTextures.entries()) {
-                  if (v.lastUsed < oldestTime) {
-                    oldestTime = v.lastUsed;
-                    oldestKey = k;
-                  }
-                }
-                if (oldestKey) {
-                  const old = st.tileTextures.get(oldestKey);
-                  if (old?.tex) gl.deleteTexture(old.tex);
-                  st.tileTextures.delete(oldestKey);
-                }
-              }
-              entry = { tex: null, status: 'loading', lastUsed: nowMs };
-              st.tileTextures.set(key, entry);
-
-              const dir = Math.floor(ipix / 10000) * 10000;
-              const img = new Image();
-              img.crossOrigin = 'anonymous';
-              img.onload = () => {
-                const cur = glStateRef.current;
-                if (!cur) return;
-                const rec = cur.tileTextures.get(key);
-                if (!rec) return;
-                const tex = uploadTexture(cur.gl, img);
-                if (tex) {
-                  rec.tex = tex;
-                  rec.status = 'ready';
-                  renderTriggerRef.current();
-                } else {
-                  rec.status = 'error';
-                }
-              };
-              img.onerror = () => {
-                const rec = glStateRef.current?.tileTextures.get(key);
-                if (rec) rec.status = 'error';
-              };
-              img.src = `${SURVEY_URLS[hips.survey]}/Norder${order}/Dir${dir}/Npix${ipix}.jpg`;
-            } else {
-              entry.lastUsed = nowMs;
-              if (entry.status === 'ready' && entry.tex) {
-                readyTiles.push({ ipix, tex: entry.tex });
-              }
+            const entry = ensureTileLoaded(hips.survey, order, ipix, nowMs, false);
+            if (entry && entry.status === 'ready' && entry.tex) {
+              readyTiles.push({ ipix, tex: entry.tex });
             }
           }
 

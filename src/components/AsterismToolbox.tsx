@@ -2295,10 +2295,10 @@ export function AsterismToolbox({
                       setNotice(`‘${activeAsterism.name}’ 개별 백업 완료`);
                     }
                   }}
-                  className={`py-1.5 px-2.5 border font-medium flex items-center justify-center gap-1.5 ${
+                  className={`py-1.5 px-2.5 border font-medium flex items-center justify-center gap-1.5 transition-colors ${
                     !activeAsterism
-                      ? `${ui.buttonIdle} opacity-45 cursor-not-allowed`
-                      : ui.buttonIdle
+                      ? `${ui.buttonSave} opacity-45 cursor-not-allowed`
+                      : `${ui.buttonSave} cursor-pointer`
                   }`}
                   style={{ borderRadius: '5px' }}
                 >
@@ -2309,10 +2309,10 @@ export function AsterismToolbox({
                   type="button"
                   disabled={store.asterisms.length === 0}
                   onClick={() => downloadAsterismsJson(store)}
-                  className={`py-1.5 px-2.5 border font-medium flex items-center justify-center gap-1.5 ${
+                  className={`py-1.5 px-2.5 border font-medium flex items-center justify-center gap-1.5 transition-colors ${
                     store.asterisms.length === 0
-                      ? `${ui.buttonIdle} opacity-45 cursor-not-allowed`
-                      : ui.buttonIdle
+                      ? `${ui.buttonSave} opacity-45 cursor-not-allowed`
+                      : `${ui.buttonSave} cursor-pointer`
                   }`}
                   style={{ borderRadius: '5px' }}
                 >
@@ -2323,7 +2323,7 @@ export function AsterismToolbox({
               <button
                 type="button"
                 onClick={() => importInputRef.current?.click()}
-                className={`w-full py-1.5 px-2.5 border font-medium flex items-center justify-center gap-1.5 ${ui.buttonIdle}`}
+                className={`w-full py-1.5 px-2.5 border font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${ui.buttonLoad}`}
                 style={{ borderRadius: '5px' }}
               >
                 <Upload className="w-3.5 h-3.5" />
