@@ -1200,6 +1200,54 @@ export function searchLocalStarCatalogs(
   return hits;
 }
 
+/**
+ * Collects all locally downloaded stars that project inside the current chart viewport frame
+ * up to the requested magnitude range, using the 10°×10° magnitude-sorted spatial index.
+ */
+export function getLocalStarsInFrame(
+  viewCenter: { raHours: number; decDeg: number; fszDeg: number },
+  magMin: number,
+  magMax: number,
+  isInFrame: (raDeg: number, decDeg: number) => boolean,
+  maxStars = 4000
+): { stars: Star[]; totalCount: number } {
+  if (currentState.totalStars === 0 || spatialIndex.size === 0) {
+    return { stars: [], totalCount: 0 };
+  }
+  const searchFsz = Math.min(180, Math.max(2, viewCenter.fszDeg * 1.48));
+  const cellKeys = getVisibleLocalStarCellKeys(viewCenter.raHours, viewCenter.decDeg, searchFsz);
+  const collected: Star[] = [];
+  let totalCount = 0;
+  const collectCap = Math.max(maxStars * 2, 6000);
+
+  for (let c = 0; c < cellKeys.length; c++) {
+    const cell = spatialIndex.get(cellKeys[c]);
+    if (!cell || cell.coords.length < 4) continue;
+    const { coords, ids } = cell;
+    const count = coords.length / 4;
+    for (let i = 0; i < count; i++) {
+      const ci = i * 4;
+      const mag = coords[ci + 2];
+      if (mag > magMax) break; // Sorted ascending by magnitude
+      if (mag < magMin) continue;
+      const ra = coords[ci];
+      const dec = coords[ci + 1];
+      if (!isInFrame(ra, dec)) continue;
+      totalCount++;
+      if (collected.length < collectCap) {
+        const ii = i * 2;
+        collected.push(buildLocalStarObject(ra, dec, mag, coords[ci + 3], ids[ii] ?? 0, ids[ii + 1] ?? 0));
+      }
+    }
+  }
+
+  collected.sort((a, b) => a.mag - b.mag);
+  return {
+    stars: collected.slice(0, maxStars),
+    totalCount,
+  };
+}
+
 async function writePackToDirectory(
   dir: FsDirectoryHandleLike,
   fileName: string,

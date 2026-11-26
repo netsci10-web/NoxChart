@@ -41,6 +41,7 @@ import {
 } from 'lucide-react';
 import {
   CatalogSnapshot,
+  getVisibleUltraTileKeys,
   searchGaiaCatalog,
   searchHipparcosCatalog,
   searchLoadedGaiaStars,
@@ -74,11 +75,14 @@ import {
   ThemeMode,
 } from '../types/astronomy';
 import {
+  angularDistanceDeg,
   computeAtmosphericExtinctionMag,
+  createProjectionParams,
   equatorialToHorizontal,
   getDsoLimitingMagnitude,
   getLimitingMagnitude,
   getLSTDeg,
+  projectStereographic,
   RAD2DEG,
 } from '../utils/astronomy';
 import {
@@ -103,6 +107,7 @@ import {
   exportStarPackToFile,
   formatByteSize,
   getLocalStarCatalogState,
+  getLocalStarsInFrame,
   getNextAvailableTier,
   importStarPackFiles,
   LocalStarCatalogState,
@@ -413,6 +418,7 @@ export function ControlSidebar({
   const [remoteHipHits, setRemoteHipHits] = useState<Star[]>([]);
   const [remoteGaiaHits, setRemoteGaiaHits] = useState<Star[]>([]);
   const [gaiaSearching, setGaiaSearching] = useState(false);
+  const [viewportResultLimit, setViewportResultLimit] = useState(150);
   const [activeConAbbr, setActiveConAbbr] = useState<string | null>(null);
   const [quickSaveOpen, setQuickSaveOpen] = useState(false);
   const [quickSiteName, setQuickSiteName] = useState('');
@@ -497,6 +503,10 @@ export function ControlSidebar({
       window.clearTimeout(timer);
     };
   }, [exploreCategory, query]);
+
+  useEffect(() => {
+    setViewportResultLimit(150);
+  }, [query, exploreCategory]);
 
   const isSectionOpen = (id: string) => Boolean(openSections[id]);
   const toggleSection = (id: string) =>
@@ -892,13 +902,166 @@ export function ControlSidebar({
 
   const allSearchResults = useMemo(() => {
     if (exploreCategory !== 'all') {
-      return { items: [] as GlobalSearchItem[], totalMatches: 0 };
+      return {
+        items: [] as GlobalSearchItem[],
+        totalMatches: 0,
+        isViewportMode: false,
+        viewportMagLimit: 0,
+      };
     }
     const q = query.trim().toLowerCase();
     const qCompact = q.replace(/\s+/g, '');
 
     if (!q) {
-      return { items: [] as GlobalSearchItem[], totalMatches: 0 };
+      return {
+        items: [] as GlobalSearchItem[],
+        totalMatches: 0,
+        isViewportMode: false,
+        viewportMagLimit: 0,
+      };
+    }
+
+    // Special Mode: '현재창' (or '현재화면' / '현재시야', optionally + magnitude filter e.g. '현재창 10등급', '현재창 9~11m')
+    const viewportMatch = /^(?:현재\s*(?:창|화면|시야))(?:\s+(.*))?$/.exec(q);
+    if (viewportMatch) {
+      const extraFilter = (viewportMatch[1] || '').trim();
+      const currentMagLimit = getLimitingMagnitude(view.fsz, layers.magOffset);
+      let magMin = -30;
+      let magMax = currentMagLimit;
+      if (extraFilter) {
+        const rangeM = /^(\d{1,2}(?:\.\d+)?)\s*[~-]\s*(\d{1,2}(?:\.\d+)?)\s*(?:m|mag|등급)?$/i.exec(
+          extraFilter
+        );
+        const singleM = /^(\d{1,2}(?:\.\d+)?)\s*(?:m|mag|등급)?$/i.exec(extraFilter);
+        if (rangeM) {
+          magMin = Math.min(Number(rangeM[1]), Number(rangeM[2]));
+          magMax = Math.max(Number(rangeM[1]), Number(rangeM[2]));
+        } else if (singleM) {
+          const target = Number(singleM[1]);
+          const hasDec = singleM[1].includes('.');
+          magMin = hasDec ? target - 0.15 : target;
+          magMax = hasDec ? target + 0.15 : target + 0.99;
+        }
+      }
+
+      const chartW = typeof window !== 'undefined' ? Math.max(320, window.innerWidth) : 1280;
+      const chartH = typeof window !== 'undefined' ? Math.max(320, window.innerHeight) : 800;
+      const proj = createProjectionParams(
+        view,
+        chartW,
+        chartH,
+        lstDeg,
+        observer.lat
+      );
+      const isInFrame = (raDeg: number, decDeg: number): boolean => {
+        const pt = projectStereographic(raDeg, decDeg, proj, 0);
+        return Boolean(pt && pt.x >= 0 && pt.x <= chartW && pt.y >= 0 && pt.y <= chartH);
+      };
+      const viewRaDeg = ((view.ra * 15) % 360 + 360) % 360;
+      const formatCenterDist = (raDeg: number, decDeg: number): string => {
+        const dist = angularDistanceDeg(raDeg, decDeg, viewRaDeg, view.dec);
+        const arcmin = dist * 60;
+        if (arcmin < 1) return `중심 ${(arcmin * 60).toFixed(0)}"`;
+        if (arcmin < 60) return `중심 ${arcmin.toFixed(1)}'`;
+        return `중심 ${dist.toFixed(2)}°`;
+      };
+
+      const seenHip = new Set<number>();
+      const seenGaia = new Set<string>();
+      const seenIds = new Set<string>();
+      const seenPos = new Set<string>();
+      const vpStars: { star: Star; badge?: string }[] = [];
+      let extraUncollectedLocal = 0;
+
+      const tryAddStar = (star: Star, badge?: string) => {
+        if (star.mag < magMin || star.mag > magMax) return;
+        if (star.hip && seenHip.has(star.hip)) return;
+        if (star.gaiaId && seenGaia.has(star.gaiaId)) return;
+        if (seenIds.has(star.id)) return;
+        const posKey = `${Math.round(star.ra * 300)}_${Math.round((star.dec + 90) * 300)}`;
+        if (seenPos.has(posKey)) return;
+        if (star.hip) seenHip.add(star.hip);
+        if (star.gaiaId) seenGaia.add(star.gaiaId);
+        seenIds.add(star.id);
+        seenPos.add(posKey);
+        vpStars.push({ star, badge });
+      };
+
+      // 1. Bright Hipparcos stars
+      for (let i = 0; i < catalogs.brightStars.length; i++) {
+        const s = catalogs.brightStars[i];
+        if (s.mag > magMax) break;
+        if (s.mag < magMin) continue;
+        if (isInFrame(s.ra, s.dec)) tryAddStar(s);
+      }
+      // 2. Deep Hipparcos stars (up to 8.0m)
+      if (magMax > 6.0 && catalogs.deepStars.length > 0) {
+        for (let i = 0; i < catalogs.deepStars.length; i++) {
+          const s = catalogs.deepStars[i];
+          if (s.mag > magMax) break;
+          if (s.mag < magMin) continue;
+          if (isInFrame(s.ra, s.dec)) tryAddStar(s);
+        }
+      }
+      // 3. Live Gaia DR3 stars currently loaded on chart
+      if (magMax > 8.0 && catalogs.gaiaStars.length > 0) {
+        for (let i = 0; i < catalogs.gaiaStars.length; i++) {
+          const s = catalogs.gaiaStars[i];
+          if (s.mag < magMin || s.mag > magMax) continue;
+          if (isInFrame(s.ra, s.dec)) tryAddStar(s, 'Gaia DR3');
+        }
+      }
+      // 4. Locally downloaded star catalogs (fast spatial index)
+      if (magMax > 8.0 && (catalogs.localStarCount > 0 || localStarState.totalStars > 0)) {
+        const localFrame = getLocalStarsInFrame(
+          { raHours: view.ra, decDeg: view.dec, fszDeg: view.fsz },
+          Math.max(8.0, magMin),
+          magMax,
+          isInFrame,
+          3000
+        );
+        for (let i = 0; i < localFrame.stars.length; i++) {
+          const s = localFrame.stars[i];
+          tryAddStar(s, s.hip ? '로컬 HIP' : '로컬 Gaia');
+        }
+        if (localFrame.totalCount > localFrame.stars.length) {
+          extraUncollectedLocal = localFrame.totalCount - localFrame.stars.length;
+        }
+      }
+      // 5. Hipparcos Ultra tiles (when loaded)
+      if (magMax > 8.0 && catalogs.ultraStarTiles.size > 0) {
+        const tileKeys = getVisibleUltraTileKeys(view.ra, view.dec, Math.min(180, view.fsz * 1.45));
+        for (let t = 0; t < tileKeys.length; t++) {
+          const list = catalogs.ultraStarTiles.get(tileKeys[t]);
+          if (!list) continue;
+          for (let i = 0; i < list.length; i++) {
+            const s = list[i];
+            if (s.mag > magMax) break;
+            if (s.mag < magMin) continue;
+            if (isInFrame(s.ra, s.dec)) tryAddStar(s, 'HIP');
+          }
+        }
+      }
+
+      vpStars.sort((a, b) => a.star.mag - b.star.mag);
+      const totalMatches = vpStars.length + extraUncollectedLocal;
+      const items: GlobalSearchItem[] = vpStars
+        .slice(0, viewportResultLimit)
+        .map(({ star, badge }) => ({
+          kind: 'star' as const,
+          key: `star:${star.id}`,
+          score: 100,
+          mag: star.mag,
+          star,
+          sourceBadge: badge,
+          detail: formatCenterDist(star.ra, star.dec),
+        }));
+      return {
+        items,
+        totalMatches,
+        isViewportMode: true,
+        viewportMagLimit: magMax,
+      };
     }
 
     const results: GlobalSearchItem[] = [];
@@ -1247,6 +1410,8 @@ export function ControlSidebar({
     return {
       items: results.slice(0, 80),
       totalMatches: results.length,
+      isViewportMode: false,
+      viewportMagLimit: 0,
     };
   }, [
     exploreCategory,
@@ -1256,6 +1421,7 @@ export function ControlSidebar({
     messierList,
     catalogs.brightStars,
     catalogs.deepStars,
+    catalogs.ultraStarTiles,
     catalogs.caldwell,
     catalogs.doubleStars,
     catalogs.dsosBright,
@@ -1266,8 +1432,11 @@ export function ControlSidebar({
     catalogs.localStarRevision,
     localStarState.totalStars,
     localStarState.revision,
-    view.ra,
-    view.dec,
+    view,
+    lstDeg,
+    observer.lat,
+    layers.magOffset,
+    viewportResultLimit,
     selected,
     remoteHipHits,
     remoteGaiaHits,
@@ -1321,12 +1490,16 @@ export function ControlSidebar({
             0.04,
             Math.min(12, 60 * Math.pow(10, -(star.mag + 0.7 - layers.magOffset - 6.0) / 3.65))
           );
-    onChangeView((p) => ({
-      ...p,
-      ra: ((star.ra / 15) % 24 + 24) % 24,
-      dec: star.dec,
-      fsz: targetFsz,
-    }));
+    onChangeView((p) => {
+      const curRaDeg = ((p.ra * 15) % 360 + 360) % 360;
+      const inCurrentFrame = angularDistanceDeg(curRaDeg, p.dec, star.ra, star.dec) <= p.fsz * 0.95;
+      return {
+        ...p,
+        ra: ((star.ra / 15) % 24 + 24) % 24,
+        dec: star.dec,
+        fsz: inCurrentFrame ? Math.min(p.fsz, targetFsz) : targetFsz,
+      };
+    });
     onSelect({ kind: 'star', data: star });
   };
 
@@ -1450,8 +1623,8 @@ export function ControlSidebar({
   const searchPlaceholder =
     exploreCategory === 'all'
       ? localStarState.totalStars > 0
-        ? '천체명, M/C/NGC, HIP/Gaia, 좌표, 등급...'
-        : '천체명, M/C/NGC/IC, 별, 행성...'
+        ? '천체명, 현재창, HIP/Gaia, 좌표, 등급...'
+        : '천체명, 현재창, M/C/NGC, 별, 행성...'
       : exploreCategory === 'messier'
       ? 'M1~M110 번호, 이름, NGC, 별자리...'
       : exploreCategory === 'caldwell'
@@ -1650,9 +1823,19 @@ export function ControlSidebar({
                   </span>
                 </div>
                 <div className={`text-[9.5px] leading-relaxed ${ui.textMuted}`}>
-                  HIP · Gaia ID, 좌표(예: 05h 35m -05° 23&apos;), 등급(예: 10등급, 9~11m)으로 즉시 검색할 수 있습니다.
+                  현재창, HIP · Gaia ID, 좌표(예: 05h 35m -05° 23&apos;), 등급(예: 10등급, 9~11m)으로 즉시 검색할 수 있습니다.
                 </div>
                 <div className="flex flex-wrap gap-1 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuery('현재창');
+                      onSearchActiveChange(true);
+                    }}
+                    className={`px-1.5 py-0.5 border rounded text-[9.5px] font-medium transition-colors cursor-pointer ${ui.buttonActive}`}
+                  >
+                    현재창
+                  </button>
                   <button
                     type="button"
                     onClick={() => {
@@ -1689,14 +1872,42 @@ export function ControlSidebar({
                 </div>
               </div>
             )}
+            {exploreCategory === 'all' && !query.trim() && localStarState.totalStars === 0 && (
+              <div className={`p-2 border rounded-lg space-y-1.5 ${cardIdleCls}`}>
+                <div className="flex items-center justify-between gap-1">
+                  <span className={`font-semibold text-[10.5px] ${ui.textPrimary}`}>
+                    빠른 탐색
+                  </span>
+                </div>
+                <div className={`text-[9.5px] leading-relaxed ${ui.textMuted}`}>
+                  &apos;현재창&apos;을 입력하면 현재 성도 구도 안에 보이는 모든 항성을 등급순으로 검색합니다.
+                </div>
+                <div className="flex flex-wrap gap-1 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuery('현재창');
+                      onSearchActiveChange(true);
+                    }}
+                    className={`px-1.5 py-0.5 border rounded text-[9.5px] font-medium transition-colors cursor-pointer ${ui.buttonActive}`}
+                  >
+                    현재창
+                  </button>
+                </div>
+              </div>
+            )}
             {exploreCategory === 'all' && query.trim() && (
               <>
                 <div className={`flex items-center justify-between px-0.5 text-[9.5px] tracking-[-0.05em] ${ui.textMuted}`}>
                   <span>
-                    통합 검색 결과 {allSearchResults.totalMatches.toLocaleString()}건
+                    {allSearchResults.isViewportMode
+                      ? `현재창 구도 내 항성 ${allSearchResults.totalMatches.toLocaleString()}개 (≤${allSearchResults.viewportMagLimit.toFixed(1)}m)`
+                      : `통합 검색 결과 ${allSearchResults.totalMatches.toLocaleString()}건`}
                   </span>
-                  {allSearchResults.totalMatches > 80 && (
-                    <span className="font-mono">상위 80</span>
+                  {allSearchResults.totalMatches > allSearchResults.items.length && (
+                    <span className="font-mono">
+                      상위 {allSearchResults.items.length}
+                    </span>
                   )}
                 </div>
 
@@ -2007,6 +2218,18 @@ export function ControlSidebar({
                     );
                   })
                 )}
+                {allSearchResults.isViewportMode &&
+                  allSearchResults.items.length < allSearchResults.totalMatches &&
+                  allSearchResults.items.length < 3000 && (
+                    <button
+                      type="button"
+                      onClick={() => setViewportResultLimit((prev) => Math.min(3000, prev + 200))}
+                      className={`w-full py-1.5 px-2 border rounded-lg text-[10px] font-medium transition-colors cursor-pointer ${ui.buttonIdle}`}
+                    >
+                      더 보기 ({allSearchResults.items.length.toLocaleString()} /{' '}
+                      {allSearchResults.totalMatches.toLocaleString()})
+                    </button>
+                  )}
               </>
             )}
 

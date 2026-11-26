@@ -2618,10 +2618,9 @@ function renderStarChartPass(
   if (gaiaActive) {
     const gList = catalogs.gaiaStars;
     let gaiaClickableCount = 0;
-    const gaiaClickMagCutoff = Math.min(18.5, magLimit);
     for (let i = 0; i < gList.length; i++) {
       const star = gList[i];
-      if (star.mag > magLimit) break;
+      if (star.mag > magLimit) continue;
       const pt = projectStereographic(star.ra, star.dec, proj, 10);
       if (!pt) continue;
       const isSelected = selected?.kind === 'star' && selected.data.id === star.id;
@@ -2638,16 +2637,14 @@ function renderStarChartPass(
         dimmed: altCheck.dimmed,
         extMag: altCheck.extMag,
       });
-      if (
-        (isSelected || (view.fsz <= 4.5 && star.mag <= gaiaClickMagCutoff && gaiaClickableCount < 1000))
-      ) {
+      if (isSelected || gaiaClickableCount < 8000) {
         gaiaClickableCount++;
         targets.push({
           kind: 'star',
           id: star.id,
           x: pt.x,
           y: pt.y,
-          radius: 6,
+          radius: Math.max(6, r + 2.5),
           mag: star.mag,
           item: { kind: 'star', data: star },
         });
@@ -2662,7 +2659,7 @@ function renderStarChartPass(
     const maxLocalDrawable = view.fsz > 30 ? 18000 : 28000;
     let localDrawnCount = 0;
     let localClickableCount = 0;
-    const allowLocalClick = view.fsz <= 12;
+    const allowLocalClick = view.fsz <= 18;
 
     for (let c = 0; c < localCellKeys.length && localDrawnCount < maxLocalDrawable; c++) {
       const cell = catalogs.localStarTiles.get(localCellKeys[c]);
@@ -2706,7 +2703,7 @@ function renderStarChartPass(
         });
         localDrawnCount++;
 
-        if (isSelected || (allowLocalClick && localClickableCount < 1200 && sMag <= Math.min(14.5, magLimit))) {
+        if (isSelected || (allowLocalClick && localClickableCount < 6000 && sMag <= magLimit)) {
           localClickableCount++;
           targets.push({
             kind: 'star',
