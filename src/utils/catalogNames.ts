@@ -604,6 +604,10 @@ const SUPERSCRIPT_DIGITS: Record<string, string> = {
   '⁹': '9',
 };
 
+export function normalizeSuperscriptDigits(raw: string): string {
+  return raw.replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹]/g, (ch) => SUPERSCRIPT_DIGITS[ch] ?? ch);
+}
+
 /**
  * Expands a Greek (or Latin-letter) Bayer designation into readable English genitive,
  * English abbreviated, and Korean genitive forms.
@@ -635,6 +639,42 @@ export function getBayerExpandedNames(raw?: string): string[] {
     if (con) {
       const num = latinMatch[2] ? SUPERSCRIPT_DIGITS[latinMatch[2]] ?? latinMatch[2] : '';
       return [`${latinMatch[1]}${num} ${con.genitive}`];
+    }
+  }
+
+  return [];
+}
+
+/**
+ * Returns unnumbered base search aliases when a Bayer designation includes a superscript/digit
+ * (e.g. "α2 Cap" -> ["α Cap", "Alpha Capricorni", "Alpha Cap", "알파 카프리코르니"]).
+ * Allows searching without the numeric suffix to still find numbered Bayer stars.
+ */
+export function getBayerBaseSearchAliases(raw?: string): string[] {
+  if (!raw) return [];
+  const s = raw.trim();
+  if (!s) return [];
+
+  const greekMatch = /^([α-ωΑ-Ωϑϕϱϖς])([0-9⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s+([A-Za-z]{3})$/.exec(s);
+  if (greekMatch) {
+    const greekChar = greekMatch[1];
+    const letter = GREEK_BAYER_LETTERS[greekChar];
+    const con = IAU_CONSTELLATION_GENITIVES[greekMatch[3].toLowerCase()];
+    if (letter && con) {
+      return [
+        `${greekChar} ${con.abbr}`,
+        `${letter.en} ${con.genitive}`,
+        `${letter.en} ${con.abbr}`,
+        `${letter.ko} ${con.koGenitive}`,
+      ];
+    }
+  }
+
+  const latinMatch = /^([A-Za-z])([0-9⁰¹²³⁴⁵⁶⁷⁸⁹]+)\s+([A-Za-z]{3})$/.exec(s);
+  if (latinMatch) {
+    const con = IAU_CONSTELLATION_GENITIVES[latinMatch[3].toLowerCase()];
+    if (con) {
+      return [`${latinMatch[1]} ${con.abbr}`, `${latinMatch[1]} ${con.genitive}`];
     }
   }
 

@@ -40,6 +40,11 @@ import {
 } from '../data/challenges';
 import { CatalogSnapshot, ensureDeepDsos } from '../data/catalogLoader';
 import {
+  getBayerBaseSearchAliases,
+  getBayerExpandedNames,
+  normalizeSuperscriptDigits,
+} from '../utils/catalogNames';
+import {
   ChallengeCheckpoint,
   ChallengeTrack,
   ObserverConfig,
@@ -495,6 +500,19 @@ export function ChallengePanel({
       }
     }
 
+    const qNorm = normalizeSuperscriptDigits(q);
+    const matchesBayer = (bayer?: string): boolean => {
+      if (!bayer) return false;
+      if (normalizeSuperscriptDigits(bayer).toLowerCase().includes(qNorm)) return true;
+      for (const alias of getBayerExpandedNames(bayer)) {
+        if (alias.toLowerCase().includes(qNorm)) return true;
+      }
+      for (const alias of getBayerBaseSearchAliases(bayer)) {
+        if (alias.toLowerCase().includes(qNorm)) return true;
+      }
+      return false;
+    };
+
     for (const s of catalogs.brightStars) {
       if (results.length >= 14) break;
       const key = `STAR:${s.id.toUpperCase()}`;
@@ -502,7 +520,7 @@ export function ChallengePanel({
       if (
         (s.koName && s.koName.toLowerCase().includes(q)) ||
         (s.name && s.name.toLowerCase().includes(q)) ||
-        (s.bayer && s.bayer.toLowerCase().includes(q)) ||
+        matchesBayer(s.bayer) ||
         s.id.toLowerCase().includes(q)
       ) {
         seen.add(key);
@@ -526,6 +544,7 @@ export function ChallengePanel({
       if (
         (dbl.koName && dbl.koName.toLowerCase().includes(q)) ||
         (dbl.name && dbl.name.toLowerCase().includes(q)) ||
+        matchesBayer(dbl.bayer) ||
         dbl.disc.toLowerCase().includes(q)
       ) {
         results.push({

@@ -125,11 +125,13 @@ import {
 import {
   formatCatalogCode,
   formatObjectDisplayName,
+  getBayerBaseSearchAliases,
   getBayerExpandedNames,
   getDsoSearchAliases,
   getExtraAliasesForKnownId,
   getSecondaryDesignations,
   normalizeCatalogToken,
+  normalizeSuperscriptDigits,
 } from '../utils/catalogNames';
 import {
   downloadLayerSettingsFile,
@@ -227,31 +229,33 @@ function scoreSearchMatch(
   qCompact: string
 ): number {
   if (!q || !qCompact) return 0;
-  const qNorm = normalizeCatalogToken(q);
+  const qClean = normalizeSuperscriptDigits(q);
+  const qCompactClean = normalizeSuperscriptDigits(qCompact);
+  const qNorm = normalizeCatalogToken(qClean);
   let best = 0;
   for (const raw of primaryFields) {
     if (!raw) continue;
-    const s = raw.toLowerCase();
+    const s = normalizeSuperscriptDigits(raw).toLowerCase();
     const sc = s.replace(/\s+/g, '');
     const sn = normalizeCatalogToken(raw);
-    if (s === q || sc === qCompact || (qNorm && sn === qNorm)) return 120;
-    if (s.startsWith(q) || sc.startsWith(qCompact) || (qNorm && sn.startsWith(qNorm))) {
+    if (s === qClean || sc === qCompactClean || (qNorm && sn === qNorm)) return 120;
+    if (s.startsWith(qClean) || sc.startsWith(qCompactClean) || (qNorm && sn.startsWith(qNorm))) {
       if (best < 90) best = 90;
-    } else if (s.includes(q) || sc.includes(qCompact) || (qNorm && sn.includes(qNorm))) {
+    } else if (s.includes(qClean) || sc.includes(qCompactClean) || (qNorm && sn.includes(qNorm))) {
       if (best < 60) best = 60;
     }
   }
   if (best >= 90) return best;
   for (const raw of secondaryFields) {
     if (!raw) continue;
-    const s = raw.toLowerCase();
+    const s = normalizeSuperscriptDigits(raw).toLowerCase();
     const sc = s.replace(/\s+/g, '');
     const sn = normalizeCatalogToken(raw);
-    if (s === q || sc === qCompact || (qNorm && sn === qNorm)) {
+    if (s === qClean || sc === qCompactClean || (qNorm && sn === qNorm)) {
       if (best < 100) best = 100;
-    } else if (s.startsWith(q) || sc.startsWith(qCompact) || (qNorm && sn.startsWith(qNorm))) {
+    } else if (s.startsWith(qClean) || sc.startsWith(qCompactClean) || (qNorm && sn.startsWith(qNorm))) {
       if (best < 72) best = 72;
-    } else if (s.includes(q) || sc.includes(qCompact) || (qNorm && sn.includes(qNorm))) {
+    } else if (s.includes(qClean) || sc.includes(qCompactClean) || (qNorm && sn.includes(qNorm))) {
       if (best < 42) best = 42;
     }
   }
@@ -1391,7 +1395,7 @@ export function ControlSidebar({
       const hipLabel = star.hip ? `HIP ${star.hip}` : undefined;
       const score = scoreSearchMatch(
         [star.koName, star.name, star.bayer, ...getBayerExpandedNames(star.bayer), hipLabel, star.id],
-        [star.con],
+        [star.con, ...getBayerBaseSearchAliases(star.bayer)],
         q,
         qCompact
       );
@@ -1519,7 +1523,7 @@ export function ControlSidebar({
             st.bayer,
             ...getBayerExpandedNames(st.bayer),
           ],
-          [st.con],
+          [st.con, ...getBayerBaseSearchAliases(st.bayer)],
           q,
           qCompact
         );
@@ -1545,7 +1549,12 @@ export function ControlSidebar({
         const hipLabel = star.hip ? `HIP ${star.hip}` : star.id;
         const score = Math.max(
           85,
-          scoreSearchMatch([star.koName, star.name, star.bayer, hipLabel, star.id], [star.con], q, qCompact)
+          scoreSearchMatch(
+            [star.koName, star.name, star.bayer, ...getBayerExpandedNames(star.bayer), hipLabel, star.id],
+            [star.con, ...getBayerBaseSearchAliases(star.bayer)],
+            q,
+            qCompact
+          )
         );
         results.push({
           kind: 'star',
@@ -1668,7 +1677,7 @@ export function ControlSidebar({
     for (const sys of catalogs.doubleStars) {
       let score = scoreSearchMatch(
         [sys.disc, sys.id, sys.wdsId, sys.koName, sys.name, sys.bayer, ...getBayerExpandedNames(sys.bayer)],
-        [sys.con, sys.isMultiple ? '다중성 multiple' : '이중성 double'],
+        [sys.con, ...getBayerBaseSearchAliases(sys.bayer), sys.isMultiple ? '다중성 multiple' : '이중성 double'],
         q,
         qCompact
       );
@@ -1942,7 +1951,7 @@ export function ControlSidebar({
               star.gaiaId ? `Gaia DR3 ${star.gaiaId}` : undefined,
               star.id,
             ],
-            [star.con],
+            [star.con, ...getBayerBaseSearchAliases(star.bayer)],
             textSubFilter,
             subCompact
           );
@@ -2046,7 +2055,7 @@ export function ControlSidebar({
       const hipLabel = star.hip ? `HIP ${star.hip}` : undefined;
       const score = scoreSearchMatch(
         [star.koName, star.name, star.bayer, ...getBayerExpandedNames(star.bayer), hipLabel, star.id],
-        [star.con],
+        [star.con, ...getBayerBaseSearchAliases(star.bayer)],
         q,
         qCompact
       );
@@ -2150,7 +2159,7 @@ export function ControlSidebar({
               st.bayer,
               ...getBayerExpandedNames(st.bayer),
             ],
-            [st.con],
+            [st.con, ...getBayerBaseSearchAliases(st.bayer)],
             q,
             qCompact
           );
@@ -2176,7 +2185,7 @@ export function ControlSidebar({
             85,
             scoreSearchMatch(
               [star.koName, star.name, star.bayer, ...getBayerExpandedNames(star.bayer), hipLabel, star.id],
-              [star.con],
+              [star.con, ...getBayerBaseSearchAliases(star.bayer)],
               q,
               qCompact
             )

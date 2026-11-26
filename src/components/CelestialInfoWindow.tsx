@@ -42,7 +42,7 @@ import {
   findStarHopGuides,
   formatDec,
   formatRA,
-  getAltitudeCurve,
+  getAltitudeProfile24h,
   getCompassDirection,
   getDsoTypeLabel,
   getLSTDeg,
@@ -286,9 +286,9 @@ export function CelestialInfoWindow({
     return computePlanetOrientation(selected.data, sun, obsTimeMs)?.phys ?? null;
   }, [selected, obsTimeMs]);
 
-  const altCurve = useMemo(
+  const altProfile = useMemo(
     () =>
-      getAltitudeCurve(
+      getAltitudeProfile24h(
         selected.data.ra,
         selected.data.dec,
         observer.lat,
@@ -705,31 +705,38 @@ export function CelestialInfoWindow({
     catalogs.constellations,
   ]);
 
-  // Compact SVG polyline for 24h altitude curve
+  // Compact SVG polyline for 24h altitude curve + solar day/twilight/night bar
   const svgW = 230;
-  const svgH = 74;
-  const altToY = (alt: number) => svgH / 2 - (alt / 90) * (svgH / 2 - 5);
+  const curveH = 74;
+  const barGap = 5;
+  const barH = 9;
+  const barY = curveH + barGap;
+  const svgH = barY + barH;
+  const offsetToX = (offsetHours: number) => ((offsetHours + 12) / 24) * svgW;
+  const altToY = (alt: number) => curveH / 2 - (alt / 90) * (curveH / 2 - 5);
   const horizonY = altToY(0);
   const optimalY = altToY(30);
+  const altCurve = altProfile.points;
   const curvePoints = altCurve
-    .map((pt, idx) => {
-      const x = (idx / Math.max(1, altCurve.length - 1)) * svgW;
-      const y = altToY(pt.altDeg);
-      return `${x.toFixed(1)},${y.toFixed(1)}`;
-    })
+    .map((pt) => `${offsetToX(pt.offsetHours).toFixed(1)},${altToY(pt.altDeg).toFixed(1)}`)
     .join(' ');
-  const nowPoint = altCurve.find((p) => p.offsetHours === 0);
-  const nowIdx = altCurve.findIndex((p) => p.offsetHours === 0);
-  const nowX = nowIdx >= 0 ? (nowIdx / Math.max(1, altCurve.length - 1)) * svgW : svgW / 2;
+  const nowPoint = altCurve.find((p) => Math.abs(p.offsetHours) < 1e-6);
+  const nowX = offsetToX(0);
   const nowY = nowPoint ? altToY(nowPoint.altDeg) : horizonY;
-  const maxAlt = altCurve.reduce((m, p) => (p.altDeg > m.altDeg ? p : m), {
-    offsetHours: 0,
-    label: '--:--',
-    altDeg: -90,
-  });
+  const maxAlt = altProfile.maxAlt;
 
   const strokeColor =
     theme === 'red' ? '#EF4444' : theme === 'white' ? '#2563EB' : '#06B6D4';
+  const riseColor =
+    theme === 'red' ? '#FCA5A5' : theme === 'white' ? '#059669' : '#34D399';
+  const setColor =
+    theme === 'red' ? '#F87171' : theme === 'white' ? '#D97706' : '#FBBF24';
+  const dayBarFill =
+    theme === 'red' ? '#B91C1C' : '#7DD3FC';
+  const twilightBarFill =
+    theme === 'red' ? '#5C1111' : theme === 'white' ? '#64748B' : '#475569';
+  const nightBarFill = '#000000';
+  const clampLabelX = (x: number) => Math.max(18, Math.min(svgW - 18, x));
 
   const targetMeta = getSelectedObjectMeta(selected);
   const objectLogs = observationLogStore.logs.filter(
@@ -1212,7 +1219,36 @@ export function CelestialInfoWindow({
               최고 {maxAlt.altDeg.toFixed(0)}° ({maxAlt.label})
             </span>
           </div>
-          <svg viewBox={`0 0 ${svgW} ${svgH}`} className="w-full h-[74px] overflow-visible">
+          <div
+            className={`flex items-center justify-between gap-2 font-mono text-[9.5px] tracking-[-0.04em] tabular-nums ${ui.textSecondary}`}
+          >
+            {altProfile.isCircumpolar ? (
+              <span className={ui.textMuted}>항상 지평선 위 (주극성)</span>
+            ) : altProfile.isNeverRises ? (
+              <span className={ui.textMuted}>항상 지평선 아래</span>
+            ) : (
+              <>
+                <span className="whitespace-nowrap">
+                  <span style={{ color: riseColor }}>↑ 뜸</span>{' '}
+                  <span className="font-semibold">{altProfile.primaryRise?.label ?? '--:--'}</span>
+                </span>
+                <span className="whitespace-nowrap">
+                  <span style={{ color: setColor }}>↓ 짐</span>{' '}
+                  <span className="font-semibold">{altProfile.primarySet?.label ?? '--:--'}</span>
+                </span>
+              </>
+            )}
+          </div>
+          <svg
+            viewBox={`0 0 ${svgW} ${svgH}`}
+            className="w-full overflow-visible"
+            style={{ height: `${svgH}px` }}
+          >
+            <defs>
+              <clipPath id="nox-sky-phase-bar-clip">
+                <rect x={0} y={barY} width={svgW} height={barH} rx={2.5} ry={2.5} />
+              </clipPath>
+            </defs>
             <line
               x1={0}
               y1={optimalY}
@@ -1230,8 +1266,113 @@ export function CelestialInfoWindow({
               stroke="currentColor"
               strokeOpacity={0.4}
             />
+            <line
+              x1={nowX}
+              y1={2}
+              x2={nowX}
+              y2={barY + barH}
+              stroke={strokeColor}
+              strokeOpacity={0.28}
+              strokeWidth={0.9}
+              strokeDasharray="2 2"
+            />
             <polyline fill="none" stroke={strokeColor} strokeWidth={1.6} points={curvePoints} />
+            {altProfile.rises.map((crossing, idx) => {
+              const cx = offsetToX(crossing.offsetHours);
+              const isPrimary = altProfile.primaryRise === crossing;
+              return (
+                <g key={`rise-${idx}`}>
+                  <circle cx={cx} cy={horizonY} r={2.3} fill={riseColor} />
+                  {isPrimary && (
+                    <text
+                      x={clampLabelX(cx)}
+                      y={horizonY - 16}
+                      textAnchor="middle"
+                      fontSize={8.2}
+                      fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+                      fill={riseColor}
+                    >
+                      ↑{crossing.label}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
+            {altProfile.sets.map((crossing, idx) => {
+              const cx = offsetToX(crossing.offsetHours);
+              const isPrimary = altProfile.primarySet === crossing;
+              return (
+                <g key={`set-${idx}`}>
+                  <circle cx={cx} cy={horizonY} r={2.3} fill={setColor} />
+                  {isPrimary && (
+                    <text
+                      x={clampLabelX(cx)}
+                      y={horizonY + 22}
+                      textAnchor="middle"
+                      fontSize={8.2}
+                      fontFamily="ui-monospace, SFMono-Regular, Menlo, monospace"
+                      fill={setColor}
+                    >
+                      ↓{crossing.label}
+                    </text>
+                  )}
+                </g>
+              );
+            })}
             <circle cx={nowX} cy={nowY} r={3} fill={strokeColor} />
+
+            {/* Day (transparent) / Twilight (mid-tone) / Night (black) bar */}
+            <g clipPath="url(#nox-sky-phase-bar-clip)">
+              {altProfile.skySegments.map((seg, idx) => {
+                const x1 = offsetToX(seg.startOffsetHours);
+                const x2 = offsetToX(seg.endOffsetHours);
+                const w = Math.max(0.5, x2 - x1);
+                const fill =
+                  seg.phase === 'day'
+                    ? dayBarFill
+                    : seg.phase === 'twilight'
+                    ? twilightBarFill
+                    : nightBarFill;
+                const phaseTitle =
+                  seg.phase === 'day'
+                    ? `낮 (${seg.startLabel}~${seg.endLabel})`
+                    : seg.phase === 'twilight'
+                    ? `박명 (${seg.startLabel}~${seg.endLabel})`
+                    : `밤 (${seg.startLabel}~${seg.endLabel})`;
+                return (
+                  <rect
+                    key={`sky-seg-${idx}`}
+                    x={x1}
+                    y={barY}
+                    width={w}
+                    height={barH}
+                    fill={fill}
+                  >
+                    <title>{phaseTitle}</title>
+                  </rect>
+                );
+              })}
+            </g>
+            <rect
+              x={0.4}
+              y={barY + 0.4}
+              width={svgW - 0.8}
+              height={barH - 0.8}
+              rx={2.5}
+              ry={2.5}
+              fill="none"
+              stroke="currentColor"
+              strokeOpacity={0.35}
+              strokeWidth={0.8}
+            />
+            <line
+              x1={nowX}
+              y1={barY}
+              x2={nowX}
+              y2={barY + barH}
+              stroke={strokeColor}
+              strokeWidth={1.2}
+            />
           </svg>
           <div
             className={`flex justify-between text-[9.5px] font-mono tracking-[-0.05em] tabular-nums ${ui.textMuted}`}
@@ -1239,6 +1380,31 @@ export function CelestialInfoWindow({
             <span>-12h</span>
             <span>0° 지평 · +30°</span>
             <span>+12h</span>
+          </div>
+          <div
+            className={`flex items-center justify-end gap-2.5 text-[8.5px] tracking-[-0.03em] ${ui.textMuted}`}
+          >
+            <span className="inline-flex items-center gap-1">
+              <span
+                className="inline-block w-2.5 h-2 border border-current/30"
+                style={{ backgroundColor: dayBarFill, borderRadius: '1.5px' }}
+              />
+              낮
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span
+                className="inline-block w-2.5 h-2 border border-current/30"
+                style={{ backgroundColor: twilightBarFill, borderRadius: '1.5px' }}
+              />
+              박명
+            </span>
+            <span className="inline-flex items-center gap-1">
+              <span
+                className="inline-block w-2.5 h-2 border border-current/35"
+                style={{ backgroundColor: nightBarFill, borderRadius: '1.5px' }}
+              />
+              밤
+            </span>
           </div>
         </div>
 

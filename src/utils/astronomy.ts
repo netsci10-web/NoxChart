@@ -570,6 +570,73 @@ export interface AltitudePoint {
   altDeg: number;
 }
 
+export interface AltitudeCrossing {
+  offsetHours: number;
+  timestampMs: number;
+  label: string;
+}
+
+export type SkyLightPhase = 'day' | 'twilight' | 'night';
+
+export interface SkyPhaseSegment {
+  phase: SkyLightPhase;
+  startOffsetHours: number;
+  endOffsetHours: number;
+  startLabel: string;
+  endLabel: string;
+}
+
+export interface AltitudeProfile24h {
+  points: AltitudePoint[];
+  rises: AltitudeCrossing[];
+  sets: AltitudeCrossing[];
+  primaryRise: AltitudeCrossing | null;
+  primarySet: AltitudeCrossing | null;
+  maxAlt: AltitudePoint;
+  minAltDeg: number;
+  isCircumpolar: boolean;
+  isNeverRises: boolean;
+  skySegments: SkyPhaseSegment[];
+}
+
+function formatLocalHHMM(timestampMs: number): string {
+  const d = new Date(timestampMs);
+  const hh = String(d.getHours()).padStart(2, '0');
+  const mm = String(d.getMinutes()).padStart(2, '0');
+  return `${hh}:${mm}`;
+}
+
+/**
+ * Fast geocentric apparent equatorial coordinates (degrees) of the Sun for a given UTC timestamp.
+ */
+export function getSunEquatorialDeg(timestampMs: number): { raDeg: number; decDeg: number } {
+  const jd = timestampMs / 86400000 + 2440587.5;
+  const d = jd - 2451543.5;
+  const ecl = (23.4393 - 3.563e-7 * d) * DEG2RAD;
+  const w = (((282.9404 + 4.70935e-5 * d) % 360) + 360) % 360;
+  const e = 0.016709 - 1.151e-9 * d;
+  const M = (((356.047 + 0.9856002585 * d) % 360) + 360) % 360;
+  const mRad = M * DEG2RAD;
+  const E = mRad + e * Math.sin(mRad) * (1 + e * Math.cos(mRad));
+  const xv = Math.cos(E) - e;
+  const yv = Math.sqrt(1 - e * e) * Math.sin(E);
+  const v = Math.atan2(yv, xv) * RAD2DEG;
+  const lon = ((((v + w) % 360) + 360) % 360) * DEG2RAD;
+  const xe = Math.cos(lon);
+  const ye = Math.sin(lon) * Math.cos(ecl);
+  const ze = Math.sin(lon) * Math.sin(ecl);
+  return {
+    raDeg: (((Math.atan2(ye, xe) * RAD2DEG) % 360) + 360) % 360,
+    decDeg: Math.atan2(ze, Math.hypot(xe, ye)) * RAD2DEG,
+  };
+}
+
+function classifySolarPhase(sunAltDeg: number): SkyLightPhase {
+  if (sunAltDeg >= -0.833) return 'day';
+  if (sunAltDeg >= -18) return 'twilight';
+  return 'night';
+}
+
 /**
  * Compute 24-hour altitude curve centered around the selected observation time (-12h to +12h).
  */
@@ -590,6 +657,153 @@ export function getAltitudeCurve(
     pts.push({ offsetHours: h, label: `${hh}:00`, altDeg });
   }
   return pts;
+}
+
+/**
+ * Compute high-resolution 24-hour altitude profile (-12h to +12h) including
+ * exact rise/set crossings (0° horizon) and solar day/twilight/night bands.
+ */
+export function getAltitudeProfile24h(
+  raDeg: number,
+  decDeg: number,
+  latDeg: number,
+  lonDeg: number,
+  baseTimestampMs: number
+): AltitudeProfile24h {
+  const steps = 96; // 15-minute resolution across 24h
+  const points: AltitudePoint[] = [];
+  const altAtMs = (tMs: number): number => {
+    const lst = getLSTDeg(tMs, lonDeg);
+    return equatorialToHorizontal(raDeg, decDeg, lst, latDeg).altDeg;
+  };
+  const sunAltAtMs = (tMs: number): number => {
+    const sun = getSunEquatorialDeg(tMs);
+    const lst = getLSTDeg(tMs, lonDeg);
+    return equatorialToHorizontal(sun.raDeg, sun.decDeg, lst, latDeg).altDeg;
+  };
+
+  let maxAlt: AltitudePoint = { offsetHours: 0, label: '--:--', altDeg: -90 };
+  let minAltDeg = 90;
+
+  for (let i = 0; i <= steps; i++) {
+    const offsetHours = -12 + (24 * i) / steps;
+    const tMs = baseTimestampMs + offsetHours * 3600 * 1000;
+    const altDeg = altAtMs(tMs);
+    const pt: AltitudePoint = {
+      offsetHours,
+      label: formatLocalHHMM(tMs),
+      altDeg,
+    };
+    points.push(pt);
+    if (altDeg > maxAlt.altDeg) maxAlt = pt;
+    if (altDeg < minAltDeg) minAltDeg = altDeg;
+  }
+
+  // Refine rise & set crossings at 0° horizon via bisection
+  const rises: AltitudeCrossing[] = [];
+  const sets: AltitudeCrossing[] = [];
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i];
+    const p1 = points[i + 1];
+    const isRise = p0.altDeg < 0 && p1.altDeg >= 0;
+    const isSet = p0.altDeg >= 0 && p1.altDeg < 0;
+    if (!isRise && !isSet) continue;
+
+    let lo = baseTimestampMs + p0.offsetHours * 3600 * 1000;
+    let hi = baseTimestampMs + p1.offsetHours * 3600 * 1000;
+    for (let iter = 0; iter < 10; iter++) {
+      const mid = (lo + hi) * 0.5;
+      const midAlt = altAtMs(mid);
+      if (isRise) {
+        if (midAlt < 0) lo = mid;
+        else hi = mid;
+      } else {
+        if (midAlt >= 0) lo = mid;
+        else hi = mid;
+      }
+    }
+    const crossMs = (lo + hi) * 0.5;
+    const crossOffset = (crossMs - baseTimestampMs) / (3600 * 1000);
+    const crossing: AltitudeCrossing = {
+      offsetHours: crossOffset,
+      timestampMs: crossMs,
+      label: formatLocalHHMM(crossMs),
+    };
+    if (isRise) rises.push(crossing);
+    else sets.push(crossing);
+  }
+
+  const pickClosestToNow = (arr: AltitudeCrossing[]): AltitudeCrossing | null => {
+    if (arr.length === 0) return null;
+    return arr.reduce((best, cur) =>
+      Math.abs(cur.offsetHours) < Math.abs(best.offsetHours) ? cur : best
+    );
+  };
+
+  // Compute solar day / twilight / night segments at 5-minute resolution (288 slices)
+  const phaseSlices = 288;
+  const rawSegments: SkyPhaseSegment[] = [];
+  let curPhase: SkyLightPhase | null = null;
+  let segStartOffset = -12;
+
+  const refinePhaseBoundary = (
+    t0: number,
+    t1: number,
+    phase0: SkyLightPhase
+  ): number => {
+    let lo = t0;
+    let hi = t1;
+    for (let iter = 0; iter < 8; iter++) {
+      const mid = (lo + hi) * 0.5;
+      if (classifySolarPhase(sunAltAtMs(mid)) === phase0) lo = mid;
+      else hi = mid;
+    }
+    return (lo + hi) * 0.5;
+  };
+
+  let prevMs = baseTimestampMs - 12 * 3600 * 1000;
+  curPhase = classifySolarPhase(sunAltAtMs(prevMs));
+
+  for (let i = 1; i <= phaseSlices; i++) {
+    const offsetH = -12 + (24 * i) / phaseSlices;
+    const tMs = baseTimestampMs + offsetH * 3600 * 1000;
+    const nextPhase = classifySolarPhase(sunAltAtMs(tMs));
+    if (nextPhase !== curPhase) {
+      const boundMs = refinePhaseBoundary(prevMs, tMs, curPhase);
+      const boundOffset = (boundMs - baseTimestampMs) / (3600 * 1000);
+      rawSegments.push({
+        phase: curPhase,
+        startOffsetHours: segStartOffset,
+        endOffsetHours: boundOffset,
+        startLabel: formatLocalHHMM(baseTimestampMs + segStartOffset * 3600 * 1000),
+        endLabel: formatLocalHHMM(boundMs),
+      });
+      segStartOffset = boundOffset;
+      curPhase = nextPhase;
+    }
+    prevMs = tMs;
+  }
+
+  rawSegments.push({
+    phase: curPhase,
+    startOffsetHours: segStartOffset,
+    endOffsetHours: 12,
+    startLabel: formatLocalHHMM(baseTimestampMs + segStartOffset * 3600 * 1000),
+    endLabel: formatLocalHHMM(baseTimestampMs + 12 * 3600 * 1000),
+  });
+
+  return {
+    points,
+    rises,
+    sets,
+    primaryRise: pickClosestToNow(rises),
+    primarySet: pickClosestToNow(sets),
+    maxAlt,
+    minAltDeg,
+    isCircumpolar: minAltDeg >= 0,
+    isNeverRises: maxAlt.altDeg < 0,
+    skySegments: rawSegments,
+  };
 }
 
 /**
