@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import type { User } from 'firebase/auth';
 import {
   BookmarkPlus,
+  Check,
   ChevronDown,
   Cloud,
   CloudAlert,
@@ -11,6 +12,8 @@ import {
   Crosshair,
   Download,
   Eye,
+  FolderOpen,
+  HardDrive,
   Image,
   Layers,
   LayoutGrid,
@@ -21,12 +24,14 @@ import {
   MapPin,
   Minus,
   Moon,
+  Pin,
   Plus,
   RefreshCw,
   RotateCcw,
   Search,
   Settings,
   SlidersHorizontal,
+  Sparkles,
   Sun,
   Target,
   Trash2,
@@ -85,6 +90,21 @@ import {
   UI_FONT_SIZE_MIN_STEP,
   UiFontFamily,
 } from '../utils/uiTypography';
+import {
+  cancelStarPackDownload,
+  connectNoxchartFolder,
+  disconnectNoxchartFolder,
+  downloadStarCatalogTier,
+  exportStarPackToFile,
+  formatByteSize,
+  getLocalStarCatalogState,
+  getNextAvailableTier,
+  importStarPackFiles,
+  LocalStarCatalogState,
+  removeStarCatalogTier,
+  STAR_CATALOG_TIERS,
+  subscribeLocalStarCatalogs,
+} from '../utils/localStarCatalogs';
 import {
   formatCatalogCode,
   formatObjectDisplayName,
@@ -212,6 +232,8 @@ interface ControlSidebarProps {
   onChangeUiFontFamily: (family: UiFontFamily) => void;
   uiFontSizeStep: number;
   onChangeUiFontSizeStep: (step: number) => void;
+  sidebarsPinned: boolean;
+  onChangeSidebarsPinned: (pinned: boolean) => void;
   authUser: User | null;
   authReady: boolean;
   authBusy: boolean;
@@ -321,6 +343,8 @@ export function ControlSidebar({
   onChangeUiFontFamily,
   uiFontSizeStep,
   onChangeUiFontSizeStep,
+  sidebarsPinned,
+  onChangeSidebarsPinned,
   authUser,
   authReady,
   authBusy,
@@ -678,6 +702,80 @@ export function ControlSidebar({
     clearMpcBrightAsteroids();
     setMpcMeta(null);
     setMpcStatusMsg({ text: '기본 내장 소행성 목록으로 복원했습니다.' });
+  };
+
+  // Stellarium-style tiered local star catalog manager (문서/noxchart + IndexedDB)
+  const [localStarState, setLocalStarState] = useState<LocalStarCatalogState>(() =>
+    getLocalStarCatalogState()
+  );
+  const [starPackNotice, setStarPackNotice] = useState<{ text: string; isError?: boolean } | null>(
+    null
+  );
+  const starPackFileInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    return subscribeLocalStarCatalogs(() => {
+      setLocalStarState(getLocalStarCatalogState());
+    });
+  }, []);
+
+  const nextStarTier = useMemo(() => {
+    void localStarState.revision;
+    return getNextAvailableTier();
+  }, [localStarState.revision]);
+
+  const handleConnectNoxchartFolder = async () => {
+    setStarPackNotice(null);
+    const res = await connectNoxchartFolder();
+    setStarPackNotice({ text: res.message, isError: !res.ok });
+  };
+
+  const handleDisconnectNoxchartFolder = async () => {
+    await disconnectNoxchartFolder();
+    setStarPackNotice({
+      text: '로컬 폴더 연결을 해제했습니다. 내려받은 목록은 브라우저 영구 저장소에 유지됩니다.',
+    });
+  };
+
+  const handleDownloadStarTier = async (tierNum: number) => {
+    setStarPackNotice(null);
+    const res = await downloadStarCatalogTier(tierNum);
+    setStarPackNotice({
+      text: res.message,
+      isError: !res.ok && !res.cancelled,
+    });
+  };
+
+  const handleImportStarPackFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setStarPackNotice(null);
+    const res = await importStarPackFiles(files);
+    e.target.value = '';
+    if (res.importedTiers.length > 0) {
+      setStarPackNotice({
+        text: `별 목록 ${res.importedTiers.length}개 (${res.totalStars.toLocaleString()}개 항성) 불러오기 완료`,
+      });
+    } else {
+      setStarPackNotice({
+        text: '올바른 NoxChart 별 목록(.noxstars) 파일이 아닙니다.',
+        isError: true,
+      });
+    }
+  };
+
+  const handleExportStarPack = async (tierNum: number) => {
+    const ok = await exportStarPackToFile(tierNum);
+    if (ok) {
+      setStarPackNotice({
+        text: `${tierNum}단계 별 목록(.noxstars) 파일을 내려받았습니다. 문서/noxchart 폴더에 보관해 두세요.`,
+      });
+    }
+  };
+
+  const handleRemoveStarPack = async (tierNum: number) => {
+    await removeStarCatalogTier(tierNum);
+    setStarPackNotice({ text: `${tierNum}단계 별 목록을 삭제했습니다.` });
   };
 
   const solarBodies = useMemo(() => {
@@ -2481,6 +2579,20 @@ export function ControlSidebar({
 
               {isSectionOpen('layers_stars') && (
               <div className={`space-y-1.5 ${sectionBodyCls}`}>
+
+              <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
+                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                  항성표시
+                </span>
+                <input
+                  type="checkbox"
+                  checked={layers.showStarOutlines}
+                  onChange={(e) =>
+                    onChangeLayers((p) => ({ ...p, showStarOutlines: e.target.checked }))
+                  }
+                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                />
+              </label>
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -6714,23 +6826,314 @@ export function ControlSidebar({
                           onClick={() => onChangeUiFontSizeStep(0)}
                           title="글꼴 크기 기본(100%)으로 초기화"
                           aria-label="글꼴 크기 100%로 초기화"
-                          className={`px-2 py-1.5 border rounded text-[10.5px] font-mono tabular-nums font-medium shrink-0 transition-colors cursor-pointer ${
-                            fontMetrics.step === 0 ? ui.buttonActive : ui.buttonIdle
-                          }`}
+                          className={`px-2 py-1.5 border rounded text-[10.5px] font-mono tabular-nums font-medium shrink-0 transition-colors cursor-pointer ${ui.buttonActive}`}
                         >
                           <span>100%</span>
                         </button>
                       </div>
-                      {fontMetrics.step > 0 && (
-                        <div className={`text-[9.5px] leading-snug break-keep ${ui.textMuted}`}>
-                          한 줄 유지를 위해 자간({fontMetrics.letterSpacingEm}em)·장평(
-                          {fontMetrics.condensePct}%)이 자동 보정됩니다.
-                        </div>
-                      )}
                     </div>
                   </div>
                 );
               })()}
+
+              {/* Left & Right Sidebar Pin Lock Toggle */}
+              <div className={`border rounded-md p-2.5 space-y-2 ${cardIdleCls}`}>
+                <div className="flex items-center justify-between gap-2">
+                  <div
+                    className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}
+                  >
+                    <Pin className="w-3.5 h-3.5 shrink-0" />
+                    <span>좌우 사이드바 고정</span>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={sidebarsPinned}
+                    aria-label="좌우 사이드바 고정 토글"
+                    onClick={() => onChangeSidebarsPinned(!sidebarsPinned)}
+                    className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border transition-colors cursor-pointer ${
+                      sidebarsPinned
+                        ? theme === 'white'
+                          ? 'bg-blue-600 border-blue-700'
+                          : theme === 'red'
+                          ? 'bg-red-700 border-red-500'
+                          : 'bg-cyan-500 border-cyan-400'
+                        : theme === 'white'
+                        ? 'bg-slate-300 border-slate-400'
+                        : theme === 'red'
+                        ? 'bg-red-950/70 border-red-900'
+                        : 'bg-slate-800 border-slate-700'
+                    }`}
+                  >
+                    <span
+                      className={`inline-block h-3.5 w-3.5 transform rounded-full bg-white shadow transition-transform ${
+                        sidebarsPinned ? 'translate-x-4' : 'translate-x-0.5'
+                      }`}
+                    />
+                  </button>
+                </div>
+                <p className={`text-[10px] leading-relaxed break-keep ${ui.textMuted}`}>
+                  {sidebarsPinned
+                    ? '고정 활성화됨: 좌우 사이드바 손잡이를 직접 클릭해야 열리거나 닫힙니다.'
+                    : '비활성화됨: 화면 양끝에 마우스를 올리면 자동으로 열리고 벗어나면 닫힙니다.'}
+                </p>
+              </div>
+
+              {/* Stellarium-Style Tiered Local Star Catalog Downloader (문서/noxchart) */}
+              <div className={`border rounded-md p-2.5 space-y-2.5 ${cardIdleCls}`}>
+                <div className="flex items-center justify-between gap-1.5">
+                  <div className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}>
+                    <Sparkles className="w-3.5 h-3.5 shrink-0" />
+                    <span>별 목록 업데이트</span>
+                  </div>
+                  <span className={`font-mono text-[9.5px] tabular-nums shrink-0 ${ui.accentText}`}>
+                    {localStarState.installedTiers.length}/{STAR_CATALOG_TIERS.length}단계
+                  </span>
+                </div>
+
+                <p className={`text-[10px] leading-relaxed break-keep ${ui.textMuted}`}>
+                  단계별로 별 목록을 로컬에 내려받아 더 어두운 별까지 빠르게 표시합니다. 기본 내장(8.0등급) 외 확장 팩을 영구 보관할 수 있습니다.
+                </p>
+
+                {/* Local Storage / 문서/noxchart Folder Binding */}
+                <div className={`p-2 rounded border space-y-1.5 ${ui.panelMuted} ${ui.border}`}>
+                  <div className="flex items-center justify-between gap-1.5 text-[10px]">
+                    <span className={`flex items-center gap-1 font-medium ${ui.textSecondary}`}>
+                      <HardDrive className="w-3 h-3 shrink-0" />
+                      <span>로컬 저장 위치</span>
+                    </span>
+                    <span
+                      className={`font-mono text-[9.5px] truncate ${
+                        localStarState.folderStatus === 'connected'
+                          ? ui.accentText
+                          : ui.textMuted
+                      }`}
+                    >
+                      {localStarState.folderStatus === 'connected'
+                        ? localStarState.folderDisplayName || '문서/noxchart'
+                        : localStarState.folderStatus === 'needs-permission'
+                        ? '재연결 필요'
+                        : '브라우저 영구저장'}
+                    </span>
+                  </div>
+                  <div className="flex items-center gap-1">
+                    {localStarState.folderStatus === 'connected' ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={handleConnectNoxchartFolder}
+                          className={`flex-1 py-1 px-1.5 border rounded text-[9.5px] font-medium flex items-center justify-center gap-1 cursor-pointer ${ui.buttonIdle}`}
+                        >
+                          <FolderOpen className="w-3 h-3 shrink-0" />
+                          <span>폴더 변경</span>
+                        </button>
+                        <button
+                          type="button"
+                          onClick={handleDisconnectNoxchartFolder}
+                          className={`py-1 px-1.5 border rounded text-[9.5px] cursor-pointer ${ui.buttonIdle}`}
+                        >
+                          해제
+                        </button>
+                      </>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={handleConnectNoxchartFolder}
+                        className={`flex-1 py-1 px-1.5 border rounded text-[9.5px] font-medium flex items-center justify-center gap-1 cursor-pointer ${ui.buttonIdle}`}
+                      >
+                        <FolderOpen className="w-3 h-3 shrink-0" />
+                        <span>
+                          {localStarState.folderStatus === 'needs-permission'
+                            ? '문서/noxchart 다시 연결'
+                            : '문서/noxchart 폴더 연결'}
+                        </span>
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => starPackFileInputRef.current?.click()}
+                      title="문서/noxchart 폴더에 보관된 .noxstars 파일 불러오기"
+                      className={`py-1 px-1.5 border rounded text-[9.5px] font-medium flex items-center justify-center gap-1 shrink-0 cursor-pointer ${ui.buttonLoad}`}
+                    >
+                      <Upload className="w-3 h-3 shrink-0" />
+                      <span>불러오기</span>
+                    </button>
+                    <input
+                      ref={starPackFileInputRef}
+                      type="file"
+                      accept=".noxstars"
+                      multiple
+                      onChange={handleImportStarPackFiles}
+                      className="hidden"
+                    />
+                  </div>
+                </div>
+
+                {/* Stellarium-Style Sequential Download Button & Metadata */}
+                {localStarState.downloading ? (
+                  <div className={`p-2 rounded border space-y-2 ${ui.panelMuted} ${ui.border}`}>
+                    <div className="flex items-center justify-between gap-1.5 text-[10.5px]">
+                      <span className={`font-semibold flex items-center gap-1.5 ${ui.textPrimary}`}>
+                        <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                        <span>
+                          {STAR_CATALOG_TIERS.length}개 중 {localStarState.downloading.tier}번째 목록 받는 중
+                        </span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={cancelStarPackDownload}
+                        className={`px-1.5 py-0.5 border rounded text-[9.5px] cursor-pointer ${ui.buttonIdle}`}
+                      >
+                        취소
+                      </button>
+                    </div>
+                    <div className={`w-full h-1.5 rounded-full overflow-hidden ${theme === 'white' ? 'bg-slate-300' : 'bg-slate-800'}`}>
+                      <div
+                        className={`h-full transition-all duration-200 ${
+                          theme === 'white'
+                            ? 'bg-blue-600'
+                            : theme === 'red'
+                            ? 'bg-red-600'
+                            : 'bg-cyan-400'
+                        }`}
+                        style={{
+                          width: `${Math.max(
+                            3,
+                            Math.round(
+                              (localStarState.downloading.completedChunks /
+                                Math.max(1, localStarState.downloading.totalChunks)) *
+                                100
+                            )
+                          )}%`,
+                        }}
+                      />
+                    </div>
+                    <div className={`text-[9.5px] font-mono tabular-nums ${ui.textMuted}`}>
+                      {localStarState.downloading.statusText}
+                    </div>
+                  </div>
+                ) : nextStarTier ? (
+                  <div className={`p-2 rounded border space-y-2 ${ui.panelMuted} ${ui.border}`}>
+                    <button
+                      type="button"
+                      onClick={() => handleDownloadStarTier(nextStarTier.tier)}
+                      className={`w-full py-2 px-2.5 border rounded text-left flex items-center gap-2 transition-colors cursor-pointer ${ui.buttonActive}`}
+                    >
+                      <div
+                        className={`w-7 h-7 rounded-full flex items-center justify-center shrink-0 ${
+                          theme === 'white'
+                            ? 'bg-blue-600 text-white'
+                            : theme === 'red'
+                            ? 'bg-red-700 text-red-100'
+                            : 'bg-emerald-500/90 text-slate-950'
+                        }`}
+                      >
+                        <Download className="w-3.5 h-3.5 stroke-[2.5]" />
+                      </div>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[11px] font-bold leading-tight">
+                          {STAR_CATALOG_TIERS.length}개 중 {nextStarTier.tier}번째 목록 받기
+                        </div>
+                        <div className="text-[9.5px] opacity-85 leading-tight mt-0.5 break-keep">
+                          더 많은 별을 볼 수 있게 파일 내려받기
+                        </div>
+                      </div>
+                    </button>
+                    <div className={`grid grid-cols-1 gap-0.5 text-[10px] px-0.5 ${ui.textSecondary}`}>
+                      <div className="flex items-center justify-between gap-1">
+                        <span className={ui.textMuted}>다운로드 용량</span>
+                        <span className="font-mono tabular-nums font-medium">{nextStarTier.estSizeLabel}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-1">
+                        <span className={ui.textMuted}>별 개수</span>
+                        <span className="font-mono tabular-nums font-medium">{nextStarTier.estStarsLabel}</span>
+                      </div>
+                      <div className="flex items-center justify-between gap-1">
+                        <span className={ui.textMuted}>등급 범위</span>
+                        <span className="font-mono tabular-nums font-medium">
+                          {nextStarTier.magMin.toFixed(2)} - {nextStarTier.magMax.toFixed(2)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    className={`p-2 rounded border text-[10px] flex items-center gap-1.5 ${ui.panelMuted} ${ui.border} ${ui.accentText}`}
+                  >
+                    <Check className="w-3.5 h-3.5 shrink-0" />
+                    <span>
+                      전체 {STAR_CATALOG_TIERS.length}단계 별 목록이 설치되었습니다 (최대 {localStarState.maxMag.toFixed(2)}등급).
+                    </span>
+                  </div>
+                )}
+
+                {/* Installed Local Star Packs List */}
+                {localStarState.installedTiers.length > 0 && (
+                  <div className="space-y-1">
+                    <div className={`flex items-center justify-between text-[9.5px] ${ui.textMuted}`}>
+                      <span>
+                        설치된 로컬 목록 ({localStarState.totalStars.toLocaleString()}개)
+                      </span>
+                      <span className="font-mono tabular-nums">
+                        {formatByteSize(localStarState.totalBytes)}
+                      </span>
+                    </div>
+                    <div className="space-y-1 max-h-36 overflow-y-auto astro-scroll pr-0.5">
+                      {localStarState.installedTiers.map((pack) => (
+                        <div
+                          key={pack.tier}
+                          className={`flex items-center justify-between gap-1.5 px-2 py-1 rounded border text-[9.5px] ${ui.panelMuted} ${ui.border}`}
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className={`font-semibold flex items-center gap-1 ${ui.textPrimary}`}>
+                              <span>{pack.tier}단계</span>
+                              <span className={`font-mono font-normal ${ui.textMuted}`}>
+                                {pack.magMin.toFixed(2)}~{pack.magMax.toFixed(2)}m
+                              </span>
+                            </div>
+                            <div className={`font-mono tabular-nums text-[9px] ${ui.textMuted}`}>
+                              {pack.starCount.toLocaleString()}개 · {formatByteSize(pack.byteLength)}
+                              {pack.savedToFolder ? ' · 폴더 저장' : ''}
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => handleExportStarPack(pack.tier)}
+                              title="로컬 파일(.noxstars)로 저장"
+                              className={`p-1 border rounded cursor-pointer ${ui.buttonIdle}`}
+                            >
+                              <Download className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => handleRemoveStarPack(pack.tier)}
+                              title={`${pack.tier}단계 목록 삭제`}
+                              className={`p-1 border rounded cursor-pointer ${ui.buttonIdle}`}
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {starPackNotice && (
+                  <div
+                    className={`text-[10px] leading-snug break-keep ${
+                      starPackNotice.isError
+                        ? theme === 'white'
+                          ? 'text-red-600'
+                          : 'text-red-400'
+                        : ui.accentText
+                    }`}
+                  >
+                    {starPackNotice.text}
+                  </div>
+                )}
+              </div>
 
               {/* IAU MPC Bright Minor Planets (Soft00Bright.txt) Orbital Elements Update */}
               <div className={`border rounded-md p-2.5 space-y-2 ${cardIdleCls}`}>

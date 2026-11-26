@@ -221,6 +221,7 @@ interface SavedAppPrefs {
   redIntensity?: number;
   uiFontFamily?: UiFontFamily;
   uiFontSizeStep?: number;
+  sidebarsPinned?: boolean;
   coordSystem?: CoordSystem;
   fsz?: number;
   flipH?: boolean;
@@ -305,6 +306,7 @@ const DEFAULT_LAYERS: LayerSettings = {
   showPlanetSurface: true,
   showSolarSystemOrbits: false,
   showSolarSystemLabels: true,
+  showStarOutlines: false,
   showStarColors: true,
   showDoubleStars: true,
   showDoublePairs: true,
@@ -441,6 +443,9 @@ function loadSavedAppPrefs(): SavedAppPrefs {
         }
         if (typeof parsed.uiFontSizeStep === 'number' && Number.isFinite(parsed.uiFontSizeStep)) {
           res.uiFontSizeStep = clampUiFontSizeStep(parsed.uiFontSizeStep);
+        }
+        if (typeof parsed.sidebarsPinned === 'boolean') {
+          res.sidebarsPinned = parsed.sidebarsPinned;
         }
         if (parsed.coordSystem === 'horizontal' || parsed.coordSystem === 'equatorial') {
           res.coordSystem = parsed.coordSystem;
@@ -732,12 +737,17 @@ export default function App() {
   const [uiFontSizeStep, setUiFontSizeStep] = useState<number>(
     () => initialAppPrefs.uiFontSizeStep ?? 0
   );
+  const [sidebarsPinned, setSidebarsPinned] = useState<boolean>(
+    () => initialAppPrefs.sidebarsPinned ?? false
+  );
+  const sidebarsPinnedRef = useRef<boolean>(sidebarsPinned);
+  sidebarsPinnedRef.current = sidebarsPinned;
   const [requestedSidebarTab, setRequestedSidebarTab] = useState<{
     tab: 'explore' | 'layers' | 'optics' | 'observer' | 'settings';
     seq: number;
   } | null>(null);
 
-  // Sync UI font family, font size scaling, and automatic single-line condensation (자간·장평)
+  // Sync UI font family and clean proportional font-size scaling (without altering letter-spacing or stretch)
   useEffect(() => {
     const htmlEl = document.documentElement;
     const fontOpt = getUiFontOption(uiFontFamily);
@@ -751,11 +761,8 @@ export default function App() {
     );
     htmlEl.dataset.fontFamily = uiFontFamily;
     htmlEl.style.setProperty('--ui-font-scale', metrics.scale.toFixed(3));
-    htmlEl.style.setProperty('--ui-letter-spacing', `${metrics.letterSpacingEm}em`);
-    htmlEl.style.setProperty('--ui-word-spacing', `${metrics.wordSpacingEm}em`);
-    htmlEl.style.setProperty('--ui-condense-x', metrics.condenseX.toFixed(3));
     htmlEl.dataset.fontStep = String(metrics.step);
-    htmlEl.dataset.fontEnlarged = metrics.step > 0 ? 'true' : 'false';
+    delete htmlEl.dataset.fontEnlarged;
   }, [uiFontFamily, uiFontSizeStep]);
 
   // Keep mobile/tablet browser chrome, iOS status bar & safe-area background synced with active theme
@@ -899,6 +906,7 @@ export default function App() {
       // 항성 표시 옵션
       ...(tempHiddenLayers.stars
         ? {
+            showStarOutlines: false,
             showStarColors: false,
             showStarLabels: false,
             showProperStarNames: false,
@@ -1023,9 +1031,11 @@ export default function App() {
   const scheduleLeftHide = useCallback(
     (delayMs = 260) => {
       clearLeftHideTimer();
+      if (sidebarsPinnedRef.current) return;
       leftHideTimerRef.current = window.setTimeout(() => {
         leftHideTimerRef.current = null;
         if (
+          sidebarsPinnedRef.current ||
           pointerInLeftRef.current ||
           pointerDownInLeftRef.current ||
           nativePickerInLeftRef.current ||
@@ -1043,9 +1053,11 @@ export default function App() {
   const scheduleRightHide = useCallback(
     (delayMs = 260) => {
       clearRightHideTimer();
+      if (sidebarsPinnedRef.current) return;
       rightHideTimerRef.current = window.setTimeout(() => {
         rightHideTimerRef.current = null;
         if (
+          sidebarsPinnedRef.current ||
           pointerInRightRef.current ||
           pointerDownInRightRef.current ||
           nativePickerInRightRef.current ||
@@ -1059,6 +1071,13 @@ export default function App() {
     },
     [clearRightHideTimer]
   );
+
+  useEffect(() => {
+    if (sidebarsPinned) {
+      clearLeftHideTimer();
+      clearRightHideTimer();
+    }
+  }, [sidebarsPinned, clearLeftHideTimer, clearRightHideTimer]);
 
   useEffect(() => {
     if (!leftOpen) {
@@ -1812,6 +1831,7 @@ export default function App() {
         redIntensity,
         uiFontFamily,
         uiFontSizeStep,
+        sidebarsPinned,
         coordSystem: view.coordSystem,
         fsz: view.fsz,
         flipH: view.flipH,
@@ -1826,6 +1846,7 @@ export default function App() {
     redIntensity,
     uiFontFamily,
     uiFontSizeStep,
+    sidebarsPinned,
     view.coordSystem,
     view.fsz,
     view.flipH,
@@ -6790,6 +6811,7 @@ export default function App() {
                   key: 'stars' as const,
                   label: '항성',
                   configuredOn:
+                    layers.showStarOutlines ||
                     layers.showStarColors ||
                     layers.showStarLabels ||
                     layers.showProperStarNames ||
@@ -7673,6 +7695,8 @@ export default function App() {
             onChangeUiFontFamily={setUiFontFamily}
             uiFontSizeStep={uiFontSizeStep}
             onChangeUiFontSizeStep={setUiFontSizeStep}
+            sidebarsPinned={sidebarsPinned}
+            onChangeSidebarsPinned={setSidebarsPinned}
             authUser={authUser}
             authReady={authReady}
             authBusy={authBusy}
@@ -7688,11 +7712,12 @@ export default function App() {
           />
         </div>
 
-        {/* Left Screen-Edge Auto-Open Trigger Strip */}
-        {!leftOpen && (
+        {/* Left Screen-Edge Auto-Open Trigger Strip (disabled when sidebars are pinned) */}
+        {!leftOpen && !sidebarsPinned && (
           <div
             aria-hidden="true"
             onMouseEnter={() => {
+              if (sidebarsPinnedRef.current) return;
               pointerInLeftRef.current = true;
               clearLeftHideTimer();
               setLeftOpen(true);
@@ -7711,15 +7736,23 @@ export default function App() {
           onMouseEnter={() => {
             pointerInLeftRef.current = true;
             clearLeftHideTimer();
-            if (!leftOpen) setLeftOpen(true);
+            if (!sidebarsPinnedRef.current && !leftOpen) setLeftOpen(true);
           }}
           onMouseLeave={() => {
             pointerInLeftRef.current = false;
-            if (leftOpen) scheduleLeftHide(260);
+            if (!sidebarsPinnedRef.current && leftOpen) scheduleLeftHide(260);
           }}
-          title={leftOpen ? '왼쪽 메뉴 접기' : '왼쪽 메뉴 펼치기'}
+          title={
+            sidebarsPinned
+              ? leftOpen
+                ? '클릭하여 왼쪽 메뉴 접기 (고정 모드)'
+                : '클릭하여 왼쪽 메뉴 펼치기 (고정 모드)'
+              : leftOpen
+              ? '왼쪽 메뉴 접기'
+              : '왼쪽 메뉴 펼치기'
+          }
           aria-label={leftOpen ? '왼쪽 메뉴 접기' : '왼쪽 메뉴 펼치기'}
-          className={`no-print absolute z-30 top-[30%] -translate-y-1/2 h-16 w-5 border border-l-0 flex items-center justify-center transition-[left,background-color,box-shadow] duration-200 ease-out ${
+          className={`no-print absolute z-30 top-[30%] -translate-y-1/2 h-16 w-5 border border-l-0 flex items-center justify-center transition-[left,background-color,box-shadow] duration-200 ease-out cursor-pointer ${
             theme === 'white'
               ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-400 shadow-md'
               : theme === 'red'
@@ -7917,11 +7950,12 @@ export default function App() {
           />
         </div>
 
-        {/* Right Screen-Edge Auto-Open Trigger Strip */}
-        {!rightOpen && (
+        {/* Right Screen-Edge Auto-Open Trigger Strip (disabled when sidebars are pinned) */}
+        {!rightOpen && !sidebarsPinned && (
           <div
             aria-hidden="true"
             onMouseEnter={() => {
+              if (sidebarsPinnedRef.current) return;
               pointerInRightRef.current = true;
               clearRightHideTimer();
               setRightOpen(true);
@@ -7940,15 +7974,23 @@ export default function App() {
           onMouseEnter={() => {
             pointerInRightRef.current = true;
             clearRightHideTimer();
-            if (!rightOpen) setRightOpen(true);
+            if (!sidebarsPinnedRef.current && !rightOpen) setRightOpen(true);
           }}
           onMouseLeave={() => {
             pointerInRightRef.current = false;
-            if (rightOpen) scheduleRightHide(260);
+            if (!sidebarsPinnedRef.current && rightOpen) scheduleRightHide(260);
           }}
-          title={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
+          title={
+            sidebarsPinned
+              ? rightOpen
+                ? '클릭하여 오른쪽 메뉴 접기 (고정 모드)'
+                : '클릭하여 오른쪽 메뉴 펼치기 (고정 모드)'
+              : rightOpen
+              ? '오른쪽 메뉴 접기'
+              : '오른쪽 메뉴 펼치기'
+          }
           aria-label={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
-          className={`no-print absolute z-30 top-[30%] -translate-y-1/2 h-16 w-5 border border-r-0 flex items-center justify-center transition-[right,background-color,box-shadow] duration-200 ease-out ${
+          className={`no-print absolute z-30 top-[30%] -translate-y-1/2 h-16 w-5 border border-r-0 flex items-center justify-center transition-[right,background-color,box-shadow] duration-200 ease-out cursor-pointer ${
             theme === 'white'
               ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-400 shadow-md'
               : theme === 'red'

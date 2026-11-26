@@ -4,6 +4,7 @@ import {
   getVisibleUltraTileKeys,
 } from '../data/catalogLoader';
 import { getFieldStarsInBounds } from './fieldStars';
+import { getVisibleLocalStarCellKeys } from './localStarCatalogs';
 import {
   clampBortleClass,
   computeBortleDsoAttenuation,
@@ -2574,8 +2575,11 @@ function renderStarChartPass(
     return { skip: false, dimmed, extMag };
   };
 
-  // 8a. Optional procedural ultra-faint fill ONLY when Gaia live isn't covering the region
-  if (layers.showFieldStars && !gaiaActive && view.fsz <= 12 && magLimit > 10.2) {
+  const hasLocalStarPacks = catalogs.localStarCount > 0 && catalogs.localStarTiles.size > 0;
+  const localCoversMag = hasLocalStarPacks && catalogs.localStarMaxMag >= magLimit - 0.1;
+
+  // 8a. Optional procedural ultra-faint fill ONLY when neither Gaia live nor local downloaded packs cover the region
+  if (layers.showFieldStars && !gaiaActive && !localCoversMag && view.fsz <= 12 && magLimit > 10.2) {
     const halfSpan = Math.min(25, view.fsz * 0.72);
     const decMin = Math.max(-85, view.dec - halfSpan);
     const decMax = Math.min(85, view.dec + halfSpan);
@@ -2651,9 +2655,74 @@ function renderStarChartPass(
     }
   }
 
+  // 8b-local. Locally Downloaded Tiered Star Catalog Packs (문서/noxchart & IndexedDB)
+  // Spatially tiled (10°×10° cells, sorted by mag) for instant offline rendering at 60fps
+  if (magLimit > 8.0 && hasLocalStarPacks) {
+    const localCellKeys = getVisibleLocalStarCellKeys(view.ra, view.dec, view.fsz);
+    const maxLocalDrawable = view.fsz > 30 ? 18000 : 28000;
+    let localDrawnCount = 0;
+    let localClickableCount = 0;
+    const allowLocalClick = view.fsz <= 12;
+
+    for (let c = 0; c < localCellKeys.length && localDrawnCount < maxLocalDrawable; c++) {
+      const flat = catalogs.localStarTiles.get(localCellKeys[c]);
+      if (!flat || flat.length < 4) continue;
+      for (let i = 0; i < flat.length && localDrawnCount < maxLocalDrawable; i += 4) {
+        const sMag = flat[i + 2];
+        if (sMag > magLimit) break; // Sorted ascending by magnitude
+        if (sMag <= 8.0) continue; // Covered by Hipparcos bright + deep
+        const sRa = flat[i];
+        const sDec = flat[i + 1];
+        if (gaiaActive && sMag > 8.3 && isInsideGaiaPatch(sRa, sDec, sMag)) continue;
+        const pt = projectStereographic(sRa, sDec, proj, 10);
+        if (!pt) continue;
+
+        const starId = `Gaia L${Math.round(sRa * 1000)}_${Math.round((sDec + 90) * 1000)}`;
+        const isSelected = selected?.kind === 'star' && selected.data.id === starId;
+        const altCheck = evalStarAltitude(sRa, sDec, isSelected, sMag);
+        if (altCheck.skip) continue;
+
+        const r = getStarRadiusPogson(sMag + altCheck.extMag, magLimit, view.fsz);
+        const starObj: Star = {
+          id: starId,
+          ra: sRa,
+          dec: sDec,
+          mag: sMag,
+          bv: flat[i + 3],
+          con: '',
+        };
+        drawableStars.push({
+          star: starObj,
+          x: pt.x,
+          y: pt.y,
+          radius: r,
+          isBright: false,
+          isSelected,
+          dimmed: altCheck.dimmed,
+          extMag: altCheck.extMag,
+        });
+        localDrawnCount++;
+
+        if (isSelected || (allowLocalClick && localClickableCount < 1200 && sMag <= Math.min(14.5, magLimit))) {
+          localClickableCount++;
+          targets.push({
+            kind: 'star',
+            id: starId,
+            x: pt.x,
+            y: pt.y,
+            radius: Math.max(6, r + 2.5),
+            mag: sMag,
+            item: { kind: 'star', data: starObj },
+          });
+        }
+      }
+    }
+  }
+
   // 8c. Spatially-Tiled Hipparcos Ultra Stars (mag 8.01 - 13.78)
-  // Always fills areas outside an active Gaia patch/tiles AND 8.01m-8.30m inside Gaia coverage!
-  if (magLimit > 8.0 && catalogs.ultraStarTiles.size > 0) {
+  // Always fills areas outside an active Gaia patch/tiles AND when local star packs don't already cover them
+  const skipUltraCoveredByLocal = hasLocalStarPacks && catalogs.localStarCount >= 70000;
+  if (magLimit > 8.0 && catalogs.ultraStarTiles.size > 0 && !skipUltraCoveredByLocal) {
     const tileKeys = getVisibleUltraTileKeys(view.ra, view.dec, view.fsz);
     for (const key of tileKeys) {
       const tileStars = catalogs.ultraStarTiles.get(key);
@@ -2994,6 +3063,36 @@ function renderStarChartPass(
       ctx.beginPath();
       ctx.arc(x, y, radius, 0, Math.PI * 2);
       ctx.fill();
+    }
+
+    if (layers.showStarOutlines) {
+      ctx.strokeStyle =
+        theme === 'white'
+          ? 'rgba(15, 23, 42, 0.78)'
+          : theme === 'red'
+          ? 'rgba(248, 113, 113, 0.78)'
+          : 'rgba(186, 230, 253, 0.78)';
+      for (let i = 0; i < renderStars.length; i++) {
+        const { star, x, y, radius, dimmed, isSelected, extMag } = renderStars[i];
+        let ringAlpha = dimmed ? 0.16 : 0.85;
+        const effMag = star.mag + extMag;
+        if (!dimmed && !isSelected && deepAlphaActive) {
+          const dm = magLimit - effMag;
+          if (dm < 1.8) {
+            const t = Math.max(0, Math.min(1, dm / 1.8));
+            ringAlpha = (faintMinAlpha + (1 - faintMinAlpha) * (t * t * (3 - 2 * t))) * 0.85;
+          }
+        }
+        if (extActive && !dimmed && !isSelected && extMag > 0.05) {
+          ringAlpha *= Math.max(0.12, Math.pow(10, -0.22 * extMag));
+        }
+        ctx.globalAlpha = ringAlpha;
+        ctx.lineWidth = radius >= 2.6 ? 1.15 : 0.9;
+        const ringR = Math.max(radius + 1.8, 3.0);
+        ctx.beginPath();
+        ctx.arc(x, y, ringR, 0, Math.PI * 2);
+        ctx.stroke();
+      }
     }
     ctx.restore();
   }

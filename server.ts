@@ -210,7 +210,74 @@ function angularDistDegServer(ra1: number, dec1: number, ra2: number, dec2: numb
   return Math.acos(Math.max(-1, Math.min(1, c))) * (180 / Math.PI);
 }
 
-async function queryGaiaTap(adql: string, timeoutMs = 15000): Promise<GaiaStarTuple[] | null> {
+function parseGaiaVotableTuples(xml: string, hasSourceId: boolean): GaiaStarTuple[] | null {
+  if (!xml || xml.includes('value="ERROR"')) return null;
+  const stars: GaiaStarTuple[] = [];
+  const trRegex = /<TR>([\s\S]*?)<\/TR>/g;
+  const tdRegex = /<TD>([^<]*)<\/TD>/g;
+  let trMatch: RegExpExecArray | null;
+  let idx = 0;
+  while ((trMatch = trRegex.exec(xml)) !== null) {
+    const trBody = trMatch[1];
+    const cols: string[] = [];
+    tdRegex.lastIndex = 0;
+    let tdMatch: RegExpExecArray | null;
+    while ((tdMatch = tdRegex.exec(trBody)) !== null) {
+      cols.push(tdMatch[1].trim());
+    }
+    const offset = hasSourceId ? 1 : 0;
+    if (cols.length < offset + 3) continue;
+    const sid = hasSourceId ? cols[0] || String(idx) : String(idx);
+    const sRa = Number(cols[offset]);
+    const sDec = Number(cols[offset + 1]);
+    const gMag = Number(cols[offset + 2]);
+    const bpRpRaw = cols.length > offset + 3 && cols[offset + 3] !== '' ? Number(cols[offset + 3]) : NaN;
+    const bpRp = Number.isFinite(bpRpRaw) ? bpRpRaw : 0.8;
+    if (!Number.isFinite(sRa) || !Number.isFinite(sDec) || !Number.isFinite(gMag)) continue;
+
+    const bvApprox = Math.max(-0.35, Math.min(2.2, (bpRp - 0.15) * 0.78));
+    stars.push([
+      sid.slice(-8),
+      Number(sRa.toFixed(5)),
+      Number(sDec.toFixed(5)),
+      Number(gMag.toFixed(2)),
+      Number(bvApprox.toFixed(2)),
+    ]);
+    idx++;
+  }
+  return stars;
+}
+
+async function queryGaiaAipTap(
+  adql: string,
+  hasSourceId: boolean,
+  timeoutMs = 22000
+): Promise<GaiaStarTuple[] | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const upstream = await fetch('https://gaia.aip.de/tap/sync', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        REQUEST: 'doQuery',
+        LANG: 'ADQL',
+        QUERY: adql,
+      }),
+    });
+    clearTimeout(timeout);
+    if (!upstream.ok) return null;
+    const xml = await upstream.text();
+    if (!xml.includes('<VOTABLE')) return null;
+    return parseGaiaVotableTuples(xml, hasSourceId);
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
+async function queryGaiaEsaTap(adql: string, timeoutMs = 12000): Promise<GaiaStarTuple[] | null> {
   const tapUrl =
     'https://gea.esac.esa.int/tap-server/tap/sync?' +
     new URLSearchParams({
@@ -231,8 +298,12 @@ async function queryGaiaTap(adql: string, timeoutMs = 15000): Promise<GaiaStarTu
     });
     clearTimeout(timeout);
     if (!upstream.ok) return null;
+    const ct = upstream.headers.get('content-type') || '';
+    if (ct.includes('text/html')) return null;
 
-    const payload = (await upstream.json()) as {
+    const text = await upstream.text();
+    if (text.trimStart().startsWith('<')) return null;
+    const payload = JSON.parse(text) as {
       data?: [string | number, number, number, number, number | null][];
     };
     const rows = Array.isArray(payload.data) ? payload.data : [];
@@ -260,6 +331,12 @@ async function queryGaiaTap(adql: string, timeoutMs = 15000): Promise<GaiaStarTu
     clearTimeout(timeout);
     return null;
   }
+}
+
+async function queryGaiaTap(adql: string, timeoutMs = 15000): Promise<GaiaStarTuple[] | null> {
+  const esa = await queryGaiaEsaTap(adql, Math.min(timeoutMs, 8000));
+  if (esa) return esa;
+  return queryGaiaAipTap(adql, true, timeoutMs);
 }
 
 async function createServer() {
@@ -961,6 +1038,143 @@ async function createServer() {
       truncated,
       cached: false,
     });
+  });
+
+  // Stellarium-style tiered local star catalog chunk downloader
+  // Serves compact [raDeg, decDeg, mag, bv] tuples from local Hipparcos ultra or live Gaia DR3 TAP
+  type CompactStarRow = [number, number, number, number];
+  const STAR_PACK_CHUNK_CACHE = new Map<string, { stars: CompactStarRow[]; at: number }>();
+  const STAR_PACK_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
+  let cachedHipUltraRows: CompactStarRow[] | null = null;
+
+  const getHipUltraCompactRows = (): CompactStarRow[] => {
+    if (cachedHipUltraRows) return cachedHipUltraRows;
+    const rows: CompactStarRow[] = [];
+    const ultraDir = path.join(PUBLIC_DATA_DIR, 'stars-ultra');
+    if (fs.existsSync(ultraDir)) {
+      const files = fs.readdirSync(ultraDir).filter((f) => f.endsWith('.json')).sort();
+      for (const file of files) {
+        const full = path.join(ultraDir, file);
+        if (!full.startsWith(ultraDir + path.sep)) continue;
+        try {
+          const parsed = JSON.parse(fs.readFileSync(full, 'utf-8'));
+          if (!Array.isArray(parsed)) continue;
+          for (let i = 0; i < parsed.length; i++) {
+            const r = parsed[i];
+            if (!Array.isArray(r) || r.length < 5) continue;
+            const ra = Number(r[1]);
+            const dec = Number(r[2]);
+            const mag = Number(r[3]);
+            const bv = Number(r[4]);
+            if (!Number.isFinite(ra) || !Number.isFinite(dec) || !Number.isFinite(mag)) continue;
+            rows.push([
+              Number(ra.toFixed(5)),
+              Number(dec.toFixed(5)),
+              Number(mag.toFixed(2)),
+              Number((Number.isFinite(bv) ? bv : 0.6).toFixed(2)),
+            ]);
+          }
+        } catch {
+          // Skip malformed tile file
+        }
+      }
+    }
+    cachedHipUltraRows = rows;
+    return rows;
+  };
+
+  app.get('/api/star-packs/chunk', async (req, res) => {
+    const source = req.query.source === 'hip-ultra' ? 'hip-ultra' : 'gaia';
+    const tier = Math.max(1, Math.min(6, Math.round(Number(req.query.tier) || 1)));
+
+    if (source === 'hip-ultra') {
+      const rows = getHipUltraCompactRows();
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.json({ tier, source, stars: rows, count: rows.length, cached: true });
+      return;
+    }
+
+    const raMin = Number(req.query.raMin);
+    const raMax = Number(req.query.raMax);
+    const decMin = Number(req.query.decMin);
+    const decMax = Number(req.query.decMax);
+    const magMin = Number(req.query.magMin);
+    const magMax = Number(req.query.magMax);
+
+    if (
+      !Number.isFinite(raMin) ||
+      !Number.isFinite(raMax) ||
+      !Number.isFinite(decMin) ||
+      !Number.isFinite(decMax) ||
+      !Number.isFinite(magMin) ||
+      !Number.isFinite(magMax) ||
+      raMin < 0 ||
+      raMax > 360.01 ||
+      raMax <= raMin ||
+      decMin < -90.01 ||
+      decMax > 90.01 ||
+      decMax <= decMin ||
+      magMin < 6.0 ||
+      magMax > 15.0 ||
+      magMax <= magMin
+    ) {
+      res.status(400).json({ error: 'Invalid star pack chunk parameters' });
+      return;
+    }
+
+    const cRaMin = Math.max(0, Math.min(360, raMin));
+    const cRaMax = Math.max(0, Math.min(360, raMax));
+    const cDecMin = Math.max(-90, Math.min(90, decMin));
+    const cDecMax = Math.max(-90, Math.min(90, decMax));
+    const cMagMin = Math.max(6.0, Math.min(15.0, magMin));
+    const cMagMax = Math.max(6.0, Math.min(15.0, magMax));
+
+    const chunkKey = `t${tier}_${cRaMin.toFixed(2)}_${cRaMax.toFixed(2)}_${cDecMin.toFixed(
+      2
+    )}_${cDecMax.toFixed(2)}_${cMagMin.toFixed(2)}_${cMagMax.toFixed(2)}`;
+    const cached = STAR_PACK_CHUNK_CACHE.get(chunkKey);
+    if (cached && Date.now() - cached.at < STAR_PACK_CACHE_TTL_MS) {
+      res.setHeader('Cache-Control', 'public, max-age=21600');
+      res.json({ tier, source, stars: cached.stars, count: cached.stars.length, cached: true });
+      return;
+    }
+
+    const maxRows = tier <= 2 ? 20000 : tier <= 4 ? 22000 : 25000;
+    const raOp = cRaMax >= 359.99 ? '<=' : '<';
+    const decOp = cDecMax >= 89.99 ? '<=' : '<';
+    const adqlAip =
+      `SELECT TOP ${maxRows} ra, dec, phot_g_mean_mag, bp_rp ` +
+      `FROM gaiadr3.gaia_source ` +
+      `WHERE ra >= ${cRaMin.toFixed(4)} AND ra ${raOp} ${cRaMax.toFixed(4)} ` +
+      `AND dec >= ${cDecMin.toFixed(4)} AND dec ${decOp} ${cDecMax.toFixed(4)} ` +
+      `AND phot_g_mean_mag > ${cMagMin.toFixed(2)} AND phot_g_mean_mag <= ${cMagMax.toFixed(2)}`;
+
+    // Prefer Gaia@AIP (reliable VOTable box queries), fallback to ESA Gaia TAP JSON
+    let tuples = await queryGaiaAipTap(adqlAip, false, 24000);
+    if (!tuples) {
+      const adqlEsa =
+        `SELECT TOP ${maxRows} source_id, ra, dec, phot_g_mean_mag, bp_rp ` +
+        `FROM gaiadr3.gaia_source ` +
+        `WHERE ra >= ${cRaMin.toFixed(4)} AND ra ${raOp} ${cRaMax.toFixed(4)} ` +
+        `AND dec >= ${cDecMin.toFixed(4)} AND dec ${decOp} ${cDecMax.toFixed(4)} ` +
+        `AND phot_g_mean_mag > ${cMagMin.toFixed(2)} AND phot_g_mean_mag <= ${cMagMax.toFixed(2)}`;
+      tuples = await queryGaiaEsaTap(adqlEsa, 15000);
+    }
+
+    if (!tuples) {
+      res.json({ tier, source, stars: [], count: 0, degraded: true });
+      return;
+    }
+
+    const compact: CompactStarRow[] = tuples.map((t) => [t[1], t[2], t[3], t[4]]);
+    if (STAR_PACK_CHUNK_CACHE.size >= 400) {
+      const oldest = STAR_PACK_CHUNK_CACHE.keys().next().value;
+      if (oldest) STAR_PACK_CHUNK_CACHE.delete(oldest);
+    }
+    STAR_PACK_CHUNK_CACHE.set(chunkKey, { stars: compact, at: Date.now() });
+
+    res.setHeader('Cache-Control', 'public, max-age=21600');
+    res.json({ tier, source, stars: compact, count: compact.length, cached: false });
   });
 
   if (!IS_PROD) {

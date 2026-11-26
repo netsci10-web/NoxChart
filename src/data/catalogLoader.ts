@@ -12,6 +12,13 @@ import {
 } from '../types/astronomy';
 import { DEG2RAD, getDsoLimitingMagnitude, getLimitingMagnitude } from '../utils/astronomy';
 import { formatCatalogCode, normalizeCatalogToken } from '../utils/catalogNames';
+import {
+  getLocalStarCatalogState,
+  getLocalStarSpatialIndex,
+  initLocalStarCatalogs,
+  LocalStarSpatialIndex,
+  subscribeLocalStarCatalogs,
+} from '../utils/localStarCatalogs';
 
 type BrightStarTuple = [
   number, // hip
@@ -104,6 +111,10 @@ export interface CatalogSnapshot {
   brightStars: Star[];
   deepStars: Star[];
   ultraStarTiles: Map<string, Star[]>;
+  localStarTiles: LocalStarSpatialIndex;
+  localStarCount: number;
+  localStarMaxMag: number;
+  localStarRevision: number;
   gaiaStars: Star[];
   gaiaPatch: GaiaPatchMeta | null;
   gaiaLoading: boolean;
@@ -126,6 +137,10 @@ const cache: CatalogSnapshot = {
   brightStars: [],
   deepStars: [],
   ultraStarTiles: new Map<string, Star[]>(),
+  localStarTiles: new Map<string, Float32Array>(),
+  localStarCount: 0,
+  localStarMaxMag: 8.0,
+  localStarRevision: 0,
   gaiaStars: [],
   gaiaPatch: null,
   gaiaLoading: false,
@@ -599,8 +614,13 @@ export async function searchHipparcosCatalog(rawQuery: string): Promise<Star[]> 
 }
 
 export function getCatalogSnapshot(): CatalogSnapshot {
+  const localState = getLocalStarCatalogState();
   return {
     ...cache,
+    localStarTiles: getLocalStarSpatialIndex(),
+    localStarCount: localState.totalStars,
+    localStarMaxMag: localState.maxMag,
+    localStarRevision: localState.revision,
   };
 }
 
@@ -718,12 +738,17 @@ export function useCatalogData(
       if (mounted) setTick((t) => t + 1);
     };
     catalogListeners.add(onUpdate);
+    const unsubLocal = subscribeLocalStarCatalogs(onUpdate);
     ensureCoreCatalogs().then(() => {
+      if (mounted) setTick((t) => t + 1);
+    });
+    initLocalStarCatalogs().then(() => {
       if (mounted) setTick((t) => t + 1);
     });
     return () => {
       mounted = false;
       catalogListeners.delete(onUpdate);
+      unsubLocal();
     };
   }, []);
 
@@ -999,10 +1024,15 @@ export function useCatalogData(
     };
   }, [raHours, decDeg, fsz, magOffset, enableGaiaLive]);
 
+  const localState = getLocalStarCatalogState();
   return {
     brightStars: cache.brightStars,
     deepStars: cache.deepStars,
     ultraStarTiles: cache.ultraStarTiles,
+    localStarTiles: getLocalStarSpatialIndex(),
+    localStarCount: localState.totalStars,
+    localStarMaxMag: localState.maxMag,
+    localStarRevision: localState.revision,
     gaiaStars,
     gaiaPatch,
     gaiaLoading,

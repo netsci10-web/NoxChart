@@ -110,6 +110,7 @@ export function sanitizeLayerSettings(
       obj.showSolarSystemLabels,
       fallback.showSolarSystemLabels
     ),
+    showStarOutlines: readBool(obj.showStarOutlines, fallback.showStarOutlines),
     showStarColors: readBool(obj.showStarColors, fallback.showStarColors),
     showDoubleStars: readBool(obj.showDoubleStars, fallback.showDoubleStars),
     showDoublePairs: readBool(obj.showDoublePairs, fallback.showDoublePairs),

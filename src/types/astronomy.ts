@@ -124,6 +124,7 @@ export interface LayerSettings {
   showPlanetSurface: boolean;
   showSolarSystemOrbits: boolean;
   showSolarSystemLabels: boolean;
+  showStarOutlines: boolean;
   showStarColors: boolean;
   showDoubleStars: boolean;
   showDoublePairs: boolean; // 이중성 (2성)

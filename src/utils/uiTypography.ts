@@ -59,8 +59,8 @@ export const UI_FONT_OPTIONS: readonly UiFontOption[] = [
   },
 ] as const;
 
-export const UI_FONT_SIZE_MIN_STEP = -2;
-export const UI_FONT_SIZE_MAX_STEP = 4;
+export const UI_FONT_SIZE_MIN_STEP = -3;
+export const UI_FONT_SIZE_MAX_STEP = 3;
 
 export interface UiFontSizeMetrics {
   step: number;
@@ -73,17 +73,25 @@ export interface UiFontSizeMetrics {
 }
 
 const FONT_STEP_TABLE: Record<number, Omit<UiFontSizeMetrics, 'step'>> = {
+  [-3]: {
+    scale: 0.76,
+    pct: 76,
+    letterSpacingEm: 0,
+    wordSpacingEm: 0,
+    condenseX: 1,
+    condensePct: 100,
+  },
   [-2]: {
-    scale: 0.86,
-    pct: 86,
+    scale: 0.84,
+    pct: 84,
     letterSpacingEm: 0,
     wordSpacingEm: 0,
     condenseX: 1,
     condensePct: 100,
   },
   [-1]: {
-    scale: 0.93,
-    pct: 93,
+    scale: 0.92,
+    pct: 92,
     letterSpacingEm: 0,
     wordSpacingEm: 0,
     condenseX: 1,
@@ -98,36 +106,28 @@ const FONT_STEP_TABLE: Record<number, Omit<UiFontSizeMetrics, 'step'>> = {
     condensePct: 100,
   },
   [1]: {
-    scale: 1.08,
-    pct: 108,
-    letterSpacingEm: -0.045,
-    wordSpacingEm: -0.05,
-    condenseX: 0.94,
-    condensePct: 94,
+    scale: 1.15,
+    pct: 115,
+    letterSpacingEm: 0,
+    wordSpacingEm: 0,
+    condenseX: 1,
+    condensePct: 100,
   },
   [2]: {
-    scale: 1.16,
-    pct: 116,
-    letterSpacingEm: -0.075,
-    wordSpacingEm: -0.09,
-    condenseX: 0.88,
-    condensePct: 88,
+    scale: 1.3,
+    pct: 130,
+    letterSpacingEm: 0,
+    wordSpacingEm: 0,
+    condenseX: 1,
+    condensePct: 100,
   },
   [3]: {
-    scale: 1.24,
-    pct: 124,
-    letterSpacingEm: -0.1,
-    wordSpacingEm: -0.13,
-    condenseX: 0.83,
-    condensePct: 83,
-  },
-  [4]: {
-    scale: 1.32,
-    pct: 132,
-    letterSpacingEm: -0.12,
-    wordSpacingEm: -0.16,
-    condenseX: 0.78,
-    condensePct: 78,
+    scale: 1.45,
+    pct: 145,
+    letterSpacingEm: 0,
+    wordSpacingEm: 0,
+    condenseX: 1,
+    condensePct: 100,
   },
 };
 
