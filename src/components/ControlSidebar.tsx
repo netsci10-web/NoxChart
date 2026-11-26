@@ -164,7 +164,7 @@ type ExploreCategory =
   | 'ngcic'
   | 'solar'
   | 'constellation';
-type ExploreSortMode = 'default' | 'category' | 'name' | 'mag' | 'alt';
+type ExploreSortMode = 'default' | 'category' | 'constellation' | 'name' | 'mag' | 'alt';
 type ExploreSortDir = 'asc' | 'desc';
 type StarSubFilter = 'all' | 'named' | 'bayer' | 'viewport';
 
@@ -592,6 +592,50 @@ export function ControlSidebar({
   const obsTimeMs = observer.timestampMs;
   const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
 
+  const conLookupByAbbr = useMemo(() => {
+    const map = new Map<string, { koName: string; abbr: string }>();
+    for (const c of catalogs.constellations) {
+      map.set(c.abbr.toLowerCase(), { koName: c.koName, abbr: c.abbr });
+    }
+    return map;
+  }, [catalogs.constellations]);
+
+  const getConstellationSortInfo = (
+    abbr?: string
+  ): { hasCon: boolean; sortKey: string; label: string } => {
+    const trimmed = abbr?.trim();
+    if (!trimmed) return { hasCon: false, sortKey: '', label: '별자리 미지정' };
+    const found = conLookupByAbbr.get(trimmed.toLowerCase());
+    if (found) {
+      return {
+        hasCon: true,
+        sortKey: found.koName,
+        label: `${found.koName} (${found.abbr})`,
+      };
+    }
+    return { hasCon: true, sortKey: trimmed, label: trimmed };
+  };
+
+  const compareConstellations = (
+    abbrA: string | undefined,
+    abbrB: string | undefined,
+    dir: number
+  ): number => {
+    const a = getConstellationSortInfo(abbrA);
+    const b = getConstellationSortInfo(abbrB);
+    if (a.hasCon !== b.hasCon) return a.hasCon ? -1 : 1;
+    if (!a.hasCon) return 0;
+    return a.sortKey.localeCompare(b.sortKey, 'ko') * dir;
+  };
+
+  const getGlobalItemConAbbr = (item: GlobalSearchItem): string | undefined => {
+    if (item.kind === 'constellation') return item.con.abbr;
+    if (item.kind === 'star') return item.star.con;
+    if (item.kind === 'double') return item.sys.con;
+    if (item.kind === 'dso') return item.dso.con;
+    return undefined;
+  };
+
   const messierList = useMemo(() => {
     const map = new Map<number, DeepSkyObject>();
     for (const d of catalogs.dsosBright) {
@@ -645,6 +689,11 @@ export function ControlSidebar({
         if (cmp !== 0) return cmp * dir;
         return a.num - b.num;
       }
+      if (exploreSort === 'constellation') {
+        const cmp = compareConstellations(a.item.con, b.item.con, dir);
+        if (cmp !== 0) return cmp;
+        return a.num - b.num;
+      }
       if (exploreSort === 'name') {
         const na = formatObjectDisplayName(a.item.koName, a.item.name, a.item.id);
         const nb = formatObjectDisplayName(b.item.koName, b.item.name, b.item.id);
@@ -667,7 +716,7 @@ export function ControlSidebar({
       return b.score - a.score || a.num - b.num;
     });
     return scored.map((s) => s.item);
-  }, [messierList, query, exploreSort, exploreSortDir, lstDeg, observer.lat]);
+  }, [messierList, query, exploreSort, exploreSortDir, conLookupByAbbr, lstDeg, observer.lat]);
 
   const filteredCaldwell = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -700,6 +749,11 @@ export function ControlSidebar({
         if (cmp !== 0) return cmp * dir;
         return a.item.caldwellNumber - b.item.caldwellNumber;
       }
+      if (exploreSort === 'constellation') {
+        const cmp = compareConstellations(a.item.con, b.item.con, dir);
+        if (cmp !== 0) return cmp;
+        return a.item.caldwellNumber - b.item.caldwellNumber;
+      }
       if (exploreSort === 'name') {
         const na = formatObjectDisplayName(a.item.koName, a.item.name, a.item.caldwellId);
         const nb = formatObjectDisplayName(b.item.koName, b.item.name, b.item.caldwellId);
@@ -722,7 +776,7 @@ export function ControlSidebar({
       return b.score - a.score || a.item.caldwellNumber - b.item.caldwellNumber;
     });
     return scored.map((s) => s.item);
-  }, [catalogs.caldwell, query, exploreSort, exploreSortDir, lstDeg, observer.lat]);
+  }, [catalogs.caldwell, query, exploreSort, exploreSortDir, conLookupByAbbr, lstDeg, observer.lat]);
 
   const ngcIcList = useMemo(() => {
     if (exploreCategory !== 'ngcic') return [];
@@ -851,6 +905,11 @@ export function ControlSidebar({
         if (cmpType !== 0) return cmpType * dir;
         return a.item.dso.mag - b.item.dso.mag;
       }
+      if (exploreSort === 'constellation') {
+        const cmp = compareConstellations(a.item.dso.con, b.item.dso.con, dir);
+        if (cmp !== 0) return cmp;
+        return a.item.dso.mag - b.item.dso.mag;
+      }
       if (exploreSort === 'name') {
         const na = formatObjectDisplayName(a.item.dso.koName, a.item.dso.name, a.item.displayId);
         const nb = formatObjectDisplayName(b.item.dso.koName, b.item.dso.name, b.item.displayId);
@@ -876,7 +935,7 @@ export function ControlSidebar({
       items: scored.slice(0, 100).map((s) => s.item),
       totalMatches: scored.length,
     };
-  }, [exploreCategory, ngcIcList, ngcIcFilter, query, exploreSort, exploreSortDir, lstDeg, observer.lat]);
+  }, [exploreCategory, ngcIcList, ngcIcFilter, query, exploreSort, exploreSortDir, conLookupByAbbr, lstDeg, observer.lat]);
 
   const [mpcRev, setMpcRev] = useState(0);
   const [mpcMeta, setMpcMeta] = useState<MpcAsteroidSyncMeta | null>(() => getMpcAsteroidSyncMeta());
@@ -1045,6 +1104,9 @@ export function ControlSidebar({
         if (ra !== rb) return (ra - rb) * dir;
         return a.mag - b.mag;
       }
+      if (exploreSort === 'constellation') {
+        return (a.ra - b.ra) * dir;
+      }
       if (exploreSort === 'name') {
         return (a.koName || a.name).localeCompare(b.koName || b.name, 'ko', { numeric: true }) * dir;
       }
@@ -1072,7 +1134,7 @@ export function ControlSidebar({
     const dir = exploreSortDir === 'asc' ? 1 : -1;
     if (exploreSort === 'default') return matched;
     return [...matched].sort((a, b) => {
-      if (exploreSort === 'name') {
+      if (exploreSort === 'name' || exploreSort === 'constellation') {
         return a.koName.localeCompare(b.koName, 'ko') * dir;
       }
       if (exploreSort === 'category') {
@@ -1238,6 +1300,11 @@ export function ControlSidebar({
           const ca = STAR_CATEGORY_INFO(a.star, a.badge).rank;
           const cb = STAR_CATEGORY_INFO(b.star, b.badge).rank;
           if (ca !== cb) return (ca - cb) * dir;
+          return a.star.mag - b.star.mag;
+        }
+        if (exploreSort === 'constellation') {
+          const cmp = compareConstellations(a.star.con, b.star.con, dir);
+          if (cmp !== 0) return cmp;
           return a.star.mag - b.star.mag;
         }
         if (exploreSort === 'name') {
@@ -1677,6 +1744,15 @@ export function ControlSidebar({
           sensitivity: 'base',
         });
       }
+      if (exploreSort === 'constellation') {
+        const cmp = compareConstellations(getGlobalItemConAbbr(a), getGlobalItemConAbbr(b), dir);
+        if (cmp !== 0) return cmp;
+        if (a.mag !== b.mag) return a.mag - b.mag;
+        return getGlobalItemName(a).localeCompare(getGlobalItemName(b), 'ko', {
+          numeric: true,
+          sensitivity: 'base',
+        });
+      }
       if (exploreSort === 'name') {
         const cmp = getGlobalItemName(a).localeCompare(getGlobalItemName(b), 'ko', {
           numeric: true,
@@ -1707,6 +1783,7 @@ export function ControlSidebar({
     exploreCategory,
     exploreSort,
     exploreSortDir,
+    conLookupByAbbr,
     query,
     solarBodies,
     sortedConstellations,
@@ -1765,6 +1842,11 @@ export function ControlSidebar({
           const ra = STAR_CATEGORY_INFO(a.star, a.sourceBadge).rank;
           const rb = STAR_CATEGORY_INFO(b.star, b.sourceBadge).rank;
           if (ra !== rb) return (ra - rb) * dir;
+          return a.star.mag - b.star.mag;
+        }
+        if (exploreSort === 'constellation') {
+          const cmp = compareConstellations(a.star.con, b.star.con, dir);
+          if (cmp !== 0) return cmp;
           return a.star.mag - b.star.mag;
         }
         if (exploreSort === 'name') {
@@ -2116,6 +2198,7 @@ export function ControlSidebar({
     starFilter,
     exploreSort,
     exploreSortDir,
+    conLookupByAbbr,
     query,
     catalogs.brightStars,
     catalogs.deepStars,
@@ -2561,6 +2644,7 @@ export function ControlSidebar({
                 [
                   { id: 'default', label: '기본' },
                   { id: 'category', label: '분류별' },
+                  { id: 'constellation', label: '별자리순' },
                   { id: 'name', label: '이름순' },
                   { id: 'mag', label: '밝기순' },
                   { id: 'alt', label: '고도순' },
@@ -2570,7 +2654,7 @@ export function ControlSidebar({
                   key={opt.id}
                   type="button"
                   onClick={() => handleSelectExploreSort(opt.id)}
-                  className={`flex-1 py-1 px-0.5 border text-[9.5px] tracking-[-0.06em] font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                  className={`flex-auto py-1 px-0.5 border text-[9px] tracking-[-0.07em] font-medium whitespace-nowrap text-center transition-colors cursor-pointer ${
                     exploreSort === opt.id ? ui.buttonActive : ui.buttonIdle
                   }`}
                   style={{ borderRadius: '4px' }}
@@ -2709,25 +2793,28 @@ export function ControlSidebar({
                   </div>
                 ) : (
                   allSearchResults.items.map((item, idx) => {
-                    const catLabel = allSearchResults.isViewportMode
-                      ? item.kind === 'star'
-                        ? STAR_CATEGORY_INFO(item.star, item.sourceBadge).label
-                        : GLOBAL_CATEGORY_INFO(item).label
-                      : GLOBAL_CATEGORY_INFO(item).label;
+                    const getGroupLabel = (target: GlobalSearchItem): string | null => {
+                      if (exploreSort === 'category') {
+                        return allSearchResults.isViewportMode
+                          ? target.kind === 'star'
+                            ? STAR_CATEGORY_INFO(target.star, target.sourceBadge).label
+                            : GLOBAL_CATEGORY_INFO(target).label
+                          : GLOBAL_CATEGORY_INFO(target).label;
+                      }
+                      if (exploreSort === 'constellation') {
+                        return getConstellationSortInfo(getGlobalItemConAbbr(target)).label;
+                      }
+                      return null;
+                    };
+                    const groupLabel = getGroupLabel(item);
                     const prevItem = idx > 0 ? allSearchResults.items[idx - 1] : null;
-                    const prevCatLabel = prevItem
-                      ? allSearchResults.isViewportMode
-                        ? prevItem.kind === 'star'
-                          ? STAR_CATEGORY_INFO(prevItem.star, prevItem.sourceBadge).label
-                          : GLOBAL_CATEGORY_INFO(prevItem).label
-                        : GLOBAL_CATEGORY_INFO(prevItem).label
-                      : null;
+                    const prevGroupLabel = prevItem ? getGroupLabel(prevItem) : null;
                     const catHeader =
-                      exploreSort === 'category' && catLabel !== prevCatLabel ? (
+                      groupLabel && groupLabel !== prevGroupLabel ? (
                         <div
                           className={`pt-1.5 pb-0.5 px-1 text-[9.5px] font-semibold tracking-[-0.04em] ${ui.accentText}`}
                         >
-                          {catLabel}
+                          {groupLabel}
                         </div>
                       ) : null;
                     const wrapWithCat = (node: React.ReactNode) => (
@@ -3085,22 +3172,31 @@ export function ControlSidebar({
                     ]
                       .filter(Boolean)
                       .join(' · ');
-                    const catLabel = STAR_CATEGORY_INFO(star, entry.sourceBadge).label;
-                    const prevCatLabel =
-                      idx > 0
-                        ? STAR_CATEGORY_INFO(
-                            filteredStars.items[idx - 1].star,
-                            filteredStars.items[idx - 1].sourceBadge
-                          ).label
+                    const groupLabel =
+                      exploreSort === 'category'
+                        ? STAR_CATEGORY_INFO(star, entry.sourceBadge).label
+                        : exploreSort === 'constellation'
+                        ? getConstellationSortInfo(star.con).label
                         : null;
-                    const showCatHeader = exploreSort === 'category' && catLabel !== prevCatLabel;
+                    const prevGroupLabel =
+                      idx > 0
+                        ? exploreSort === 'category'
+                          ? STAR_CATEGORY_INFO(
+                              filteredStars.items[idx - 1].star,
+                              filteredStars.items[idx - 1].sourceBadge
+                            ).label
+                          : exploreSort === 'constellation'
+                          ? getConstellationSortInfo(filteredStars.items[idx - 1].star.con).label
+                          : null
+                        : null;
+                    const showCatHeader = Boolean(groupLabel && groupLabel !== prevGroupLabel);
                     return (
                       <React.Fragment key={entry.key}>
                         {showCatHeader && (
                           <div
                             className={`pt-1.5 pb-0.5 px-1 text-[9.5px] font-semibold tracking-[-0.04em] ${ui.accentText}`}
                           >
-                            {catLabel}
+                            {groupLabel}
                           </div>
                         )}
                         <button
