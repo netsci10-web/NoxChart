@@ -440,3 +440,203 @@ export function getDsoSearchAliases(dso: DeepSkyObject, extraPrimary?: string): 
   }
   return sortCatalogDesignations(result);
 }
+
+const GREEK_BAYER_LETTERS: Record<string, { en: string; ko: string }> = {
+  α: { en: 'Alpha', ko: '알파' },
+  Α: { en: 'Alpha', ko: '알파' },
+  β: { en: 'Beta', ko: '베타' },
+  Β: { en: 'Beta', ko: '베타' },
+  γ: { en: 'Gamma', ko: '감마' },
+  Γ: { en: 'Gamma', ko: '감마' },
+  δ: { en: 'Delta', ko: '델타' },
+  Δ: { en: 'Delta', ko: '델타' },
+  ε: { en: 'Epsilon', ko: '엡실론' },
+  Ε: { en: 'Epsilon', ko: '엡실론' },
+  ζ: { en: 'Zeta', ko: '제타' },
+  Ζ: { en: 'Zeta', ko: '제타' },
+  η: { en: 'Eta', ko: '에타' },
+  Η: { en: 'Eta', ko: '에타' },
+  θ: { en: 'Theta', ko: '세타' },
+  Θ: { en: 'Theta', ko: '세타' },
+  ϑ: { en: 'Theta', ko: '세타' },
+  ι: { en: 'Iota', ko: '이오타' },
+  Ι: { en: 'Iota', ko: '이오타' },
+  κ: { en: 'Kappa', ko: '카파' },
+  Κ: { en: 'Kappa', ko: '카파' },
+  λ: { en: 'Lambda', ko: '람다' },
+  Λ: { en: 'Lambda', ko: '람다' },
+  μ: { en: 'Mu', ko: '뮤' },
+  Μ: { en: 'Mu', ko: '뮤' },
+  ν: { en: 'Nu', ko: '뉴' },
+  Ν: { en: 'Nu', ko: '뉴' },
+  ξ: { en: 'Xi', ko: '크시' },
+  Ξ: { en: 'Xi', ko: '크시' },
+  ο: { en: 'Omicron', ko: '오미크론' },
+  Ο: { en: 'Omicron', ko: '오미크론' },
+  π: { en: 'Pi', ko: '파이' },
+  Π: { en: 'Pi', ko: '파이' },
+  ϖ: { en: 'Pi', ko: '파이' },
+  ρ: { en: 'Rho', ko: '로' },
+  Ρ: { en: 'Rho', ko: '로' },
+  ϱ: { en: 'Rho', ko: '로' },
+  σ: { en: 'Sigma', ko: '시그마' },
+  Σ: { en: 'Sigma', ko: '시그마' },
+  ς: { en: 'Sigma', ko: '시그마' },
+  τ: { en: 'Tau', ko: '타우' },
+  Τ: { en: 'Tau', ko: '타우' },
+  υ: { en: 'Upsilon', ko: '입실론' },
+  Υ: { en: 'Upsilon', ko: '입실론' },
+  φ: { en: 'Phi', ko: '파이' },
+  Φ: { en: 'Phi', ko: '파이' },
+  ϕ: { en: 'Phi', ko: '파이' },
+  χ: { en: 'Chi', ko: '카이' },
+  Χ: { en: 'Chi', ko: '카이' },
+  ψ: { en: 'Psi', ko: '프시' },
+  Ψ: { en: 'Psi', ko: '프시' },
+  ω: { en: 'Omega', ko: '오메가' },
+  Ω: { en: 'Omega', ko: '오메가' },
+};
+
+const IAU_CONSTELLATION_GENITIVES: Record<
+  string,
+  { abbr: string; genitive: string; koGenitive: string }
+> = {
+  and: { abbr: 'And', genitive: 'Andromedae', koGenitive: '안드로메다이' },
+  ant: { abbr: 'Ant', genitive: 'Antliae', koGenitive: '안틀리아이' },
+  aps: { abbr: 'Aps', genitive: 'Apodis', koGenitive: '아포디스' },
+  aqr: { abbr: 'Aqr', genitive: 'Aquarii', koGenitive: '아쿠아리이' },
+  aql: { abbr: 'Aql', genitive: 'Aquilae', koGenitive: '아퀼라이' },
+  ara: { abbr: 'Ara', genitive: 'Arae', koGenitive: '아라이' },
+  ari: { abbr: 'Ari', genitive: 'Arietis', koGenitive: '아리에티스' },
+  aur: { abbr: 'Aur', genitive: 'Aurigae', koGenitive: '아우리가이' },
+  boo: { abbr: 'Boo', genitive: 'Bootis', koGenitive: '보오티스' },
+  cae: { abbr: 'Cae', genitive: 'Caeli', koGenitive: '카엘리' },
+  cam: { abbr: 'Cam', genitive: 'Camelopardalis', koGenitive: '카멜로파르달리스' },
+  cnc: { abbr: 'Cnc', genitive: 'Cancri', koGenitive: '칸크리' },
+  cvn: { abbr: 'CVn', genitive: 'Canum Venaticorum', koGenitive: '카눔 베나티코룸' },
+  cma: { abbr: 'CMa', genitive: 'Canis Majoris', koGenitive: '카니스 마요리스' },
+  cmi: { abbr: 'CMi', genitive: 'Canis Minoris', koGenitive: '카니스 미노리스' },
+  cap: { abbr: 'Cap', genitive: 'Capricorni', koGenitive: '카프리코르니' },
+  car: { abbr: 'Car', genitive: 'Carinae', koGenitive: '카리나이' },
+  cas: { abbr: 'Cas', genitive: 'Cassiopeiae', koGenitive: '카시오페이아이' },
+  cen: { abbr: 'Cen', genitive: 'Centauri', koGenitive: '센타우리' },
+  cep: { abbr: 'Cep', genitive: 'Cephei', koGenitive: '세페이' },
+  cet: { abbr: 'Cet', genitive: 'Ceti', koGenitive: '세티' },
+  cha: { abbr: 'Cha', genitive: 'Chamaeleontis', koGenitive: '카멜레온티스' },
+  cir: { abbr: 'Cir', genitive: 'Circini', koGenitive: '키르키니' },
+  col: { abbr: 'Col', genitive: 'Columbae', koGenitive: '콜룸바이' },
+  com: { abbr: 'Com', genitive: 'Comae Berenices', koGenitive: '코마이 베레니케스' },
+  cra: { abbr: 'CrA', genitive: 'Coronae Australis', koGenitive: '코로나이 아우스트랄리스' },
+  crb: { abbr: 'CrB', genitive: 'Coronae Borealis', koGenitive: '코로나이 보레알리스' },
+  crv: { abbr: 'Crv', genitive: 'Corvi', koGenitive: '코르비' },
+  crt: { abbr: 'Crt', genitive: 'Crateris', koGenitive: '크라테리스' },
+  cru: { abbr: 'Cru', genitive: 'Crucis', koGenitive: '크루키스' },
+  cyg: { abbr: 'Cyg', genitive: 'Cygni', koGenitive: '시그니' },
+  del: { abbr: 'Del', genitive: 'Delphini', koGenitive: '델피니' },
+  dor: { abbr: 'Dor', genitive: 'Doradus', koGenitive: '도라두스' },
+  dra: { abbr: 'Dra', genitive: 'Draconis', koGenitive: '드라코니스' },
+  equ: { abbr: 'Equ', genitive: 'Equulei', koGenitive: '에쿠울레이' },
+  eri: { abbr: 'Eri', genitive: 'Eridani', koGenitive: '에리다니' },
+  for: { abbr: 'For', genitive: 'Fornacis', koGenitive: '포르나키스' },
+  gem: { abbr: 'Gem', genitive: 'Geminorum', koGenitive: '게미노룸' },
+  gru: { abbr: 'Gru', genitive: 'Gruis', koGenitive: '그루이스' },
+  her: { abbr: 'Her', genitive: 'Herculis', koGenitive: '헤르쿨리스' },
+  hor: { abbr: 'Hor', genitive: 'Horologii', koGenitive: '호롤로기이' },
+  hya: { abbr: 'Hya', genitive: 'Hydrae', koGenitive: '히드라이' },
+  hyi: { abbr: 'Hyi', genitive: 'Hydri', koGenitive: '히드리' },
+  ind: { abbr: 'Ind', genitive: 'Indi', koGenitive: '인디' },
+  lac: { abbr: 'Lac', genitive: 'Lacertae', koGenitive: '라케르타이' },
+  leo: { abbr: 'Leo', genitive: 'Leonis', koGenitive: '레오니스' },
+  lmi: { abbr: 'LMi', genitive: 'Leonis Minoris', koGenitive: '레오니스 미노리스' },
+  lep: { abbr: 'Lep', genitive: 'Leporis', koGenitive: '레포리스' },
+  lib: { abbr: 'Lib', genitive: 'Librae', koGenitive: '리브라이' },
+  lup: { abbr: 'Lup', genitive: 'Lupi', koGenitive: '루피' },
+  lyn: { abbr: 'Lyn', genitive: 'Lyncis', koGenitive: '린키스' },
+  lyr: { abbr: 'Lyr', genitive: 'Lyrae', koGenitive: '리라이' },
+  men: { abbr: 'Men', genitive: 'Mensae', koGenitive: '멘사이' },
+  mic: { abbr: 'Mic', genitive: 'Microscopii', koGenitive: '미크로스코피이' },
+  mon: { abbr: 'Mon', genitive: 'Monocerotis', koGenitive: '모노케로티스' },
+  mus: { abbr: 'Mus', genitive: 'Muscae', koGenitive: '무스카이' },
+  nor: { abbr: 'Nor', genitive: 'Normae', koGenitive: '노르마이' },
+  oct: { abbr: 'Oct', genitive: 'Octantis', koGenitive: '옥탄티스' },
+  oph: { abbr: 'Oph', genitive: 'Ophiuchi', koGenitive: '오피우키' },
+  ori: { abbr: 'Ori', genitive: 'Orionis', koGenitive: '오리오니스' },
+  pav: { abbr: 'Pav', genitive: 'Pavonis', koGenitive: '파보니스' },
+  peg: { abbr: 'Peg', genitive: 'Pegasi', koGenitive: '페가시' },
+  per: { abbr: 'Per', genitive: 'Persei', koGenitive: '페르세이' },
+  phe: { abbr: 'Phe', genitive: 'Phoenicis', koGenitive: '포이니키스' },
+  pic: { abbr: 'Pic', genitive: 'Pictoris', koGenitive: '픽토리스' },
+  psc: { abbr: 'Psc', genitive: 'Piscium', koGenitive: '피스키움' },
+  psa: { abbr: 'PsA', genitive: 'Piscis Austrini', koGenitive: '피스키스 아우스트리니' },
+  pup: { abbr: 'Pup', genitive: 'Puppis', koGenitive: '푸피스' },
+  pyx: { abbr: 'Pyx', genitive: 'Pyxidis', koGenitive: '픽시디스' },
+  ret: { abbr: 'Ret', genitive: 'Reticuli', koGenitive: '레티쿨리' },
+  sge: { abbr: 'Sge', genitive: 'Sagittae', koGenitive: '사기타이' },
+  sgr: { abbr: 'Sgr', genitive: 'Sagittarii', koGenitive: '사기타리이' },
+  sco: { abbr: 'Sco', genitive: 'Scorpii', koGenitive: '스코르피이' },
+  scl: { abbr: 'Scl', genitive: 'Sculptoris', koGenitive: '스쿨프토리스' },
+  sct: { abbr: 'Sct', genitive: 'Scuti', koGenitive: '스쿠티' },
+  ser: { abbr: 'Ser', genitive: 'Serpentis', koGenitive: '세르펜티스' },
+  sex: { abbr: 'Sex', genitive: 'Sextantis', koGenitive: '섹스탄티스' },
+  tau: { abbr: 'Tau', genitive: 'Tauri', koGenitive: '타우리' },
+  tel: { abbr: 'Tel', genitive: 'Telescopii', koGenitive: '텔레스코피이' },
+  tri: { abbr: 'Tri', genitive: 'Trianguli', koGenitive: '트리앙굴리' },
+  tra: { abbr: 'TrA', genitive: 'Trianguli Australis', koGenitive: '트리앙굴리 아우스트랄리스' },
+  tuc: { abbr: 'Tuc', genitive: 'Tucanae', koGenitive: '투카나이' },
+  uma: { abbr: 'UMa', genitive: 'Ursae Majoris', koGenitive: '우르사이 마요리스' },
+  umi: { abbr: 'UMi', genitive: 'Ursae Minoris', koGenitive: '우르사이 미노리스' },
+  vel: { abbr: 'Vel', genitive: 'Velorum', koGenitive: '벨로룸' },
+  vir: { abbr: 'Vir', genitive: 'Virginis', koGenitive: '비르기니스' },
+  vol: { abbr: 'Vol', genitive: 'Volantis', koGenitive: '볼란티스' },
+  vul: { abbr: 'Vul', genitive: 'Vulpeculae', koGenitive: '불페쿨라이' },
+};
+
+const SUPERSCRIPT_DIGITS: Record<string, string> = {
+  '⁰': '0',
+  '¹': '1',
+  '²': '2',
+  '³': '3',
+  '⁴': '4',
+  '⁵': '5',
+  '⁶': '6',
+  '⁷': '7',
+  '⁸': '8',
+  '⁹': '9',
+};
+
+/**
+ * Expands a Greek (or Latin-letter) Bayer designation into readable English genitive,
+ * English abbreviated, and Korean genitive forms.
+ * Example: "δ Cep" -> ["Delta Cephei", "Delta Cep", "델타 세페이"]
+ * Example: "ε1 Lyr" -> ["Epsilon1 Lyrae", "Epsilon1 Lyr", "엡실론1 리라이"]
+ */
+export function getBayerExpandedNames(raw?: string): string[] {
+  if (!raw) return [];
+  const s = raw.trim();
+  if (!s) return [];
+
+  const greekMatch = /^([α-ωΑ-Ωϑϕϱϖς])([0-9⁰¹²³⁴⁵⁶⁷⁸⁹]?)\s+([A-Za-z]{3})$/.exec(s);
+  if (greekMatch) {
+    const letter = GREEK_BAYER_LETTERS[greekMatch[1]];
+    const con = IAU_CONSTELLATION_GENITIVES[greekMatch[3].toLowerCase()];
+    if (letter && con) {
+      const num = greekMatch[2] ? SUPERSCRIPT_DIGITS[greekMatch[2]] ?? greekMatch[2] : '';
+      return [
+        `${letter.en}${num} ${con.genitive}`,
+        `${letter.en}${num} ${con.abbr}`,
+        `${letter.ko}${num} ${con.koGenitive}`,
+      ];
+    }
+  }
+
+  const latinMatch = /^([A-Za-z])([0-9⁰¹²³⁴⁵⁶⁷⁸⁹]?)\s+([A-Za-z]{3})$/.exec(s);
+  if (latinMatch) {
+    const con = IAU_CONSTELLATION_GENITIVES[latinMatch[3].toLowerCase()];
+    if (con) {
+      const num = latinMatch[2] ? SUPERSCRIPT_DIGITS[latinMatch[2]] ?? latinMatch[2] : '';
+      return [`${latinMatch[1]}${num} ${con.genitive}`];
+    }
+  }
+
+  return [];
+}

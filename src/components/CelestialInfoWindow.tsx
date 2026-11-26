@@ -51,6 +51,7 @@ import {
 import {
   formatCatalogCode,
   formatObjectDisplayName,
+  getBayerExpandedNames,
   getCatalogDesignationPriority,
   getSecondaryDesignations,
   getStarExtraDesignations,
@@ -662,12 +663,24 @@ export function CelestialInfoWindow({
 
     const allLabels: string[] = [];
     const seenAll = new Set<string>();
-    // Put sorted catalog designations FIRST (Messier -> Caldwell -> NGC -> IC -> Bayer/Flamsteed -> HR -> HD -> HIP...), then alternate names
-    for (const item of [...designations, ...names]) {
+    const pushAllLabel = (item: string) => {
       const k = item.toLowerCase().replace(/\s+/g, ' ');
       if (!seenAll.has(k)) {
         seenAll.add(k);
         allLabels.push(item);
+      }
+    };
+    // Put sorted catalog designations FIRST (Messier -> Caldwell -> NGC -> IC -> Bayer (+ expanded forms) -> Flamsteed -> HR -> HD -> HIP...), then alternate names
+    for (const item of designations) {
+      pushAllLabel(item);
+      for (const expanded of getBayerExpandedNames(item)) {
+        pushAllLabel(expanded);
+      }
+    }
+    for (const item of names) {
+      pushAllLabel(item);
+      for (const expanded of getBayerExpandedNames(item)) {
+        pushAllLabel(expanded);
       }
     }
 
@@ -875,7 +888,7 @@ export function CelestialInfoWindow({
                 return (
                   <span
                     key={lbl}
-                    className={`px-1.5 py-0.5 border font-mono text-[9.5px] leading-tight tracking-[-0.03em] break-all ${
+                    className={`px-1.5 py-0.5 border font-mono text-[9.5px] leading-tight tracking-[-0.03em] break-words ${
                       isMessierOrCaldwell
                         ? `${ui.buttonActive} font-semibold`
                         : `${ui.border} ${ui.panelMuted} ${ui.textSecondary}`

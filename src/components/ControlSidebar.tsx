@@ -123,6 +123,7 @@ import {
 import {
   formatCatalogCode,
   formatObjectDisplayName,
+  getBayerExpandedNames,
   getDsoSearchAliases,
   getExtraAliasesForKnownId,
   getSecondaryDesignations,
@@ -1108,7 +1109,7 @@ export function ControlSidebar({
       seenStarIds.add(star.id);
       const hipLabel = star.hip ? `HIP ${star.hip}` : undefined;
       const score = scoreSearchMatch(
-        [star.koName, star.name, star.bayer, hipLabel, star.id],
+        [star.koName, star.name, star.bayer, ...getBayerExpandedNames(star.bayer), hipLabel, star.id],
         [star.con],
         q,
         qCompact
@@ -1235,6 +1236,7 @@ export function ControlSidebar({
             st.koName,
             st.name,
             st.bayer,
+            ...getBayerExpandedNames(st.bayer),
           ],
           [st.con],
           q,
@@ -1384,7 +1386,7 @@ export function ControlSidebar({
     let doubleHits = 0;
     for (const sys of catalogs.doubleStars) {
       let score = scoreSearchMatch(
-        [sys.disc, sys.id, sys.wdsId, sys.koName, sys.name, sys.bayer],
+        [sys.disc, sys.id, sys.wdsId, sys.koName, sys.name, sys.bayer, ...getBayerExpandedNames(sys.bayer)],
         [sys.con, sys.isMultiple ? '다중성 multiple' : '이중성 double'],
         q,
         qCompact
