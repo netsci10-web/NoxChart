@@ -4,7 +4,7 @@ import {
   getVisibleUltraTileKeys,
 } from '../data/catalogLoader';
 import { getFieldStarsInBounds } from './fieldStars';
-import { getVisibleLocalStarCellKeys } from './localStarCatalogs';
+import { buildLocalStarObject, getVisibleLocalStarCellKeys } from './localStarCatalogs';
 import {
   clampBortleClass,
   computeBortleDsoAttenuation,
@@ -2665,8 +2665,10 @@ function renderStarChartPass(
     const allowLocalClick = view.fsz <= 12;
 
     for (let c = 0; c < localCellKeys.length && localDrawnCount < maxLocalDrawable; c++) {
-      const flat = catalogs.localStarTiles.get(localCellKeys[c]);
-      if (!flat || flat.length < 4) continue;
+      const cell = catalogs.localStarTiles.get(localCellKeys[c]);
+      if (!cell || cell.coords.length < 4) continue;
+      const flat = cell.coords;
+      const ids = cell.ids;
       for (let i = 0; i < flat.length && localDrawnCount < maxLocalDrawable; i += 4) {
         const sMag = flat[i + 2];
         if (sMag > magLimit) break; // Sorted ascending by magnitude
@@ -2677,20 +2679,21 @@ function renderStarChartPass(
         const pt = projectStereographic(sRa, sDec, proj, 10);
         if (!pt) continue;
 
-        const starId = `Gaia L${Math.round(sRa * 1000)}_${Math.round((sDec + 90) * 1000)}`;
+        const idIdx = (i >> 2) * 2;
+        const starObj = buildLocalStarObject(
+          sRa,
+          sDec,
+          sMag,
+          flat[i + 3],
+          ids[idIdx] ?? 0,
+          ids[idIdx + 1] ?? 0
+        );
+        const starId = starObj.id;
         const isSelected = selected?.kind === 'star' && selected.data.id === starId;
         const altCheck = evalStarAltitude(sRa, sDec, isSelected, sMag);
         if (altCheck.skip) continue;
 
         const r = getStarRadiusPogson(sMag + altCheck.extMag, magLimit, view.fsz);
-        const starObj: Star = {
-          id: starId,
-          ra: sRa,
-          dec: sDec,
-          mag: sMag,
-          bv: flat[i + 3],
-          con: '',
-        };
         drawableStars.push({
           star: starObj,
           x: pt.x,
@@ -3066,21 +3069,25 @@ function renderStarChartPass(
     }
 
     if (layers.showStarOutlines) {
+      const outlineOpacity = Math.max(0.05, Math.min(1, layers.starOutlineOpacity ?? 1));
       ctx.strokeStyle =
         theme === 'white'
-          ? 'rgba(15, 23, 42, 0.78)'
+          ? 'rgba(15, 23, 42, 0.92)'
           : theme === 'red'
-          ? 'rgba(248, 113, 113, 0.78)'
-          : 'rgba(186, 230, 253, 0.78)';
+          ? 'rgba(248, 113, 113, 0.92)'
+          : 'rgba(186, 230, 253, 0.92)';
       for (let i = 0; i < renderStars.length; i++) {
         const { star, x, y, radius, dimmed, isSelected, extMag } = renderStars[i];
-        let ringAlpha = dimmed ? 0.16 : 0.85;
+        let ringAlpha = (dimmed ? 0.16 : 0.85) * outlineOpacity;
         const effMag = star.mag + extMag;
         if (!dimmed && !isSelected && deepAlphaActive) {
           const dm = magLimit - effMag;
           if (dm < 1.8) {
             const t = Math.max(0, Math.min(1, dm / 1.8));
-            ringAlpha = (faintMinAlpha + (1 - faintMinAlpha) * (t * t * (3 - 2 * t))) * 0.85;
+            ringAlpha =
+              (faintMinAlpha + (1 - faintMinAlpha) * (t * t * (3 - 2 * t))) *
+              0.85 *
+              outlineOpacity;
           }
         }
         if (extActive && !dimmed && !isSelected && extMag > 0.05) {

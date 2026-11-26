@@ -307,6 +307,7 @@ const DEFAULT_LAYERS: LayerSettings = {
   showSolarSystemOrbits: false,
   showSolarSystemLabels: true,
   showStarOutlines: false,
+  starOutlineOpacity: 1.0,
   showStarColors: true,
   showDoubleStars: true,
   showDoublePairs: true,
@@ -1890,6 +1891,7 @@ export default function App() {
           flipH: view.flipH,
           flipV: view.flipV,
           infoWindowDockSide,
+          sidebarsPinned,
         },
         layers,
         hips,
@@ -1918,6 +1920,7 @@ export default function App() {
       view.flipH,
       view.flipV,
       infoWindowDockSide,
+      sidebarsPinned,
       layers,
       hips,
       optics,
@@ -1983,6 +1986,7 @@ export default function App() {
       let nextFlipH = basePayload.root.prefs?.flipH ?? false;
       let nextFlipV = basePayload.root.prefs?.flipV ?? false;
       let nextInfoDockSide: 'left' | 'right' = basePayload.root.prefs?.infoWindowDockSide ?? 'right';
+      let nextSidebarsPinned = basePayload.root.prefs?.sidebarsPinned ?? false;
       let nextLayers = basePayload.root.layers ?? DEFAULT_LAYERS;
       let nextHips = basePayload.root.hips ?? DEFAULT_HIPS;
       let nextOptics = basePayload.root.optics ?? DEFAULT_OPTICS;
@@ -2021,6 +2025,9 @@ export default function App() {
             if (p.infoWindowDockSide === 'left' || p.infoWindowDockSide === 'right') {
               nextInfoDockSide = p.infoWindowDockSide;
             }
+            if (typeof p.sidebarsPinned === 'boolean') {
+              nextSidebarsPinned = p.sidebarsPinned;
+            }
 
             const basePrefs = basePayload.root.prefs;
             if (nextTheme !== (basePrefs?.theme ?? DEFAULT_THEME)) {
@@ -2042,6 +2049,10 @@ export default function App() {
             }
             if (nextInfoDockSide !== (basePrefs?.infoWindowDockSide ?? 'right')) {
               setInfoWindowDockSide(nextInfoDockSide);
+              changed = true;
+            }
+            if (nextSidebarsPinned !== (basePrefs?.sidebarsPinned ?? false)) {
+              setSidebarsPinned(nextSidebarsPinned);
               changed = true;
             }
           }
@@ -2325,6 +2336,7 @@ export default function App() {
               flipH: nextFlipH,
               flipV: nextFlipV,
               infoWindowDockSide: nextInfoDockSide,
+              sidebarsPinned: nextSidebarsPinned,
             },
             layers: nextLayers,
             hips: nextHips,

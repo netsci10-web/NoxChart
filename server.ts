@@ -210,7 +210,11 @@ function angularDistDegServer(ra1: number, dec1: number, ra2: number, dec2: numb
   return Math.acos(Math.max(-1, Math.min(1, c))) * (180 / Math.PI);
 }
 
-function parseGaiaVotableTuples(xml: string, hasSourceId: boolean): GaiaStarTuple[] | null {
+function parseGaiaVotableTuples(
+  xml: string,
+  hasSourceId: boolean,
+  keepFullId = false
+): GaiaStarTuple[] | null {
   if (!xml || xml.includes('value="ERROR"')) return null;
   const stars: GaiaStarTuple[] = [];
   const trRegex = /<TR>([\s\S]*?)<\/TR>/g;
@@ -237,7 +241,7 @@ function parseGaiaVotableTuples(xml: string, hasSourceId: boolean): GaiaStarTupl
 
     const bvApprox = Math.max(-0.35, Math.min(2.2, (bpRp - 0.15) * 0.78));
     stars.push([
-      sid.slice(-8),
+      keepFullId ? sid : sid.slice(-8),
       Number(sRa.toFixed(5)),
       Number(sDec.toFixed(5)),
       Number(gMag.toFixed(2)),
@@ -251,7 +255,8 @@ function parseGaiaVotableTuples(xml: string, hasSourceId: boolean): GaiaStarTupl
 async function queryGaiaAipTap(
   adql: string,
   hasSourceId: boolean,
-  timeoutMs = 22000
+  timeoutMs = 22000,
+  keepFullId = false
 ): Promise<GaiaStarTuple[] | null> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
@@ -270,14 +275,18 @@ async function queryGaiaAipTap(
     if (!upstream.ok) return null;
     const xml = await upstream.text();
     if (!xml.includes('<VOTABLE')) return null;
-    return parseGaiaVotableTuples(xml, hasSourceId);
+    return parseGaiaVotableTuples(xml, hasSourceId, keepFullId);
   } catch {
     clearTimeout(timeout);
     return null;
   }
 }
 
-async function queryGaiaEsaTap(adql: string, timeoutMs = 12000): Promise<GaiaStarTuple[] | null> {
+async function queryGaiaEsaTap(
+  adql: string,
+  timeoutMs = 12000,
+  keepFullId = false
+): Promise<GaiaStarTuple[] | null> {
   const tapUrl =
     'https://gea.esac.esa.int/tap-server/tap/sync?' +
     new URLSearchParams({
@@ -319,7 +328,7 @@ async function queryGaiaEsaTap(adql: string, timeoutMs = 12000): Promise<GaiaSta
 
       const bvApprox = Math.max(-0.35, Math.min(2.2, (bpRp - 0.15) * 0.78));
       stars.push([
-        sid.slice(-8),
+        keepFullId ? sid : sid.slice(-8),
         Number(sRa.toFixed(5)),
         Number(sDec.toFixed(5)),
         Number(gMag.toFixed(2)),
@@ -333,10 +342,210 @@ async function queryGaiaEsaTap(adql: string, timeoutMs = 12000): Promise<GaiaSta
   }
 }
 
+function parseGaiaCsvTuples(
+  csv: string,
+  keepFullId = true
+): GaiaStarTuple[] | null {
+  if (!csv || csv.trimStart().startsWith('<')) return null;
+  const lines = csv.split(/\r?\n/);
+  if (lines.length < 2) return [];
+  const header = lines[0].toLowerCase().split(',').map((h) => h.trim().replace(/^"|"$/g, ''));
+  const hasSeparateBpRp =
+    header.includes('phot_bp_mean_mag') && header.includes('phot_rp_mean_mag');
+  const stars: GaiaStarTuple[] = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(',');
+    if (cols.length < 4) continue;
+    const sid = cols[0].trim().replace(/^"|"$/g, '');
+    const sRa = Number(cols[1]);
+    const sDec = Number(cols[2]);
+    const gMag = Number(cols[3]);
+    if (!sid || !Number.isFinite(sRa) || !Number.isFinite(sDec) || !Number.isFinite(gMag)) continue;
+    let bpRp = 0.8;
+    if (hasSeparateBpRp && cols.length >= 6) {
+      const bp = cols[4].trim() !== '' ? Number(cols[4]) : NaN;
+      const rp = cols[5].trim() !== '' ? Number(cols[5]) : NaN;
+      if (Number.isFinite(bp) && Number.isFinite(rp)) bpRp = bp - rp;
+    } else if (cols.length >= 5 && cols[4].trim() !== '') {
+      const parsedBpRp = Number(cols[4]);
+      if (Number.isFinite(parsedBpRp)) bpRp = parsedBpRp;
+    }
+    const bvApprox = Math.max(-0.35, Math.min(2.2, (bpRp - 0.15) * 0.78));
+    stars.push([
+      keepFullId ? sid : sid.slice(-8),
+      Number(sRa.toFixed(5)),
+      Number(sDec.toFixed(5)),
+      Number(gMag.toFixed(2)),
+      Number(bvApprox.toFixed(2)),
+    ]);
+  }
+  return stars;
+}
+
+async function queryGaiaAriTap(
+  adql: string,
+  timeoutMs = 18000,
+  keepFullId = true
+): Promise<GaiaStarTuple[] | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const upstream = await fetch('https://gaia.ari.uni-heidelberg.de/tap/sync', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        REQUEST: 'doQuery',
+        LANG: 'ADQL',
+        FORMAT: 'csv',
+        QUERY: adql,
+      }),
+    });
+    clearTimeout(timeout);
+    if (!upstream.ok) return null;
+    const csv = await upstream.text();
+    return parseGaiaCsvTuples(csv, keepFullId);
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
+async function queryGaiaIrsaTap(
+  adqlOnGaiaSource: string,
+  timeoutMs = 20000,
+  keepFullId = true
+): Promise<GaiaStarTuple[] | null> {
+  const irsaAdql = adqlOnGaiaSource.replace(/gaiadr3\.gaia_source/gi, 'gaia_dr3_source');
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const upstream = await fetch('https://irsa.ipac.caltech.edu/TAP/sync', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        REQUEST: 'doQuery',
+        LANG: 'ADQL',
+        QUERY: irsaAdql,
+      }),
+    });
+    clearTimeout(timeout);
+    if (!upstream.ok) return null;
+    const xml = await upstream.text();
+    if (!xml.includes('<VOTABLE')) return null;
+    return parseGaiaVotableTuples(xml, true, keepFullId);
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
+async function queryGaiaGavoTapRaw(
+  adql: string,
+  timeoutMs = 18000,
+  keepFullId = true
+): Promise<GaiaStarTuple[] | null> {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
+  try {
+    const upstream = await fetch('https://dc.g-vo.org/tap/sync', {
+      method: 'POST',
+      signal: controller.signal,
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        REQUEST: 'doQuery',
+        LANG: 'ADQL',
+        FORMAT: 'csv',
+        QUERY: adql,
+      }),
+    });
+    clearTimeout(timeout);
+    if (!upstream.ok) return null;
+    const csv = await upstream.text();
+    return parseGaiaCsvTuples(csv, keepFullId);
+  } catch {
+    clearTimeout(timeout);
+    return null;
+  }
+}
+
+async function queryGaiaGavoBox(
+  cRaMin: number,
+  cRaMax: number,
+  cDecMin: number,
+  cDecMax: number,
+  cMagMin: number,
+  cMagMax: number,
+  maxRows: number
+): Promise<GaiaStarTuple[] | null> {
+  const raSpan = cRaMax - cRaMin;
+  const decSpan = cDecMax - cDecMin;
+  const raSubs = Math.max(1, Math.ceil(raSpan / 30));
+  const decSubs = Math.max(1, Math.ceil(decSpan / 30));
+  const perSubLimit = Math.max(1000, Math.ceil(maxRows / (raSubs * decSubs)) + 500);
+  const all: GaiaStarTuple[] = [];
+  let anySucceeded = false;
+
+  for (let d = 0; d < decSubs; d++) {
+    const d0 = cDecMin + (decSpan * d) / decSubs;
+    const d1 = d === decSubs - 1 ? cDecMax : cDecMin + (decSpan * (d + 1)) / decSubs;
+    const dOp = d1 >= 89.99 ? '<=' : '<';
+    for (let r = 0; r < raSubs; r++) {
+      const r0 = cRaMin + (raSpan * r) / raSubs;
+      const r1 = r === raSubs - 1 ? cRaMax : cRaMin + (raSpan * (r + 1)) / raSubs;
+      const rOp = r1 >= 359.99 ? '<=' : '<';
+
+      let spatialClause: string;
+      if (d1 >= 85) {
+        const capRad = Math.min(45, 90 - d0 + 0.5);
+        spatialClause = `1=CONTAINS(POINT('', ra, dec), CIRCLE('', 0, 90, ${capRad.toFixed(2)}))`;
+      } else if (d0 <= -85) {
+        const capRad = Math.min(45, 90 + d1 + 0.5);
+        spatialClause = `1=CONTAINS(POINT('', ra, dec), CIRCLE('', 0, -90, ${capRad.toFixed(2)}))`;
+      } else {
+        const pD0 = Math.max(-89.8, d0 - 1.5);
+        const pD1 = Math.min(89.8, d1 + 1.5);
+        spatialClause = `1=CONTAINS(POINT('', ra, dec), POLYGON('', ${r0.toFixed(3)}, ${pD0.toFixed(
+          3
+        )}, ${r1.toFixed(3)}, ${pD0.toFixed(3)}, ${r1.toFixed(3)}, ${pD1.toFixed(
+          3
+        )}, ${r0.toFixed(3)}, ${pD1.toFixed(3)}))`;
+      }
+
+      const adql =
+        `SELECT TOP ${perSubLimit} source_id, ra, dec, phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag ` +
+        `FROM gaia.dr3lite ` +
+        `WHERE ${spatialClause} ` +
+        `AND ra >= ${r0.toFixed(4)} AND ra ${rOp} ${r1.toFixed(4)} ` +
+        `AND dec >= ${d0.toFixed(4)} AND dec ${dOp} ${d1.toFixed(4)} ` +
+        `AND phot_g_mean_mag > ${cMagMin.toFixed(2)} AND phot_g_mean_mag <= ${cMagMax.toFixed(2)}`;
+
+      const sub = await queryGaiaGavoTapRaw(adql, 18000, true);
+      if (sub) {
+        anySucceeded = true;
+        for (let i = 0; i < sub.length; i++) all.push(sub[i]);
+      }
+    }
+  }
+  return anySucceeded ? all : null;
+}
+
 async function queryGaiaTap(adql: string, timeoutMs = 15000): Promise<GaiaStarTuple[] | null> {
-  const esa = await queryGaiaEsaTap(adql, Math.min(timeoutMs, 8000));
-  if (esa) return esa;
-  return queryGaiaAipTap(adql, true, timeoutMs);
+  const aip = await queryGaiaAipTap(adql, true, timeoutMs, true);
+  if (aip) return aip;
+  const ari = await queryGaiaAriTap(adql, Math.min(timeoutMs, 12000), true);
+  if (ari) return ari;
+  const gavoAdql = adql
+    .replace(/phot_g_mean_mag\s*,\s*bp_rp/gi, 'phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag')
+    .replace(/gaiadr3\.gaia_source/gi, 'gaia.dr3lite');
+  const gavo = await queryGaiaGavoTapRaw(gavoAdql, Math.min(timeoutMs, 10000), true);
+  if (gavo) return gavo;
+  const irsa = await queryGaiaIrsaTap(adql, Math.min(timeoutMs, 12000), true);
+  if (irsa) return irsa;
+  return queryGaiaEsaTap(adql, Math.min(timeoutMs, 8000), true);
 }
 
 async function createServer() {
@@ -1040,9 +1249,82 @@ async function createServer() {
     });
   });
 
+  // Fast Gaia DR3 search endpoint:
+  // 1) Instant scan of server-cached Gaia tiles & cones (matches full source_id or 4..12 digit suffix/prefix)
+  // 2) Direct primary-key TAP lookup across all 1.8B Gaia DR3 stars when given a full 13..20 digit source_id
+  const GAIA_SEARCH_CACHE = new Map<string, { stars: GaiaStarTuple[]; at: number }>();
+  app.get('/api/gaia/search', async (req, res) => {
+    const raw = String(req.query.q ?? '').trim();
+    const compact = raw.replace(/\s+/g, '').toLowerCase();
+    const digits = compact.replace(/^gaia(?:dr3)?/i, '');
+    if (!/^\d{4,20}$/.test(digits)) {
+      res.json({ stars: [] });
+      return;
+    }
+
+    const cachedSearch = GAIA_SEARCH_CACHE.get(digits);
+    if (cachedSearch && Date.now() - cachedSearch.at < 1000 * 60 * 30) {
+      res.setHeader('Cache-Control', 'public, max-age=600');
+      res.json({ stars: cachedSearch.stars, cached: true });
+      return;
+    }
+
+    const hits: GaiaStarTuple[] = [];
+    const seen = new Set<string>();
+    const scanMap = (map: Map<string, CacheEntry>) => {
+      for (const entry of map.values()) {
+        for (let i = 0; i < entry.stars.length && hits.length < 30; i++) {
+          const s = entry.stars[i];
+          const sid = s[0];
+          if (seen.has(sid)) continue;
+          if (
+            sid === digits ||
+            sid.endsWith(digits) ||
+            sid.startsWith(digits) ||
+            (digits.length >= 6 && sid.includes(digits))
+          ) {
+            seen.add(sid);
+            hits.push(s);
+          }
+        }
+        if (hits.length >= 30) break;
+      }
+    };
+    scanMap(GAIA_CACHE);
+    if (hits.length < 30) scanMap(GAIA_TILE_CACHE);
+
+    const hasExact = hits.some((s) => s[0] === digits);
+    if (!hasExact && digits.length >= 13 && digits.length <= 20) {
+      const adql =
+        `SELECT TOP 5 source_id, ra, dec, phot_g_mean_mag, bp_rp ` +
+        `FROM gaiadr3.gaia_source ` +
+        `WHERE source_id = ${digits}`;
+      const remote = await queryGaiaTap(adql, 10000);
+      if (remote && remote.length > 0) {
+        for (const s of remote) {
+          if (!seen.has(s[0])) {
+            seen.add(s[0]);
+            hits.unshift(s);
+          }
+        }
+      }
+    }
+
+    if (hits.length > 0) {
+      if (GAIA_SEARCH_CACHE.size >= 200) {
+        const oldest = GAIA_SEARCH_CACHE.keys().next().value;
+        if (oldest) GAIA_SEARCH_CACHE.delete(oldest);
+      }
+      GAIA_SEARCH_CACHE.set(digits, { stars: hits, at: Date.now() });
+    }
+
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.json({ stars: hits, cached: false });
+  });
+
   // Stellarium-style tiered local star catalog chunk downloader
-  // Serves compact [raDeg, decDeg, mag, bv] tuples from local Hipparcos ultra or live Gaia DR3 TAP
-  type CompactStarRow = [number, number, number, number];
+  // Serves compact [raDeg, decDeg, mag, bv, idTag?] tuples from local Hipparcos ultra or live Gaia DR3 TAP
+  type CompactStarRow = [number, number, number, number, string?];
   const STAR_PACK_CHUNK_CACHE = new Map<string, { stars: CompactStarRow[]; at: number }>();
   const STAR_PACK_CACHE_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
   let cachedHipUltraRows: CompactStarRow[] | null = null;
@@ -1062,6 +1344,7 @@ async function createServer() {
           for (let i = 0; i < parsed.length; i++) {
             const r = parsed[i];
             if (!Array.isArray(r) || r.length < 5) continue;
+            const hip = Number(r[0]);
             const ra = Number(r[1]);
             const dec = Number(r[2]);
             const mag = Number(r[3]);
@@ -1072,6 +1355,7 @@ async function createServer() {
               Number(dec.toFixed(5)),
               Number(mag.toFixed(2)),
               Number((Number.isFinite(bv) ? bv : 0.6).toFixed(2)),
+              Number.isInteger(hip) && hip > 0 ? `H${hip}` : undefined,
             ]);
           }
         } catch {
@@ -1129,36 +1413,61 @@ async function createServer() {
     const cMagMin = Math.max(6.0, Math.min(15.0, magMin));
     const cMagMax = Math.max(6.0, Math.min(15.0, magMax));
 
-    const chunkKey = `t${tier}_${cRaMin.toFixed(2)}_${cRaMax.toFixed(2)}_${cDecMin.toFixed(
+    const rawMirror = String(req.query.mirror || 'auto').toLowerCase();
+    const mirror =
+      rawMirror === 'aip' ||
+      rawMirror === 'ari' ||
+      rawMirror === 'gavo' ||
+      rawMirror === 'irsa' ||
+      rawMirror === 'esa'
+        ? rawMirror
+        : 'auto';
+
+    const chunkKey = `v2_t${tier}_${cRaMin.toFixed(2)}_${cRaMax.toFixed(2)}_${cDecMin.toFixed(
       2
     )}_${cDecMax.toFixed(2)}_${cMagMin.toFixed(2)}_${cMagMax.toFixed(2)}`;
     const cached = STAR_PACK_CHUNK_CACHE.get(chunkKey);
     if (cached && Date.now() - cached.at < STAR_PACK_CACHE_TTL_MS) {
       res.setHeader('Cache-Control', 'public, max-age=21600');
-      res.json({ tier, source, stars: cached.stars, count: cached.stars.length, cached: true });
+      res.json({ tier, source, stars: cached.stars, count: cached.stars.length, cached: true, mirror: 'cache' });
       return;
     }
 
     const maxRows = tier <= 2 ? 20000 : tier <= 4 ? 22000 : 25000;
     const raOp = cRaMax >= 359.99 ? '<=' : '<';
     const decOp = cDecMax >= 89.99 ? '<=' : '<';
-    const adqlAip =
-      `SELECT TOP ${maxRows} ra, dec, phot_g_mean_mag, bp_rp ` +
+    const adqlWithId =
+      `SELECT TOP ${maxRows} source_id, ra, dec, phot_g_mean_mag, bp_rp ` +
       `FROM gaiadr3.gaia_source ` +
       `WHERE ra >= ${cRaMin.toFixed(4)} AND ra ${raOp} ${cRaMax.toFixed(4)} ` +
       `AND dec >= ${cDecMin.toFixed(4)} AND dec ${decOp} ${cDecMax.toFixed(4)} ` +
       `AND phot_g_mean_mag > ${cMagMin.toFixed(2)} AND phot_g_mean_mag <= ${cMagMax.toFixed(2)}`;
 
-    // Prefer Gaia@AIP (reliable VOTable box queries), fallback to ESA Gaia TAP JSON
-    let tuples = await queryGaiaAipTap(adqlAip, false, 24000);
-    if (!tuples) {
-      const adqlEsa =
-        `SELECT TOP ${maxRows} source_id, ra, dec, phot_g_mean_mag, bp_rp ` +
-        `FROM gaiadr3.gaia_source ` +
-        `WHERE ra >= ${cRaMin.toFixed(4)} AND ra ${raOp} ${cRaMax.toFixed(4)} ` +
-        `AND dec >= ${cDecMin.toFixed(4)} AND dec ${decOp} ${cDecMax.toFixed(4)} ` +
-        `AND phot_g_mean_mag > ${cMagMin.toFixed(2)} AND phot_g_mean_mag <= ${cMagMax.toFixed(2)}`;
-      tuples = await queryGaiaEsaTap(adqlEsa, 15000);
+    type ServerMirrorId = 'aip' | 'ari' | 'gavo' | 'irsa' | 'esa';
+    const defaultOrder: ServerMirrorId[] = ['aip', 'ari', 'gavo', 'irsa', 'esa'];
+    const mirrorOrder: ServerMirrorId[] =
+      mirror === 'auto'
+        ? defaultOrder
+        : [mirror as ServerMirrorId, ...defaultOrder.filter((m) => m !== mirror)];
+
+    let tuples: GaiaStarTuple[] | null = null;
+    let usedMirror: ServerMirrorId | null = null;
+    for (const m of mirrorOrder) {
+      if (m === 'aip') {
+        tuples = await queryGaiaAipTap(adqlWithId, true, 22000, true);
+      } else if (m === 'ari') {
+        tuples = await queryGaiaAriTap(adqlWithId, 20000, true);
+      } else if (m === 'gavo') {
+        tuples = await queryGaiaGavoBox(cRaMin, cRaMax, cDecMin, cDecMax, cMagMin, cMagMax, maxRows);
+      } else if (m === 'irsa') {
+        tuples = await queryGaiaIrsaTap(adqlWithId, 22000, true);
+      } else if (m === 'esa') {
+        tuples = await queryGaiaEsaTap(adqlWithId, 14000, true);
+      }
+      if (tuples) {
+        usedMirror = m;
+        break;
+      }
     }
 
     if (!tuples) {
@@ -1166,7 +1475,7 @@ async function createServer() {
       return;
     }
 
-    const compact: CompactStarRow[] = tuples.map((t) => [t[1], t[2], t[3], t[4]]);
+    const compact: CompactStarRow[] = tuples.map((t) => [t[1], t[2], t[3], t[4], t[0]]);
     if (STAR_PACK_CHUNK_CACHE.size >= 400) {
       const oldest = STAR_PACK_CHUNK_CACHE.keys().next().value;
       if (oldest) STAR_PACK_CHUNK_CACHE.delete(oldest);
@@ -1174,7 +1483,7 @@ async function createServer() {
     STAR_PACK_CHUNK_CACHE.set(chunkKey, { stars: compact, at: Date.now() });
 
     res.setHeader('Cache-Control', 'public, max-age=21600');
-    res.json({ tier, source, stars: compact, count: compact.length, cached: false });
+    res.json({ tier, source, stars: compact, count: compact.length, cached: false, mirror: usedMirror });
   });
 
   if (!IS_PROD) {

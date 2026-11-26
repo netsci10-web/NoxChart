@@ -16,6 +16,7 @@ import {
   getLocalStarCatalogState,
   getLocalStarSpatialIndex,
   initLocalStarCatalogs,
+  LocalStarCellData,
   LocalStarSpatialIndex,
   subscribeLocalStarCatalogs,
 } from '../utils/localStarCatalogs';
@@ -137,7 +138,7 @@ const cache: CatalogSnapshot = {
   brightStars: [],
   deepStars: [],
   ultraStarTiles: new Map<string, Star[]>(),
-  localStarTiles: new Map<string, Float32Array>(),
+  localStarTiles: new Map<string, LocalStarCellData>(),
   localStarCount: 0,
   localStarMaxMag: 8.0,
   localStarRevision: 0,
@@ -176,6 +177,7 @@ interface GaiaTileCacheEntry {
 }
 const gaiaTileCache = new Map<string, GaiaTileCacheEntry>();
 const hipSearchCache = new Map<string, Star[]>();
+const gaiaSearchCache = new Map<string, Star[]>();
 const catalogListeners = new Set<() => void>();
 
 function notifyCatalogListeners(): void {
@@ -216,7 +218,7 @@ function mapDeepStar(t: DeepStarTuple): Star {
 function mapGaiaStar(t: GaiaStarTuple): Star {
   const [sid, ra, dec, mag, bv] = t;
   return {
-    id: `Gaia ${sid}`,
+    id: `Gaia DR3 ${sid}`,
     gaiaId: sid,
     ra,
     dec,
@@ -611,6 +613,169 @@ export async function searchHipparcosCatalog(rawQuery: string): Promise<Star[]> 
     scan(tile);
   }
   return hits;
+}
+
+/**
+ * Instant client-side search across currently visible & session-cached live Gaia DR3 stars.
+ * Matches full Gaia DR3 source_id, 4..12 digit suffixes (e.g., "Gaia 81346048"), or "gaia"/"가이아".
+ */
+export function searchLoadedGaiaStars(
+  rawQuery: string,
+  activeGaiaStars: Star[],
+  maxResults = 35
+): Star[] {
+  const q = rawQuery.trim().toLowerCase();
+  if (!q) return [];
+  const qCompact = q.replace(/\s+/g, '');
+
+  const isBrowseKeyword = q === 'gaia' || q === 'gaiadr3' || q === '가이아';
+  const explicitGaia = qCompact.startsWith('gaia')
+    ? qCompact.replace(/^gaia(?:dr3)?/i, '')
+    : null;
+  const digits =
+    explicitGaia !== null && /^\d{2,20}$/.test(explicitGaia)
+      ? explicitGaia
+      : /^\d{5,20}$/.test(qCompact)
+      ? qCompact
+      : null;
+
+  if (!isBrowseKeyword && !digits) return [];
+
+  const exactHits: Star[] = [];
+  const partialHits: Star[] = [];
+  const seen = new Set<string>();
+
+  const scanList = (list: Star[]) => {
+    for (let i = 0; i < list.length; i++) {
+      const s = list[i];
+      const sid = s.gaiaId || s.id.replace(/^gaia(?:\s*dr3)?\s*/i, '');
+      if (!sid || seen.has(s.id)) continue;
+
+      if (isBrowseKeyword) {
+        seen.add(s.id);
+        partialHits.push(s);
+        if (partialHits.length >= maxResults * 2) return;
+        continue;
+      }
+
+      if (digits) {
+        if (sid === digits || sid.endsWith(digits)) {
+          seen.add(s.id);
+          exactHits.push(s);
+        } else if (
+          sid.startsWith(digits) ||
+          (digits.length >= 5 && sid.includes(digits))
+        ) {
+          seen.add(s.id);
+          partialHits.push(s);
+        }
+        if (exactHits.length >= maxResults) return;
+      }
+    }
+  };
+
+  scanList(activeGaiaStars);
+  if (exactHits.length < maxResults) {
+    for (const tile of gaiaTileCache.values()) {
+      scanList(tile.stars);
+      if (exactHits.length >= maxResults) break;
+    }
+  }
+  if (exactHits.length < maxResults) {
+    for (const patch of gaiaPatchCache.values()) {
+      scanList(patch.stars);
+      if (exactHits.length >= maxResults) break;
+    }
+  }
+
+  exactHits.sort((a, b) => a.mag - b.mag);
+  partialHits.sort((a, b) => a.mag - b.mag);
+  return [...exactHits, ...partialHits].slice(0, maxResults);
+}
+
+/**
+ * Search server-cached Gaia DR3 stars & live Gaia DR3 TAP (1.8B stars by full source_id).
+ * Automatically falls back to direct browser CORS query (GAVO Heidelberg) on static hosts (GitHub Pages).
+ */
+export async function searchGaiaCatalog(rawQuery: string): Promise<Star[]> {
+  const compact = rawQuery.trim().replace(/\s+/g, '').toLowerCase();
+  const digits = compact.replace(/^gaia(?:dr3)?/i, '');
+  if (!/^\d{4,20}$/.test(digits)) return [];
+
+  const cached = gaiaSearchCache.get(digits);
+  if (cached) return cached;
+
+  const storeResult = (mapped: Star[]) => {
+    if (mapped.length > 0) {
+      if (gaiaSearchCache.size > 80) {
+        const oldest = gaiaSearchCache.keys().next().value;
+        if (oldest) gaiaSearchCache.delete(oldest);
+      }
+      gaiaSearchCache.set(digits, mapped);
+    }
+    return mapped;
+  };
+
+  const json = await safeFetchJson<{ stars?: GaiaStarTuple[] }>(
+    `/api/gaia/search?q=${encodeURIComponent(digits)}`,
+    0
+  );
+  if (json && Array.isArray(json.stars) && json.stars.length > 0) {
+    return storeResult(json.stars.map(mapGaiaStar));
+  }
+
+  // Static host (GitHub Pages) or server fallback: direct CORS primary-key lookup on GAVO gaia.dr3lite
+  if (digits.length >= 13 && digits.length <= 20) {
+    try {
+      const adql =
+        `SELECT TOP 5 source_id, ra, dec, phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag ` +
+        `FROM gaia.dr3lite WHERE source_id = ${digits}`;
+      const res = await fetch(
+        'https://dc.g-vo.org/tap/sync?' +
+          new URLSearchParams({
+            REQUEST: 'doQuery',
+            LANG: 'ADQL',
+            FORMAT: 'csv',
+            QUERY: adql,
+          }).toString()
+      );
+      if (res.ok) {
+        const csv = await res.text();
+        if (!csv.trimStart().startsWith('<')) {
+          const lines = csv.split(/\r?\n/);
+          const direct: Star[] = [];
+          for (let i = 1; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (!line) continue;
+            const cols = line.split(',');
+            if (cols.length < 4) continue;
+            const sid = cols[0].trim();
+            const ra = Number(cols[1]);
+            const dec = Number(cols[2]);
+            const mag = Number(cols[3]);
+            if (!sid || !Number.isFinite(ra) || !Number.isFinite(dec) || !Number.isFinite(mag)) continue;
+            const bp = cols[4]?.trim() ? Number(cols[4]) : NaN;
+            const rp = cols[5]?.trim() ? Number(cols[5]) : NaN;
+            const bpRp = Number.isFinite(bp) && Number.isFinite(rp) ? bp - rp : 0.8;
+            const bv = Math.max(-0.35, Math.min(2.2, (bpRp - 0.15) * 0.78));
+            direct.push(
+              mapGaiaStar([
+                sid,
+                Number(ra.toFixed(5)),
+                Number(dec.toFixed(5)),
+                Number(mag.toFixed(2)),
+                Number(bv.toFixed(2)),
+              ])
+            );
+          }
+          if (direct.length > 0) return storeResult(direct);
+        }
+      }
+    } catch {
+      // Ignore direct lookup network error
+    }
+  }
+  return [];
 }
 
 export function getCatalogSnapshot(): CatalogSnapshot {

@@ -39,7 +39,12 @@ import {
   Upload,
   X,
 } from 'lucide-react';
-import { CatalogSnapshot, searchHipparcosCatalog } from '../data/catalogLoader';
+import {
+  CatalogSnapshot,
+  searchGaiaCatalog,
+  searchHipparcosCatalog,
+  searchLoadedGaiaStars,
+} from '../data/catalogLoader';
 import {
   getSmartTelescopeMosaicMaxScale,
   isSmartTelescopeMosaicSupported,
@@ -101,8 +106,13 @@ import {
   getNextAvailableTier,
   importStarPackFiles,
   LocalStarCatalogState,
+  pickAndImportStarPackFiles,
   removeStarCatalogTier,
+  searchLocalStarCatalogs,
+  setStarPackMirrorMode,
   STAR_CATALOG_TIERS,
+  STAR_PACK_MIRROR_OPTIONS,
+  StarPackMirrorMode,
   subscribeLocalStarCatalogs,
 } from '../utils/localStarCatalogs';
 import {
@@ -143,7 +153,15 @@ type ExploreCategory = 'all' | 'messier' | 'caldwell' | 'ngcic' | 'solar' | 'con
 type GlobalSearchItem =
   | { kind: 'planet'; key: string; score: number; mag: number; body: SolarSystemBody }
   | { kind: 'constellation'; key: string; score: number; mag: number; con: Constellation }
-  | { kind: 'star'; key: string; score: number; mag: number; star: Star }
+  | {
+      kind: 'star';
+      key: string;
+      score: number;
+      mag: number;
+      star: Star;
+      sourceBadge?: string;
+      detail?: string;
+    }
   | { kind: 'double'; key: string; score: number; mag: number; sys: DoubleStarSystem }
   | {
       kind: 'dso';
@@ -393,6 +411,8 @@ export function ControlSidebar({
   const [mosaicScaleLinked, setMosaicScaleLinked] = useState(true);
   const [query, setQuery] = useState('');
   const [remoteHipHits, setRemoteHipHits] = useState<Star[]>([]);
+  const [remoteGaiaHits, setRemoteGaiaHits] = useState<Star[]>([]);
+  const [gaiaSearching, setGaiaSearching] = useState(false);
   const [activeConAbbr, setActiveConAbbr] = useState<string | null>(null);
   const [quickSaveOpen, setQuickSaveOpen] = useState(false);
   const [quickSiteName, setQuickSiteName] = useState('');
@@ -439,6 +459,38 @@ export function ControlSidebar({
       void searchHipparcosCatalog(trimmed).then((hits) => {
         if (!cancelled) setRemoteHipHits(hits);
       });
+    }, 150);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [exploreCategory, query]);
+
+  // Live server-cache + Gaia DR3 TAP primary-key lookup when user searches a Gaia DR3 ID
+  useEffect(() => {
+    const trimmed = query.trim();
+    const compact = trimmed.replace(/\s+/g, '').toLowerCase();
+    const isGaiaQuery =
+      exploreCategory === 'all' &&
+      (/^gaia(?:dr3)?\d{4,20}$/i.test(compact) || /^\d{7,20}$/.test(compact));
+    if (!isGaiaQuery) {
+      setRemoteGaiaHits([]);
+      setGaiaSearching(false);
+      return;
+    }
+    let cancelled = false;
+    setGaiaSearching(true);
+    const timer = window.setTimeout(() => {
+      void searchGaiaCatalog(trimmed)
+        .then((hits) => {
+          if (!cancelled) {
+            setRemoteGaiaHits(hits);
+            setGaiaSearching(false);
+          }
+        })
+        .catch(() => {
+          if (!cancelled) setGaiaSearching(false);
+        });
     }, 150);
     return () => {
       cancelled = true;
@@ -746,12 +798,11 @@ export function ControlSidebar({
     });
   };
 
-  const handleImportStarPackFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const files = e.target.files;
-    if (!files || files.length === 0) return;
-    setStarPackNotice(null);
-    const res = await importStarPackFiles(files);
-    e.target.value = '';
+  const applyImportedStarPackNotice = (res: {
+    importedTiers: number[];
+    totalStars: number;
+    failedCount: number;
+  }) => {
     if (res.importedTiers.length > 0) {
       setStarPackNotice({
         text: `별 목록 ${res.importedTiers.length}개 (${res.totalStars.toLocaleString()}개 항성) 불러오기 완료`,
@@ -762,6 +813,27 @@ export function ControlSidebar({
         isError: true,
       });
     }
+  };
+
+  const handleOpenStarPackPicker = async () => {
+    setStarPackNotice(null);
+    const picked = await pickAndImportStarPackFiles();
+    if (picked.status === 'imported') {
+      applyImportedStarPackNotice(picked);
+      return;
+    }
+    if (picked.status === 'fallback') {
+      starPackFileInputRef.current?.click();
+    }
+  };
+
+  const handleImportStarPackFiles = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files;
+    if (!files || files.length === 0) return;
+    setStarPackNotice(null);
+    const res = await importStarPackFiles(files);
+    e.target.value = '';
+    applyImportedStarPackNotice(res);
   };
 
   const handleExportStarPack = async (tierNum: number) => {
@@ -864,11 +936,13 @@ export function ControlSidebar({
       }
     }
 
-    // 3. Stars (Bright + HIP lookup in Deep Stars)
+    // 3. Stars (Bright + HIP lookup in Deep Stars + Downloaded Local Star Packs)
     const seenStarHip = new Set<number>();
+    const seenStarIds = new Set<string>();
     const wantsHip = qCompact.startsWith('hip') || /^\d{2,}$/.test(qCompact);
     for (const star of catalogs.brightStars) {
       if (star.hip) seenStarHip.add(star.hip);
+      seenStarIds.add(star.id);
       const hipLabel = star.hip ? `HIP ${star.hip}` : undefined;
       const score = scoreSearchMatch(
         [star.koName, star.name, star.bayer, hipLabel, star.id],
@@ -890,10 +964,12 @@ export function ControlSidebar({
       let deepStarHits = 0;
       for (const star of catalogs.deepStars) {
         if (star.hip && seenStarHip.has(star.hip)) continue;
+        if (seenStarIds.has(star.id)) continue;
         const hipLabel = star.hip ? `HIP ${star.hip}` : star.id;
         const score = scoreSearchMatch([hipLabel, star.id], [], q, qCompact);
         if (score > 0) {
           if (star.hip) seenStarHip.add(star.hip);
+          seenStarIds.add(star.id);
           results.push({
             kind: 'star',
             key: `star:${star.id}`,
@@ -906,10 +982,120 @@ export function ControlSidebar({
         }
       }
     }
+    // 3b. Fast Local Downloaded Star Catalogs (HIP / Gaia DR3 / Coordinates / Magnitude / Keywords)
+    const seenGaiaIds = new Set<string>();
+    const registerStarSeen = (st: Star) => {
+      if (st.hip) seenStarHip.add(st.hip);
+      seenStarIds.add(st.id);
+      if (st.gaiaId) seenGaiaIds.add(st.gaiaId);
+    };
+    if (catalogs.localStarCount > 0 || localStarState.totalStars > 0) {
+      const localHits = searchLocalStarCatalogs(
+        query,
+        { raHours: view.ra, decDeg: view.dec },
+        35
+      );
+      for (const hit of localHits) {
+        if (hit.star.hip && seenStarHip.has(hit.star.hip)) continue;
+        if (seenStarIds.has(hit.star.id)) continue;
+        if (hit.star.gaiaId && seenGaiaIds.has(hit.star.gaiaId)) continue;
+        registerStarSeen(hit.star);
+        results.push({
+          kind: 'star',
+          key: `star:${hit.star.id}`,
+          score: hit.score,
+          mag: hit.star.mag,
+          star: hit.star,
+          sourceBadge: hit.badge,
+          detail: hit.detail,
+        });
+      }
+    }
+
+    // 3c. Currently Loaded & Session-Cached Live Gaia DR3 Stars (instant 0ms)
+    const loadedGaiaHits = searchLoadedGaiaStars(query, catalogs.gaiaStars, 35);
+    const gaiaDigitsClean = qCompact.replace(/^gaia(?:dr3)?/i, '');
+    for (const star of loadedGaiaHits) {
+      if (seenStarIds.has(star.id)) continue;
+      if (star.gaiaId && seenGaiaIds.has(star.gaiaId)) continue;
+      registerStarSeen(star);
+      const exactMatch =
+        Boolean(star.gaiaId) &&
+        Boolean(gaiaDigitsClean) &&
+        (star.gaiaId === gaiaDigitsClean || star.gaiaId!.endsWith(gaiaDigitsClean));
+      results.push({
+        kind: 'star',
+        key: `star:${star.id}`,
+        score: exactMatch ? 124 : 98,
+        mag: star.mag,
+        star,
+        sourceBadge: 'Gaia DR3',
+      });
+    }
+
+    // 3d. Remote Server Cache & Gaia DR3 TAP Search Results
+    if (remoteGaiaHits.length > 0) {
+      for (const star of remoteGaiaHits) {
+        if (seenStarIds.has(star.id)) continue;
+        if (star.gaiaId && seenGaiaIds.has(star.gaiaId)) continue;
+        registerStarSeen(star);
+        const exactMatch =
+          Boolean(star.gaiaId) &&
+          Boolean(gaiaDigitsClean) &&
+          (star.gaiaId === gaiaDigitsClean || star.gaiaId!.endsWith(gaiaDigitsClean));
+        results.push({
+          kind: 'star',
+          key: `star:${star.id}`,
+          score: exactMatch ? 123 : 95,
+          mag: star.mag,
+          star,
+          sourceBadge: 'Gaia DR3',
+        });
+      }
+    }
+
+    // 3e. Currently Selected Star fallback (ensures inspected Gaia/HIP star is always searchable)
+    if (selected?.kind === 'star') {
+      const st = selected.data;
+      if (
+        !seenStarIds.has(st.id) &&
+        !(st.hip && seenStarHip.has(st.hip)) &&
+        !(st.gaiaId && seenGaiaIds.has(st.gaiaId))
+      ) {
+        const score = scoreSearchMatch(
+          [
+            st.id,
+            st.gaiaId ? `Gaia ${st.gaiaId}` : undefined,
+            st.gaiaId ? `Gaia DR3 ${st.gaiaId}` : undefined,
+            st.gaiaId,
+            st.hip ? `HIP ${st.hip}` : undefined,
+            st.koName,
+            st.name,
+            st.bayer,
+          ],
+          [st.con],
+          q,
+          qCompact
+        );
+        if (score > 0) {
+          registerStarSeen(st);
+          results.push({
+            kind: 'star',
+            key: `star:${st.id}`,
+            score: Math.max(100, score),
+            mag: st.mag,
+            star: st,
+            sourceBadge: st.gaiaId ? 'Gaia DR3' : undefined,
+          });
+        }
+      }
+    }
+
     if (wantsHip && remoteHipHits.length > 0) {
       for (const star of remoteHipHits) {
         if (star.hip && seenStarHip.has(star.hip)) continue;
-        if (star.hip) seenStarHip.add(star.hip);
+        if (seenStarIds.has(star.id)) continue;
+        registerStarSeen(star);
         const hipLabel = star.hip ? `HIP ${star.hip}` : star.id;
         const score = Math.max(
           85,
@@ -1075,7 +1261,16 @@ export function ControlSidebar({
     catalogs.dsosBright,
     catalogs.darkNebulae,
     catalogs.dsosDeep,
+    catalogs.gaiaStars,
+    catalogs.localStarCount,
+    catalogs.localStarRevision,
+    localStarState.totalStars,
+    localStarState.revision,
+    view.ra,
+    view.dec,
+    selected,
     remoteHipHits,
+    remoteGaiaHits,
   ]);
 
   const jumpToDso = (dso: DeepSkyObject) => {
@@ -1118,11 +1313,19 @@ export function ControlSidebar({
 
   const jumpToStar = (star: Star) => {
     setActiveConAbbr(null);
+    // Faint downloaded & Gaia stars (mag > 8) automatically zoom in deep enough to be immediately visible
+    const targetFsz =
+      star.mag <= 8.0
+        ? 12
+        : Math.max(
+            0.04,
+            Math.min(12, 60 * Math.pow(10, -(star.mag + 0.7 - layers.magOffset - 6.0) / 3.65))
+          );
     onChangeView((p) => ({
       ...p,
       ra: ((star.ra / 15) % 24 + 24) % 24,
       dec: star.dec,
-      fsz: 12,
+      fsz: targetFsz,
     }));
     onSelect({ kind: 'star', data: star });
   };
@@ -1246,7 +1449,9 @@ export function ControlSidebar({
 
   const searchPlaceholder =
     exploreCategory === 'all'
-      ? '천체명, M/C/NGC/IC, 별, 행성...'
+      ? localStarState.totalStars > 0
+        ? '천체명, M/C/NGC, HIP/Gaia, 좌표, 등급...'
+        : '천체명, M/C/NGC/IC, 별, 행성...'
       : exploreCategory === 'messier'
       ? 'M1~M110 번호, 이름, NGC, 별자리...'
       : exploreCategory === 'caldwell'
@@ -1434,6 +1639,56 @@ export function ControlSidebar({
 
           {/* Scrollable Card List */}
           <div className="flex-1 min-h-0 overflow-y-auto astro-scroll space-y-1.5 pr-0.5">
+            {exploreCategory === 'all' && !query.trim() && localStarState.totalStars > 0 && (
+              <div className={`p-2 border rounded-lg space-y-1.5 ${cardIdleCls}`}>
+                <div className="flex items-center justify-between gap-1">
+                  <span className={`font-semibold text-[10.5px] ${ui.textPrimary}`}>
+                    로컬 별 목록 빠른 검색
+                  </span>
+                  <span className={`font-mono text-[9.5px] tabular-nums ${ui.accentText}`}>
+                    {localStarState.totalStars.toLocaleString()}개
+                  </span>
+                </div>
+                <div className={`text-[9.5px] leading-relaxed ${ui.textMuted}`}>
+                  HIP · Gaia ID, 좌표(예: 05h 35m -05° 23&apos;), 등급(예: 10등급, 9~11m)으로 즉시 검색할 수 있습니다.
+                </div>
+                <div className="flex flex-wrap gap-1 pt-0.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuery('로컬');
+                      onSearchActiveChange(true);
+                    }}
+                    className={`px-1.5 py-0.5 border rounded text-[9.5px] font-medium transition-colors cursor-pointer ${ui.buttonIdle}`}
+                  >
+                    시야 주변 로컬별
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuery('10등급');
+                      onSearchActiveChange(true);
+                    }}
+                    className={`px-1.5 py-0.5 border rounded text-[9.5px] font-medium transition-colors cursor-pointer ${ui.buttonIdle}`}
+                  >
+                    10등급대
+                  </button>
+                  {localStarState.installedTiers.map((pack) => (
+                    <button
+                      key={pack.tier}
+                      type="button"
+                      onClick={() => {
+                        setQuery(`${pack.tier}단계`);
+                        onSearchActiveChange(true);
+                      }}
+                      className={`px-1.5 py-0.5 border rounded text-[9.5px] font-medium transition-colors cursor-pointer ${ui.buttonIdle}`}
+                    >
+                      {pack.tier}단계
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {exploreCategory === 'all' && query.trim() && (
               <>
                 <div className={`flex items-center justify-between px-0.5 text-[9.5px] tracking-[-0.05em] ${ui.textMuted}`}>
@@ -1447,7 +1702,7 @@ export function ControlSidebar({
 
                 {allSearchResults.items.length === 0 ? (
                   <div className={`py-8 text-center ${ui.textMuted}`}>
-                    일치하는 천체가 없습니다.
+                    {gaiaSearching ? 'Gaia DR3 목록을 조회하는 중...' : '일치하는 천체가 없습니다.'}
                   </div>
                 ) : (
                   allSearchResults.items.map((item) => {
@@ -1576,8 +1831,9 @@ export function ControlSidebar({
                         star.bayer || star.id
                       );
                       const subInfo = [
+                        item.detail,
                         star.bayer,
-                        star.hip ? `HIP ${star.hip}` : undefined,
+                        star.hip && !primaryTitle.includes(`HIP ${star.hip}`) ? `HIP ${star.hip}` : undefined,
                         star.con || undefined,
                       ]
                         .filter(Boolean)
@@ -1598,7 +1854,7 @@ export function ControlSidebar({
                                   below ? belowHorizonBadgeCls : badgeCls
                                 }`}
                               >
-                                항성
+                                {item.sourceBadge || '항성'}
                               </span>
                               <span
                                 title={primaryTitle}
@@ -2593,6 +2849,34 @@ export function ControlSidebar({
                   className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
                 />
               </label>
+
+              {layers.showStarOutlines && (
+                <div className="pl-2 pb-0.5 space-y-0.5">
+                  <div className="flex items-center justify-between text-[10px]">
+                    <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                      항성표시 진하기
+                    </span>
+                    <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                      {Math.round((layers.starOutlineOpacity ?? 1) * 100)}%
+                    </span>
+                  </div>
+                  <input
+                    type="range"
+                    min={0.05}
+                    max={1}
+                    step={0.05}
+                    value={layers.starOutlineOpacity ?? 1}
+                    onChange={(e) =>
+                      onChangeLayers((p) => ({
+                        ...p,
+                        starOutlineOpacity: Number(e.target.value),
+                      }))
+                    }
+                    aria-label="항성표시 진하기"
+                    className="w-full h-1.5 accent-cyan-500 cursor-pointer"
+                  />
+                </div>
+              )}
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
@@ -6951,8 +7235,8 @@ export function ControlSidebar({
                     )}
                     <button
                       type="button"
-                      onClick={() => starPackFileInputRef.current?.click()}
-                      title="문서/noxchart 폴더에 보관된 .noxstars 파일 불러오기"
+                      onClick={handleOpenStarPackPicker}
+                      title="별 데이터가 저장된 위치(문서/noxchart 등)에서 .noxstars 파일 불러오기"
                       className={`py-1 px-1.5 border rounded text-[9.5px] font-medium flex items-center justify-center gap-1 shrink-0 cursor-pointer ${ui.buttonLoad}`}
                     >
                       <Upload className="w-3 h-3 shrink-0" />
@@ -6967,6 +7251,25 @@ export function ControlSidebar({
                       className="hidden"
                     />
                   </div>
+                </div>
+
+                {/* Download Mirror / Route Selector (Server 5-Mirrors + Direct Browser CORS for GitHub Pages) */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-[9.5px]">
+                    <span className={ui.textMuted}>다운로드 경로 (실패 시 자동 전환)</span>
+                  </div>
+                  <select
+                    value={localStarState.mirrorMode}
+                    disabled={Boolean(localStarState.downloading)}
+                    onChange={(e) => setStarPackMirrorMode(e.target.value as StarPackMirrorMode)}
+                    className={`w-full px-2 py-1 border rounded text-[10px] ${ui.input} disabled:opacity-50`}
+                  >
+                    {STAR_PACK_MIRROR_OPTIONS.map((opt) => (
+                      <option key={opt.id} value={opt.id}>
+                        {opt.label}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 {/* Stellarium-Style Sequential Download Button & Metadata */}

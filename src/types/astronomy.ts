@@ -125,6 +125,7 @@ export interface LayerSettings {
   showSolarSystemOrbits: boolean;
   showSolarSystemLabels: boolean;
   showStarOutlines: boolean;
+  starOutlineOpacity: number; // 0.05..1.0 항성표시 원형 테두리 진하기
   showStarColors: boolean;
   showDoubleStars: boolean;
   showDoublePairs: boolean; // 이중성 (2성)

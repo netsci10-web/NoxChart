@@ -44,6 +44,7 @@ export interface CloudAppPrefs {
   flipH: boolean;
   flipV: boolean;
   infoWindowDockSide?: 'left' | 'right';
+  sidebarsPinned?: boolean;
 }
 
 export interface CloudActiveSite {
@@ -163,6 +164,7 @@ export function computePayloadHashes(payload: CloudSyncPayload): SyncHashes {
           flipH: payload.root.prefs.flipH,
           flipV: payload.root.prefs.flipV,
           infoWindowDockSide: payload.root.prefs.infoWindowDockSide ?? 'right',
+          sidebarsPinned: payload.root.prefs.sidebarsPinned ?? false,
         }
       : undefined,
     layers: payload.root.layers,
