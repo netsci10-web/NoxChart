@@ -127,6 +127,10 @@ export interface LayerSettings {
   showSolarDwarfs: boolean;
   showSolarAsteroids: boolean;
   showSolarComets: boolean;
+  cometObservableOnly: boolean; // 관측 가능한 혜성만 표시 (D/ 소멸·근일점 1년 경과 어두운 혜성 제외)
+  cometMaxMag: number; // 6.0..18.0 혜성 한계 실시등급
+  cometHideBelowHorizon: boolean; // 지평선 아래(고도 < 0°) 혜성 숨기기
+  cometHideNearSun: boolean; // 태양 근처(이각 < 15°) 혜성 숨기기
   showPlanetSurface: boolean;
   showSolarSystemOrbits: boolean;
   showSolarSystemLabels: boolean;
@@ -272,6 +276,8 @@ export interface SolarSystemBody {
   helioDistAu?: number; // Heliocentric distance in AU (comets)
   tailPaDeg?: number; // Anti-solar comet tail position angle on sky (0..360°, N through E)
   perihelionIso?: string; // Perihelion passage date YYYY-MM-DD (comets)
+  perihelionDeltaDays?: number; // |JD_now - JD_Tp| in days from perihelion (comets)
+  cometOrbitType?: string; // 'P' | 'C' | 'D' | 'A' | 'I' (comets)
   eccentricity?: number; // Orbital eccentricity e (comets)
 }
 

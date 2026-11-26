@@ -154,6 +154,8 @@ import {
   getMpcCometSyncMeta,
   getSolarSystemBodies,
   importMpcCometFileText,
+  isCometNearSunWarning,
+  isCometVisibleByFilter,
   MpcAsteroidSyncMeta,
   MpcCometSyncMeta,
   subscribeMpcAsteroids,
@@ -1152,8 +1154,34 @@ export function ControlSidebar({
     return getSolarSystemBodies(obsTimeMs);
   }, [obsTimeMs, mpcRev]);
 
+  const cometFilterCounts = useMemo(() => {
+    let total = 0;
+    let visible = 0;
+    const needAlt = layers.cometHideBelowHorizon ?? false;
+    for (const b of solarBodies) {
+      if (b.group !== 'comet') continue;
+      total++;
+      const altDeg = needAlt
+        ? equatorialToHorizontal(b.ra, b.dec, lstDeg, observer.lat).altDeg
+        : undefined;
+      if (isCometVisibleByFilter(b, layers, altDeg)) {
+        visible++;
+      }
+    }
+    return { total, visible };
+  }, [
+    solarBodies,
+    layers.cometObservableOnly,
+    layers.cometMaxMag,
+    layers.cometHideBelowHorizon,
+    layers.cometHideNearSun,
+    lstDeg,
+    observer.lat,
+  ]);
+
   const filteredSolar = useMemo(() => {
     const q = query.trim().toLowerCase();
+    const needCometAlt = layers.cometHideBelowHorizon ?? false;
     const matched = solarBodies.filter((b) => {
       if (solarGroupFilter === 'planet' && b.group !== 'planet' && b.group !== 'star') {
         return false;
@@ -1164,6 +1192,14 @@ export function ControlSidebar({
         b.group !== solarGroupFilter
       ) {
         return false;
+      }
+      if (b.group === 'comet') {
+        const altDeg = needCometAlt
+          ? equatorialToHorizontal(b.ra, b.dec, lstDeg, observer.lat).altDeg
+          : undefined;
+        if (!isCometVisibleByFilter(b, layers, altDeg)) {
+          return false;
+        }
       }
       if (!q) return true;
       return `${b.id} ${b.name} ${b.koName} ${b.category}`.toLowerCase().includes(q);
@@ -1195,7 +1231,19 @@ export function ControlSidebar({
       const altB = equatorialToHorizontal(b.ra, b.dec, lstDeg, observer.lat).altDeg;
       return (altA - altB) * dir;
     });
-  }, [solarBodies, query, solarGroupFilter, exploreSort, exploreSortDir, lstDeg, observer.lat]);
+  }, [
+    solarBodies,
+    query,
+    solarGroupFilter,
+    exploreSort,
+    exploreSortDir,
+    lstDeg,
+    observer.lat,
+    layers.cometObservableOnly,
+    layers.cometMaxMag,
+    layers.cometHideBelowHorizon,
+    layers.cometHideNearSun,
+  ]);
 
   const sortedConstellations = useMemo(
     () => [...catalogs.constellations].sort((a, b) => a.koName.localeCompare(b.koName, 'ko')),
@@ -3579,84 +3627,165 @@ export function ControlSidebar({
               </>
             )}
 
-            {exploreCategory === 'solar' &&
-              (filteredSolar.length === 0 ? (
-                <div className={`py-8 text-center ${ui.textMuted}`}>
-                  일치하는 태양계 천체가 없습니다.
-                </div>
-              ) : (
-                filteredSolar.map((body) => {
-                  const isActive = selected?.kind === 'planet' && selected.data.id === body.id;
-                  const isNestedMoon =
-                    solarGroupFilter === 'all' && body.group === 'moon' && body.id !== 'Moon';
-                  const hz = equatorialToHorizontal(body.ra, body.dec, lstDeg, observer.lat);
-                  const below = hz.altDeg < 0;
-                  return (
-                    <div key={body.id} className={isNestedMoon ? 'pl-3' : undefined}>
+            {exploreCategory === 'solar' && (
+              <>
+                {solarGroupFilter === 'comet' && (
+                  <div
+                    className={`mb-1.5 px-2 py-1.5 rounded-lg border flex items-center justify-between gap-1.5 text-[10px] ${
+                      theme === 'white'
+                        ? 'bg-slate-50 border-slate-200 text-slate-600'
+                        : theme === 'red'
+                        ? 'bg-[#1a0505] border-red-950/70 text-red-400/90'
+                        : 'bg-slate-900/70 border-slate-800 text-slate-300'
+                    }`}
+                  >
+                    <span className="font-mono tabular-nums truncate">
+                      표시 {cometFilterCounts.visible}/{cometFilterCounts.total} · ≤
+                      {(layers.cometMaxMag ?? 15.0).toFixed(1)}m
+                      {layers.cometHideBelowHorizon ? ' · 지평선 위' : ''}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setTab('layers');
+                        setOpenSections((prev) => ({ ...prev, layers_solar: true }));
+                      }}
+                      className={`shrink-0 px-1.5 py-0.5 rounded border text-[9.5px] font-medium transition-colors cursor-pointer ${
+                        theme === 'white'
+                          ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                          : theme === 'red'
+                          ? 'bg-[#250707] border-red-900/70 text-red-300 hover:bg-[#350a0a]'
+                          : 'bg-slate-800/80 border-slate-700 text-cyan-300 hover:bg-slate-700/80'
+                      }`}
+                    >
+                      필터 설정
+                    </button>
+                  </div>
+                )}
+
+                {filteredSolar.length === 0 ? (
+                  <div className={`py-8 text-center space-y-2 ${ui.textMuted}`}>
+                    <div>
+                      {solarGroupFilter === 'comet'
+                        ? '현재 필터 조건에 해당하는 혜성이 없습니다.'
+                        : '일치하는 태양계 천체가 없습니다.'}
+                    </div>
+                    {solarGroupFilter === 'comet' && cometFilterCounts.total > 0 && (
                       <button
                         type="button"
-                        onClick={() => jumpToPlanet(body)}
-                        className={`w-full text-left px-2 border rounded-lg transition-colors ${
-                          isNestedMoon ? 'py-1.5' : 'py-2'
-                        } ${isActive ? cardActiveCls : cardIdleCls} ${
-                          below ? 'opacity-70' : ''
+                        onClick={() =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            cometObservableOnly: false,
+                            cometMaxMag: 18.0,
+                            cometHideBelowHorizon: false,
+                            cometHideNearSun: false,
+                          }))
+                        }
+                        className={`inline-flex items-center px-2.5 py-1 rounded-md border text-[10.5px] font-medium transition-colors cursor-pointer ${
+                          theme === 'white'
+                            ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                            : theme === 'red'
+                            ? 'bg-[#250707] border-red-900/70 text-red-300 hover:bg-[#350a0a]'
+                            : 'bg-slate-800/90 border-slate-700 text-cyan-300 hover:bg-slate-700'
                         }`}
                       >
-                        <div className="flex items-center justify-between gap-1">
-                          <div className="flex items-center gap-1 min-w-0">
-                            {isNestedMoon && (
+                        혜성 필터 모두 해제 (전체 보기)
+                      </button>
+                    )}
+                  </div>
+                ) : (
+                  filteredSolar.map((body) => {
+                    const isActive = selected?.kind === 'planet' && selected.data.id === body.id;
+                    const isNestedMoon =
+                      solarGroupFilter === 'all' && body.group === 'moon' && body.id !== 'Moon';
+                    const hz = equatorialToHorizontal(body.ra, body.dec, lstDeg, observer.lat);
+                    const below = hz.altDeg < 0;
+                    const nearSunWarn = isCometNearSunWarning(body);
+                    return (
+                      <div key={body.id} className={isNestedMoon ? 'pl-3' : undefined}>
+                        <button
+                          type="button"
+                          onClick={() => jumpToPlanet(body)}
+                          className={`w-full text-left px-2 border rounded-lg transition-colors ${
+                            isNestedMoon ? 'py-1.5' : 'py-2'
+                          } ${isActive ? cardActiveCls : cardIdleCls} ${
+                            below ? 'opacity-70' : ''
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-1">
+                            <div className="flex items-center gap-1 min-w-0">
+                              {isNestedMoon && (
+                                <span
+                                  aria-hidden="true"
+                                  className={`font-mono text-[10px] shrink-0 ${
+                                    below ? belowHorizonSubCls : ui.textMuted
+                                  }`}
+                                >
+                                  └
+                                </span>
+                              )}
                               <span
-                                aria-hidden="true"
-                                className={`font-mono text-[10px] shrink-0 ${
+                                className={`font-mono font-bold shrink-0 ${
+                                  below ? belowHorizonTextCls : ui.accentText
+                                }`}
+                              >
+                                {body.symbol}
+                              </span>
+                              <span
+                                className={`font-semibold truncate tracking-[-0.04em] ${
+                                  below ? belowHorizonTextCls : ui.textPrimary
+                                }`}
+                              >
+                                {body.koName}
+                              </span>
+                              <span
+                                className={`text-[10px] truncate tracking-[-0.04em] ${
                                   below ? belowHorizonSubCls : ui.textMuted
                                 }`}
                               >
-                                └
+                                {body.name}
                               </span>
-                            )}
-                            <span
-                              className={`font-mono font-bold shrink-0 ${
-                                below ? belowHorizonTextCls : ui.accentText
-                              }`}
-                            >
-                              {body.symbol}
-                            </span>
-                            <span
-                              className={`font-semibold truncate tracking-[-0.04em] ${
-                                below ? belowHorizonTextCls : ui.textPrimary
-                              }`}
-                            >
-                              {body.koName}
-                            </span>
-                            <span
-                              className={`text-[10px] truncate tracking-[-0.04em] ${
-                                below ? belowHorizonSubCls : ui.textMuted
-                              }`}
-                            >
-                              {body.name}
-                            </span>
+                            </div>
+                            <div className="flex items-center gap-1 shrink-0">
+                              {nearSunWarn && (
+                                <span
+                                  title={`태양 이각 ${body.elongationDeg.toFixed(1)}° (태양 근접 주의)`}
+                                  className={`px-1 py-0.5 rounded text-[9px] font-medium leading-none ${
+                                    theme === 'white'
+                                      ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                                      : theme === 'red'
+                                      ? 'bg-red-950/90 text-red-300 border border-red-800/80'
+                                      : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                                  }`}
+                                >
+                                  태양근접
+                                </span>
+                              )}
+                              <span
+                                className={`font-mono text-[10px] tracking-[-0.04em] tabular-nums ${
+                                  below ? belowHorizonSubCls : ui.textMuted
+                                }`}
+                              >
+                                {body.mag.toFixed(1)}m
+                              </span>
+                            </div>
                           </div>
-                          <span
-                            className={`font-mono text-[10px] tracking-[-0.04em] tabular-nums shrink-0 ${
+                          <div
+                            className={`mt-0.5 font-mono text-[10px] tracking-[-0.05em] tabular-nums truncate ${
                               below ? belowHorizonSubCls : ui.textMuted
                             }`}
                           >
-                            {body.mag.toFixed(1)}m
-                          </span>
-                        </div>
-                        <div
-                          className={`mt-0.5 font-mono text-[10px] tracking-[-0.05em] tabular-nums truncate ${
-                            below ? belowHorizonSubCls : ui.textMuted
-                          }`}
-                        >
-                          {body.category} · 고도 {hz.altDeg.toFixed(1)}° ·{' '}
-                          {formatCompactRaDec(body.ra, body.dec)}
-                        </div>
-                      </button>
-                    </div>
-                  );
-                })
-              ))}
+                            {body.category} · 고도 {hz.altDeg.toFixed(1)}° ·{' '}
+                            {formatCompactRaDec(body.ra, body.dec)}
+                          </div>
+                        </button>
+                      </div>
+                    );
+                  })
+                )}
+              </>
+            )}
 
             {exploreCategory === 'constellation' &&
               (filteredConstellations.length === 0 ? (
@@ -4188,6 +4317,171 @@ export function ControlSidebar({
                   );
                 })}
               </div>
+
+              {(() => {
+                const cometsActive = layers.showSolarSystem && (layers.showSolarComets ?? true);
+                const cometMaxMag = layers.cometMaxMag ?? 15.0;
+                const cometPresets = [
+                  { mag: 10.0, label: '쌍안경' },
+                  { mag: 13.5, label: '12″안시' },
+                  { mag: 15.0, label: '전자관측' },
+                  { mag: 18.0, label: '전체' },
+                ];
+                return (
+                  <div
+                    className={`ml-1.5 pl-2.5 pr-1.5 py-1.5 border-l space-y-1.5 rounded-r-md ${ui.divider} ${
+                      cometsActive ? '' : 'opacity-45'
+                    } ${
+                      theme === 'white'
+                        ? 'bg-slate-50/80'
+                        : theme === 'red'
+                        ? 'bg-[#160404]/70'
+                        : 'bg-slate-900/45'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-1">
+                      <span className={`text-[10.5px] font-semibold tracking-[-0.05em] ${ui.textSecondary}`}>
+                        혜성 관측 필터
+                      </span>
+                      <span className={`font-mono text-[9.5px] tabular-nums ${ui.accentText}`}>
+                        {cometFilterCounts.visible}/{cometFilterCounts.total}
+                      </span>
+                    </div>
+
+                    <label
+                      className={`flex items-start justify-between gap-1.5 ${
+                        cometsActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <div className={`text-[10.5px] leading-tight tracking-[-0.05em] ${ui.textSecondary}`}>
+                          관측 가능한 혜성만 표시
+                        </div>
+                        <div className={`text-[9.5px] leading-tight mt-0.5 tracking-[-0.04em] ${ui.textMuted}`}>
+                          D/ 소멸 · 근일점 1년 경과 어두운 혜성 제외
+                        </div>
+                      </div>
+                      <input
+                        type="checkbox"
+                        checked={layers.cometObservableOnly ?? true}
+                        disabled={!cometsActive}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({ ...p, cometObservableOnly: e.target.checked }))
+                        }
+                        className="w-3 h-3 mt-0.5 shrink-0 accent-cyan-500"
+                      />
+                    </label>
+
+                    <div className="space-y-1 pt-0.5">
+                      <div className="flex items-center justify-between gap-1 text-[10.5px]">
+                        <span className={`tracking-[-0.05em] ${ui.textSecondary}`}>
+                          혜성 한계 등급
+                        </span>
+                        <span className={`font-mono text-[10px] tabular-nums ${ui.accentText}`}>
+                          ≤ {cometMaxMag.toFixed(1)}m
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={6.0}
+                        max={18.0}
+                        step={0.5}
+                        value={cometMaxMag}
+                        disabled={!cometsActive}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            cometMaxMag: parseFloat(e.target.value),
+                          }))
+                        }
+                        className={`w-full h-1.5 accent-cyan-500 ${
+                          cometsActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                        }`}
+                      />
+                      <div className="grid grid-cols-4 gap-1">
+                        {cometPresets.map((preset) => {
+                          const isSelectedPreset = Math.abs(cometMaxMag - preset.mag) < 0.05;
+                          return (
+                            <button
+                              key={preset.mag}
+                              type="button"
+                              disabled={!cometsActive}
+                              onClick={() =>
+                                onChangeLayers((p) => ({ ...p, cometMaxMag: preset.mag }))
+                              }
+                              title={`${preset.label} (${preset.mag.toFixed(1)}등급 이하)`}
+                              className={`px-1 py-0.5 rounded border text-[9px] leading-tight tracking-[-0.04em] transition-colors ${
+                                cometsActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                              } ${
+                                isSelectedPreset
+                                  ? theme === 'white'
+                                    ? 'bg-sky-600 text-white border-sky-600'
+                                    : theme === 'red'
+                                    ? 'bg-red-900/90 text-red-100 border-red-700'
+                                    : 'bg-cyan-500/25 text-cyan-200 border-cyan-500/60'
+                                  : theme === 'white'
+                                  ? 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
+                                  : theme === 'red'
+                                  ? 'bg-[#200606] text-red-400/90 border-red-950/70 hover:bg-[#2d0808]'
+                                  : 'bg-slate-800/70 text-slate-400 border-slate-700/80 hover:text-slate-200'
+                              }`}
+                            >
+                              <div>{preset.label}</div>
+                              <div className="font-mono text-[8.5px] opacity-85">
+                                {preset.mag.toFixed(1)}m
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <label
+                      className={`flex items-center justify-between gap-1.5 pt-0.5 ${
+                        cometsActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                      }`}
+                    >
+                      <span className={`text-[10.5px] whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                        지평선 아래 혜성 숨기기
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={layers.cometHideBelowHorizon ?? false}
+                        disabled={!cometsActive}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            cometHideBelowHorizon: e.target.checked,
+                          }))
+                        }
+                        className="w-3 h-3 shrink-0 accent-cyan-500"
+                      />
+                    </label>
+
+                    <label
+                      className={`flex items-center justify-between gap-1.5 ${
+                        cometsActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                      }`}
+                    >
+                      <span className={`text-[10.5px] whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                        태양 근처 숨기기 (이각 &lt; 15°)
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={layers.cometHideNearSun ?? true}
+                        disabled={!cometsActive}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            cometHideNearSun: e.target.checked,
+                          }))
+                        }
+                        className="w-3 h-3 shrink-0 accent-cyan-500"
+                      />
+                    </label>
+                  </div>
+                );
+              })()}
 
               <label
                 className={`flex items-center justify-between gap-1.5 py-0.5 ${

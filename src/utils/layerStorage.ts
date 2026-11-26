@@ -125,6 +125,10 @@ export function sanitizeLayerSettings(
       obj.showSolarComets,
       typeof obj.showSolarSystem === 'boolean' ? obj.showSolarSystem : fallback.showSolarComets
     ),
+    cometObservableOnly: readBool(obj.cometObservableOnly, fallback.cometObservableOnly),
+    cometMaxMag: clampNum(obj.cometMaxMag, fallback.cometMaxMag, 6.0, 18.0),
+    cometHideBelowHorizon: readBool(obj.cometHideBelowHorizon, fallback.cometHideBelowHorizon),
+    cometHideNearSun: readBool(obj.cometHideNearSun, fallback.cometHideNearSun),
     showPlanetSurface: readBool(obj.showPlanetSurface, fallback.showPlanetSurface),
     showSolarSystemOrbits: readBool(
       obj.showSolarSystemOrbits,
@@ -399,6 +403,10 @@ const RECOGNIZED_LAYER_KEYS: readonly string[] = [
   'showSolarDwarfs',
   'showSolarAsteroids',
   'showSolarComets',
+  'cometObservableOnly',
+  'cometMaxMag',
+  'cometHideBelowHorizon',
+  'cometHideNearSun',
   'showDoubleStars',
   'doubleStarSymbolOpacity',
   'doubleStarLabelOpacity',

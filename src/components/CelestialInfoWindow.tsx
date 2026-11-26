@@ -1120,8 +1120,23 @@ export function CelestialInfoWindow({
                 <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
                   위상 / 이각
                 </span>
-                <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
-                  {selected.data.phasePct}% · {selected.data.elongationDeg.toFixed(1)}°
+                <span className="flex items-center justify-end gap-1 font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
+                  {selected.data.group === 'comet' && selected.data.elongationDeg < 20 && (
+                    <span
+                      className={`px-1 py-0.5 rounded font-sans text-[9px] font-medium leading-none shrink-0 ${
+                        theme === 'white'
+                          ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                          : theme === 'red'
+                          ? 'bg-red-950/90 text-red-300 border border-red-800/80'
+                          : 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
+                      }`}
+                    >
+                      태양근접
+                    </span>
+                  )}
+                  <span>
+                    {selected.data.phasePct}% · {selected.data.elongationDeg.toFixed(1)}°
+                  </span>
                 </span>
               </div>
               {selected.data.group === 'comet' && (

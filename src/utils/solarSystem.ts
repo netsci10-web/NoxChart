@@ -1,4 +1,4 @@
-import { SolarSystemBody, SolarSystemGroup } from '../types/astronomy';
+import { LayerSettings, SolarSystemBody, SolarSystemGroup } from '../types/astronomy';
 import { DEG2RAD, RAD2DEG } from './astronomy';
 
 const norm360 = (deg: number) => ((deg % 360) + 360) % 360;
@@ -851,6 +851,52 @@ function resolveCometKoName(name: string, explicitKo?: string): string {
   return trimmed;
 }
 
+export function isDisappearedComet(name: string, orbitType?: string): boolean {
+  if ((orbitType || '').trim().toUpperCase() === 'D') return true;
+  return /^(?:\d+)?D\//i.test(name.trim());
+}
+
+export function isCometNearSunWarning(body: SolarSystemBody): boolean {
+  return body.group === 'comet' && body.elongationDeg < 20;
+}
+
+/**
+ * 4-criteria observable comet filter:
+ * 1. Exclude disappeared/disintegrated (D/) comets
+ * 2. Apparent visual magnitude limit (cometMaxMag)
+ * 3. Non-periodic comets far from perihelion (> 365 days) and faint (> 12.5m) when cometObservableOnly is enabled
+ * 4. Near-Sun solar elongation (< 15°) and below-horizon (alt < 0°) hiding when enabled
+ */
+export function isCometVisibleByFilter(
+  body: SolarSystemBody,
+  layers: LayerSettings,
+  altDeg?: number
+): boolean {
+  if (body.group !== 'comet') return true;
+  if (isDisappearedComet(body.name, body.cometOrbitType)) return false;
+
+  const maxMag = layers.cometMaxMag ?? 15.0;
+  if (body.mag > maxMag) return false;
+
+  if (layers.cometObservableOnly ?? true) {
+    const isPeriodic = (body.cometOrbitType || '').toUpperCase() === 'P';
+    const deltaDays = body.perihelionDeltaDays ?? 0;
+    if (!isPeriodic && deltaDays > 365 && body.mag > 12.5) {
+      return false;
+    }
+  }
+
+  if ((layers.cometHideNearSun ?? true) && body.elongationDeg < 15) {
+    return false;
+  }
+
+  if ((layers.cometHideBelowHorizon ?? false) && altDeg !== undefined && altDeg < 0) {
+    return false;
+  }
+
+  return true;
+}
+
 // Curated notable periodic & recent bright comets (MPC J2000 elements) so comets work out of the box
 const BUILTIN_COMETS: MpcCometElement[] = [
   {
@@ -1075,6 +1121,7 @@ export function parseMpcCometRawText(rawText: string): MpcCometElement[] {
         if (seen.has(id)) continue;
         seen.add(id);
         const orbitType = String(r.Orbit_type || r.orbitType || 'C').trim().toUpperCase() || 'C';
+        if (isDisappearedComet(name, orbitType)) continue;
         const H0 = Number.isFinite(Number(r.H ?? r.H0)) ? Number(r.H ?? r.H0) : 10.0;
         const K0 = Number.isFinite(Number(r.G ?? r.K0)) ? Number(r.G ?? r.K0) : 4.0;
         const tpIso =
@@ -1162,6 +1209,7 @@ export function parseMpcCometRawText(rawText: string): MpcCometElement[] {
 
     const orbitTypeMatch = name.match(/^(\d+[PD]|[CPADI]\b)/i);
     const orbitType = orbitTypeMatch ? orbitTypeMatch[1].slice(-1).toUpperCase() : 'C';
+    if (isDisappearedComet(name, orbitType)) continue;
     const tpIso = `${year}-${String(month).padStart(2, '0')}-${String(Math.floor(day)).padStart(2, '0')}`;
     const epochIso =
       /^\d{8}$/.test(epochRaw)
@@ -1197,10 +1245,12 @@ function hydrateMpcCometsFromStorage() {
     if (!raw) return;
     const parsed = JSON.parse(raw) as StoredMpcCometBundle;
     if (!parsed || !Array.isArray(parsed.comets) || parsed.comets.length === 0) return;
-    effectiveCometElements = parsed.comets.map((c) => ({
-      ...c,
-      koName: resolveCometKoName(c.name, c.koName),
-    }));
+    effectiveCometElements = parsed.comets
+      .filter((c) => !isDisappearedComet(c.name, c.orbitType))
+      .map((c) => ({
+        ...c,
+        koName: resolveCometKoName(c.name, c.koName),
+      }));
     mpcCometSyncMeta = {
       ...parsed.meta,
       totalCount: effectiveCometElements.length,
@@ -1938,6 +1988,7 @@ export function getSolarSystemBodies(timestampMs: number): SolarSystemBody[] {
 
   // 4. Comets (Built-in notable comets + MPC Soft00Cmt.txt / CometEls.txt / cometels.json)
   for (const comet of effectiveCometElements) {
+    if (isDisappearedComet(comet.name, comet.orbitType)) continue;
     const dtDays = jd - comet.tpJd;
     const orb = solveCometOrbitalXY(dtDays, comet.q, comet.e);
     if (!orb || orb.r > 80) continue;
@@ -2037,6 +2088,8 @@ export function getSolarSystemBodies(timestampMs: number): SolarSystemBody[] {
       elongationDeg: Number(elong.toFixed(1)),
       tailPaDeg: Number(tailPaDeg.toFixed(1)),
       perihelionIso: comet.tpIso,
+      perihelionDeltaDays: Math.round(Math.abs(dtDays)),
+      cometOrbitType: comet.orbitType,
       eccentricity: Number(comet.e.toFixed(5)),
     });
   }

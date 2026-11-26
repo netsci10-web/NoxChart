@@ -73,6 +73,7 @@ import {
   getSolarSystemBodies,
   getSolarSystemDailyTrail,
   getSolarSystemOrbitTracks,
+  isCometVisibleByFilter,
 } from './solarSystem';
 
 export interface AsterismRenderContext {
@@ -3591,18 +3592,17 @@ function renderStarChartPass(
     const planetRenderer = getPlanetRenderer();
     ctx.save();
     for (const body of solarBodies) {
+      if (!isSolarGroupVisible(body.group)) continue;
       const isSelected = selected?.kind === 'planet' && selected.data.id === body.id;
-      if (!isSelected && !isSolarGroupVisible(body.group)) continue;
       const isPlanetaryMoon = body.group === 'moon' && body.id !== 'Moon';
       const isComet = body.group === 'comet';
       const isMinorBody = body.group === 'dwarf' || body.group === 'asteroid';
 
       // Visibility gating so wide-field views stay clean while zoomed/selected targets shine
       if (isPlanetaryMoon && !isSelected && view.fsz > 12) continue;
-      if (isComet && !isSelected) {
-        if (view.fsz > 65 && body.mag > Math.max(magLimit + 2.5, 11.5)) continue;
-        if (view.fsz > 18 && body.mag > Math.max(magLimit + 2.8, 14.0)) continue;
-        if (body.mag > Math.max(magLimit + 3.2, 18.0)) continue;
+      if (isComet) {
+        // Fast pre-check before computing horizon altitude
+        if (!isCometVisibleByFilter(body, layers)) continue;
       }
       if (isMinorBody && !isSelected) {
         const isMpcExtra = body.id.startsWith('MPC_');
@@ -3620,8 +3620,12 @@ function renderStarChartPass(
 
       let dimmed = false;
       let bodyExtAlpha = 1.0;
-      if (altFilterActive || extActive) {
+      const needCometAlt = isComet && (layers.cometHideBelowHorizon ?? false);
+      if (altFilterActive || extActive || needCometAlt) {
         const hz = equatorialToHorizontal(body.ra, body.dec, lstDeg, observer.lat);
+        if (needCometAlt && !isCometVisibleByFilter(body, layers, hz.altDeg)) {
+          continue;
+        }
         if (altFilterActive && hz.altDeg < observer.minAltitudeDeg) {
           if (!observer.highlightAboveMinAlt) continue;
           dimmed = true;
@@ -5043,7 +5047,10 @@ function renderStarChartPass(
   }
 
   // 11. Selection & Hover Reticles
-  if (selected && optics.showSelectionMark) {
+  const isSelectedSolarHidden =
+    selected?.kind === 'planet' &&
+    (!layers.showSolarSystem || !isSolarGroupVisible(selected.data.group));
+  if (selected && optics.showSelectionMark && !isSelectedSolarHidden) {
     const selPt = projectStereographic(selected.data.ra, selected.data.dec, proj, 30);
     if (selPt) {
       ctx.save();

@@ -893,6 +893,7 @@ async function createServer() {
 
       const orbitTypeMatch = name.match(/^(\d+[PD]|[CPADI]\b)/i);
       const orbitType = orbitTypeMatch ? orbitTypeMatch[1].slice(-1).toUpperCase() : 'C';
+      if (orbitType === 'D' || /^(?:\d+)?D\//i.test(name)) continue;
       const tpIso = `${year}-${String(month).padStart(2, '0')}-${String(Math.floor(day)).padStart(2, '0')}`;
       const epochIso =
         /^\d{8}$/.test(epochRaw)
@@ -956,6 +957,7 @@ async function createServer() {
       if (!Number.isFinite(tpJd)) continue;
       // For huge full-catalog JSON dumps, prioritize comets with perihelion within ±8 years or periodic
       const orbitType = String(r.Orbit_type || 'C').trim().toUpperCase() || 'C';
+      if (orbitType === 'D' || /^(?:\d+)?D\//i.test(name)) continue;
       if (Math.abs(tpJd - nowJd) > 365.25 * 10 && orbitType !== 'P') continue;
 
       const packedId = String(r.Provisional_packed_desig || r.Number || name).trim();
