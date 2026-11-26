@@ -101,6 +101,30 @@ export function sanitizeLayerSettings(
       fallback.showConstellationNames
     ),
     showSolarSystem: readBool(obj.showSolarSystem, fallback.showSolarSystem),
+    showSolarSun: readBool(
+      obj.showSolarSun,
+      typeof obj.showSolarSystem === 'boolean' ? obj.showSolarSystem : fallback.showSolarSun
+    ),
+    showSolarPlanets: readBool(
+      obj.showSolarPlanets,
+      typeof obj.showSolarSystem === 'boolean' ? obj.showSolarSystem : fallback.showSolarPlanets
+    ),
+    showSolarMoons: readBool(
+      obj.showSolarMoons,
+      typeof obj.showSolarSystem === 'boolean' ? obj.showSolarSystem : fallback.showSolarMoons
+    ),
+    showSolarDwarfs: readBool(
+      obj.showSolarDwarfs,
+      typeof obj.showSolarSystem === 'boolean' ? obj.showSolarSystem : fallback.showSolarDwarfs
+    ),
+    showSolarAsteroids: readBool(
+      obj.showSolarAsteroids,
+      typeof obj.showSolarSystem === 'boolean' ? obj.showSolarSystem : fallback.showSolarAsteroids
+    ),
+    showSolarComets: readBool(
+      obj.showSolarComets,
+      typeof obj.showSolarSystem === 'boolean' ? obj.showSolarSystem : fallback.showSolarComets
+    ),
     showPlanetSurface: readBool(obj.showPlanetSurface, fallback.showPlanetSurface),
     showSolarSystemOrbits: readBool(
       obj.showSolarSystemOrbits,
@@ -369,6 +393,12 @@ const RECOGNIZED_LAYER_KEYS: readonly string[] = [
   'showConstellationLines',
   'showConstellationNames',
   'showSolarSystem',
+  'showSolarSun',
+  'showSolarPlanets',
+  'showSolarMoons',
+  'showSolarDwarfs',
+  'showSolarAsteroids',
+  'showSolarComets',
   'showDoubleStars',
   'doubleStarSymbolOpacity',
   'doubleStarLabelOpacity',

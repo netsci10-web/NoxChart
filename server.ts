@@ -806,6 +806,303 @@ async function createServer() {
     });
   });
 
+  // IAU Minor Planet Center (MPC) Observable Comets (Soft00Cmt.txt / cometels.json.gz) live proxy
+  interface ParsedMpcComet {
+    id: string;
+    packedId: string;
+    name: string;
+    orbitType: string;
+    tpJd: number;
+    tpIso: string;
+    q: number;
+    e: number;
+    w0: number;
+    N0: number;
+    i0: number;
+    H0: number;
+    K0: number;
+    epochIso?: string;
+  }
+
+  let mpcCometCache: {
+    sourceUrl: string;
+    fetchedAt: number;
+    comets: ParsedMpcComet[];
+  } | null = null;
+
+  const gregorianDateToJd = (year: number, month: number, dayFloat: number): number => {
+    const intDay = Math.floor(dayFloat);
+    const fracDay = dayFloat - intDay;
+    const utcMs = Date.UTC(year, month - 1, intDay, 0, 0, 0);
+    return utcMs / 86400000 + 2440587.5 + fracDay;
+  };
+
+  const parseMpcCometText = (rawText: string): ParsedMpcComet[] => {
+    const lines = rawText.split(/\r?\n/);
+    const out: ParsedMpcComet[] = [];
+    const seenIds = new Set<string>();
+    for (const line of lines) {
+      if (line.length < 96) continue;
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
+
+      const packedId = line.slice(0, 12).trim();
+      const year = parseInt(line.slice(14, 18).trim(), 10);
+      const month = parseInt(line.slice(19, 21).trim(), 10);
+      const day = parseFloat(line.slice(22, 29).trim());
+      const q = parseFloat(line.slice(30, 39).trim());
+      const e = parseFloat(line.slice(41, 49).trim());
+      const w0 = parseFloat(line.slice(51, 59).trim());
+      const N0 = parseFloat(line.slice(61, 69).trim());
+      const i0 = parseFloat(line.slice(71, 79).trim());
+      const epochRaw = line.slice(81, 89).trim();
+      const H0Raw = parseFloat(line.slice(91, 95).trim());
+      const K0Raw = parseFloat(line.slice(96, 100).trim());
+      const nameRaw = line.length >= 103 ? line.slice(102, 158).trim() : '';
+
+      if (
+        !Number.isInteger(year) ||
+        !Number.isInteger(month) ||
+        month < 1 ||
+        month > 12 ||
+        !Number.isFinite(day) ||
+        day < 0 ||
+        day > 32 ||
+        !Number.isFinite(q) ||
+        q <= 0.001 ||
+        q > 100 ||
+        !Number.isFinite(e) ||
+        e < 0 ||
+        e > 15 ||
+        !Number.isFinite(w0) ||
+        !Number.isFinite(N0) ||
+        !Number.isFinite(i0)
+      ) {
+        continue;
+      }
+
+      const tpJd = gregorianDateToJd(year, month, day);
+      if (!Number.isFinite(tpJd)) continue;
+
+      const name = nameRaw || packedId;
+      if (!name) continue;
+      const slug = (packedId || name).replace(/[^A-Za-z0-9/_-]/g, '_');
+      const id = `COMET_${slug}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+
+      const orbitTypeMatch = name.match(/^(\d+[PD]|[CPADI]\b)/i);
+      const orbitType = orbitTypeMatch ? orbitTypeMatch[1].slice(-1).toUpperCase() : 'C';
+      const tpIso = `${year}-${String(month).padStart(2, '0')}-${String(Math.floor(day)).padStart(2, '0')}`;
+      const epochIso =
+        /^\d{8}$/.test(epochRaw)
+          ? `${epochRaw.slice(0, 4)}-${epochRaw.slice(4, 6)}-${epochRaw.slice(6, 8)}`
+          : undefined;
+
+      out.push({
+        id,
+        packedId: packedId || slug,
+        name,
+        orbitType,
+        tpJd,
+        tpIso,
+        q,
+        e,
+        w0,
+        N0,
+        i0,
+        H0: Number.isFinite(H0Raw) ? H0Raw : 10.0,
+        K0: Number.isFinite(K0Raw) ? K0Raw : 4.0,
+        epochIso,
+      });
+    }
+    return out;
+  };
+
+  const parseMpcCometJson = (rows: unknown[]): ParsedMpcComet[] => {
+    const out: ParsedMpcComet[] = [];
+    const seenIds = new Set<string>();
+    const nowJd = Date.now() / 86400000 + 2440587.5;
+    for (const row of rows) {
+      if (!row || typeof row !== 'object') continue;
+      const r = row as Record<string, unknown>;
+      const year = Number(r.Year_of_perihelion);
+      const month = Number(r.Month_of_perihelion);
+      const day = Number(r.Day_of_perihelion);
+      const q = Number(r.Perihelion_dist);
+      const e = Number(r.e);
+      const w0 = Number(r.Peri);
+      const N0 = Number(r.Node);
+      const i0 = Number(r.i);
+      const name = String(r.Designation_and_name || r.Name || '').trim();
+      if (
+        !name ||
+        !Number.isInteger(year) ||
+        !Number.isInteger(month) ||
+        month < 1 ||
+        month > 12 ||
+        !Number.isFinite(day) ||
+        !Number.isFinite(q) ||
+        q <= 0.001 ||
+        !Number.isFinite(e) ||
+        e < 0 ||
+        !Number.isFinite(w0) ||
+        !Number.isFinite(N0) ||
+        !Number.isFinite(i0)
+      ) {
+        continue;
+      }
+      const tpJd = gregorianDateToJd(year, month, day);
+      if (!Number.isFinite(tpJd)) continue;
+      // For huge full-catalog JSON dumps, prioritize comets with perihelion within ±8 years or periodic
+      const orbitType = String(r.Orbit_type || 'C').trim().toUpperCase() || 'C';
+      if (Math.abs(tpJd - nowJd) > 365.25 * 10 && orbitType !== 'P') continue;
+
+      const packedId = String(r.Provisional_packed_desig || r.Number || name).trim();
+      const slug = packedId.replace(/[^A-Za-z0-9/_-]/g, '_');
+      const id = `COMET_${slug}`;
+      if (seenIds.has(id)) continue;
+      seenIds.add(id);
+
+      const H0 = Number.isFinite(Number(r.H)) ? Number(r.H) : 10.0;
+      const K0 = Number.isFinite(Number(r.G)) ? Number(r.G) : 4.0;
+      const tpIso = `${year}-${String(month).padStart(2, '0')}-${String(Math.floor(day)).padStart(2, '0')}`;
+      out.push({
+        id,
+        packedId,
+        name,
+        orbitType,
+        tpJd,
+        tpIso,
+        q,
+        e,
+        w0,
+        N0,
+        i0,
+        H0,
+        K0,
+      });
+      if (out.length >= 900) break;
+    }
+    return out;
+  };
+
+  app.get('/api/mpc/comets', async (req, res) => {
+    const force = req.query.force === '1' || req.query.force === 'true';
+    const MPC_COMET_TTL_MS = 1000 * 60 * 60 * 6; // 6 hours
+    if (!force && mpcCometCache && Date.now() - mpcCometCache.fetchedAt < MPC_COMET_TTL_MS) {
+      res.setHeader('Cache-Control', 'no-store');
+      res.json({ ...mpcCometCache, count: mpcCometCache.comets.length, cached: true });
+      return;
+    }
+
+    const textCandidateUrls = [
+      'https://www.minorplanetcenter.net/iau/Ephemerides/Comets/Soft00Cmt.txt',
+      'https://minorplanetcenter.net/iau/Ephemerides/Comets/Soft00Cmt.txt',
+      'https://www.minorplanetcenter.net/iau/MPCORB/CometEls.txt',
+    ];
+
+    let comets: ParsedMpcComet[] = [];
+    let resolvedUrl = '';
+
+    for (const url of textCandidateUrls) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 14000);
+      try {
+        const upstream = await fetch(url, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: {
+            Accept: 'text/plain,*/*;q=0.8',
+            'User-Agent': 'NoxChart-StarAtlas/1.0 (+https://noxchart.app)',
+          },
+        });
+        clearTimeout(timer);
+        if (upstream.ok) {
+          const text = await upstream.text();
+          if (text.length > 120 && !text.trimStart().startsWith('<')) {
+            const parsed = parseMpcCometText(text);
+            if (parsed.length > 0) {
+              comets = parsed;
+              resolvedUrl = url;
+              break;
+            }
+          }
+        }
+      } catch {
+        clearTimeout(timer);
+      }
+    }
+
+    // Fallback: MPC official gzipped JSON dataset (cometels.json.gz)
+    if (comets.length === 0) {
+      const gzUrl = 'https://data.minorplanetcenter.net/data/cometels.json.gz';
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 16000);
+      try {
+        const upstream = await fetch(gzUrl, {
+          method: 'GET',
+          signal: controller.signal,
+          headers: {
+            Accept: 'application/gzip,application/json,*/*;q=0.8',
+            'User-Agent': 'NoxChart-StarAtlas/1.0 (+https://noxchart.app)',
+          },
+        });
+        clearTimeout(timer);
+        if (upstream.ok) {
+          const buf = Buffer.from(await upstream.arrayBuffer());
+          if (buf.length > 15 * 1024 * 1024) {
+            throw new Error('Upstream comet archive exceeds size limit');
+          }
+          const jsonText =
+            buf.length >= 2 && buf[0] === 0x1f && buf[1] === 0x8b
+              ? zlib.gunzipSync(buf).toString('utf-8')
+              : buf.toString('utf-8');
+          const rows = JSON.parse(jsonText);
+          if (Array.isArray(rows)) {
+            const parsed = parseMpcCometJson(rows);
+            if (parsed.length > 0) {
+              comets = parsed;
+              resolvedUrl = gzUrl;
+            }
+          }
+        }
+      } catch {
+        clearTimeout(timer);
+      }
+    }
+
+    if (comets.length === 0) {
+      if (mpcCometCache) {
+        res.setHeader('Cache-Control', 'no-store');
+        res.json({
+          ...mpcCometCache,
+          count: mpcCometCache.comets.length,
+          cached: true,
+          stale: true,
+        });
+        return;
+      }
+      res.status(502).json({
+        error: 'IAU MPC 서버에서 최신 혜성 궤도 목록(Soft00Cmt.txt)을 불러오지 못했습니다.',
+      });
+      return;
+    }
+
+    mpcCometCache = {
+      sourceUrl: resolvedUrl,
+      fetchedAt: Date.now(),
+      comets,
+    };
+
+    res.setHeader('Cache-Control', 'no-store');
+    res.json({
+      ...mpcCometCache,
+      count: comets.length,
+      cached: false,
+    });
+  });
+
   // Open API Geocoding proxy (OpenStreetMap Nominatim with Komoot Photon fallback)
   interface GeocodeResultItem {
     id: string;

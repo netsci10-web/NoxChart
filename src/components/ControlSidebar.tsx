@@ -148,11 +148,18 @@ import {
 import { CloudSyncStatus } from '../utils/cloudSync';
 import {
   clearMpcBrightAsteroids,
+  clearMpcComets,
+  getBuiltinCometCount,
   getMpcAsteroidSyncMeta,
+  getMpcCometSyncMeta,
   getSolarSystemBodies,
+  importMpcCometFileText,
   MpcAsteroidSyncMeta,
+  MpcCometSyncMeta,
   subscribeMpcAsteroids,
+  subscribeMpcComets,
   syncMpcBrightAsteroids,
+  syncMpcComets,
 } from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
 import { EquipmentLockerPanel } from './EquipmentLockerPanel';
@@ -195,7 +202,8 @@ const SOLAR_GROUP_RANK: Record<string, number> = {
   planet: 1,
   dwarf: 2,
   asteroid: 3,
-  moon: 4,
+  comet: 4,
+  moon: 5,
 };
 
 type GlobalSearchItem =
@@ -439,7 +447,7 @@ export function ControlSidebar({
   const [exploreSortDir, setExploreSortDir] = useState<ExploreSortDir>('asc');
   const [ngcIcFilter, setNgcIcFilter] = useState<'all' | 'ngc' | 'ic'>('all');
   const [solarGroupFilter, setSolarGroupFilter] = useState<
-    'all' | 'planet' | 'dwarf' | 'asteroid' | 'moon'
+    'all' | 'planet' | 'dwarf' | 'asteroid' | 'comet' | 'moon'
   >('all');
 
   const handleSelectExploreSort = (mode: ExploreSortMode) => {
@@ -946,11 +954,24 @@ export function ControlSidebar({
   const [mpcSyncing, setMpcSyncing] = useState(false);
   const [mpcStatusMsg, setMpcStatusMsg] = useState<{ text: string; isError?: boolean } | null>(null);
 
+  const [cometMeta, setCometMeta] = useState<MpcCometSyncMeta | null>(() => getMpcCometSyncMeta());
+  const [cometSyncing, setCometSyncing] = useState(false);
+  const [cometStatusMsg, setCometStatusMsg] = useState<{ text: string; isError?: boolean } | null>(null);
+  const cometFileInputRef = useRef<HTMLInputElement>(null);
+
   useEffect(() => {
-    return subscribeMpcAsteroids(() => {
+    const unsubAst = subscribeMpcAsteroids(() => {
       setMpcMeta(getMpcAsteroidSyncMeta());
       setMpcRev((r) => r + 1);
     });
+    const unsubCom = subscribeMpcComets(() => {
+      setCometMeta(getMpcCometSyncMeta());
+      setMpcRev((r) => r + 1);
+    });
+    return () => {
+      unsubAst();
+      unsubCom();
+    };
   }, []);
 
   const handleSyncMpcAsteroids = async () => {
@@ -977,6 +998,59 @@ export function ControlSidebar({
     clearMpcBrightAsteroids();
     setMpcMeta(null);
     setMpcStatusMsg({ text: '기본 내장 소행성 목록으로 복원했습니다.' });
+  };
+
+  const handleSyncMpcComets = async () => {
+    if (cometSyncing) return;
+    setCometSyncing(true);
+    setCometStatusMsg(null);
+    try {
+      const meta = await syncMpcComets(true);
+      setCometMeta(meta);
+      setCometStatusMsg({
+        text: `최신 혜성 ${meta.totalCount}개의 궤도 요소를 불러왔습니다.`,
+      });
+    } catch (err) {
+      setCometStatusMsg({
+        text: err instanceof Error ? err.message : 'MPC 혜성 목록 갱신에 실패했습니다.',
+        isError: true,
+      });
+    } finally {
+      setCometSyncing(false);
+    }
+  };
+
+  const handleImportCometFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (file.size > 12 * 1024 * 1024) {
+      setCometStatusMsg({
+        text: '파일 크기가 12MB를 초과합니다. Soft00Cmt.txt 또는 CometEls.txt 파일을 사용해 주세요.',
+        isError: true,
+      });
+      return;
+    }
+    setCometStatusMsg(null);
+    try {
+      const text = await file.text();
+      const meta = importMpcCometFileText(text, file.name);
+      setCometMeta(meta);
+      setCometStatusMsg({
+        text: `${file.name}에서 혜성 ${meta.totalCount}개를 불러왔습니다.`,
+      });
+    } catch (err) {
+      setCometStatusMsg({
+        text: err instanceof Error ? err.message : '혜성 궤도 파일을 불러오지 못했습니다.',
+        isError: true,
+      });
+    }
+  };
+
+  const handleResetMpcComets = () => {
+    clearMpcComets();
+    setCometMeta(null);
+    setCometStatusMsg({ text: `기본 내장 주요 혜성(${getBuiltinCometCount()}개)으로 복원했습니다.` });
   };
 
   // Stellarium-style tiered local star catalog manager (문서/noxchart + IndexedDB)
@@ -1096,7 +1170,7 @@ export function ControlSidebar({
     });
     const dir = exploreSortDir === 'asc' ? 1 : -1;
     if (exploreSort === 'default') {
-      if (solarGroupFilter === 'asteroid') {
+      if (solarGroupFilter === 'asteroid' || solarGroupFilter === 'comet') {
         return [...matched].sort((a, b) => a.mag - b.mag);
       }
       return matched;
@@ -2253,9 +2327,30 @@ export function ControlSidebar({
           : body.parentId === 'Saturn'
           ? 0.35
           : 0.9
+        : body.group === 'comet'
+        ? 8
         : body.group === 'dwarf' || body.group === 'asteroid'
         ? 10
         : 18;
+    onChangeLayers((p) => {
+      const subKey =
+        body.group === 'star'
+          ? 'showSolarSun'
+          : body.group === 'planet'
+          ? 'showSolarPlanets'
+          : body.group === 'moon'
+          ? 'showSolarMoons'
+          : body.group === 'dwarf'
+          ? 'showSolarDwarfs'
+          : body.group === 'asteroid'
+          ? 'showSolarAsteroids'
+          : body.group === 'comet'
+          ? 'showSolarComets'
+          : null;
+      if (!subKey) return p;
+      if (p.showSolarSystem && (p[subKey] ?? true)) return p;
+      return { ...p, showSolarSystem: true, [subKey]: true };
+    });
     onChangeView((p) => ({
       ...p,
       ra: ((body.ra / 15) % 24 + 24) % 24,
@@ -2621,13 +2716,14 @@ export function ControlSidebar({
 
           {/* Solar System Sub-Category Filter Chips */}
           {exploreCategory === 'solar' && (
-            <div className="grid grid-cols-5 gap-0.5 shrink-0">
+            <div className="grid grid-cols-3 gap-1 shrink-0">
               {(
                 [
                   { id: 'all', label: '전체' },
                   { id: 'planet', label: '행성' },
                   { id: 'dwarf', label: '왜행성' },
                   { id: 'asteroid', label: '소행성' },
+                  { id: 'comet', label: '혜성' },
                   { id: 'moon', label: '위성' },
                 ] as const
               ).map((chip) => (
@@ -3992,22 +4088,106 @@ export function ControlSidebar({
                 </span>
               </button>
 
-              {isSectionOpen('layers_solar') && (
+              {isSectionOpen('layers_solar') && (() => {
+                const solarSubs: {
+                  key:
+                    | 'showSolarSun'
+                    | 'showSolarPlanets'
+                    | 'showSolarMoons'
+                    | 'showSolarDwarfs'
+                    | 'showSolarAsteroids'
+                    | 'showSolarComets';
+                  label: string;
+                }[] = [
+                  { key: 'showSolarSun', label: '태양' },
+                  { key: 'showSolarPlanets', label: '행성' },
+                  { key: 'showSolarMoons', label: '달·위성' },
+                  { key: 'showSolarDwarfs', label: '왜소행성' },
+                  { key: 'showSolarAsteroids', label: '소행성' },
+                  { key: 'showSolarComets', label: '혜성' },
+                ];
+                const enabledCount = layers.showSolarSystem
+                  ? solarSubs.filter((s) => layers[s.key] ?? true).length
+                  : 0;
+                const allSolarSelected = enabledCount === solarSubs.length;
+                const partialSolarSelected = enabledCount > 0 && enabledCount < solarSubs.length;
+
+                return (
               <div className={`space-y-1.5 ${sectionBodyCls}`}>
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
-                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-                  태양계 천체
+                <span className={`flex items-center gap-1.5 whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                  <span>태양계 천체</span>
+                  {partialSolarSelected && (
+                    <span className={`font-mono text-[9px] tabular-nums ${ui.accentText}`}>
+                      ({enabledCount}/{solarSubs.length})
+                    </span>
+                  )}
                 </span>
                 <input
+                  ref={(el) => {
+                    if (el) el.indeterminate = partialSolarSelected;
+                  }}
                   type="checkbox"
-                  checked={layers.showSolarSystem}
-                  onChange={(e) =>
-                    onChangeLayers((p) => ({ ...p, showSolarSystem: e.target.checked }))
-                  }
+                  checked={allSolarSelected}
+                  onChange={() => {
+                    const nextAll = !allSolarSelected;
+                    onChangeLayers((p) => ({
+                      ...p,
+                      showSolarSystem: nextAll,
+                      showSolarSun: nextAll,
+                      showSolarPlanets: nextAll,
+                      showSolarMoons: nextAll,
+                      showSolarDwarfs: nextAll,
+                      showSolarAsteroids: nextAll,
+                      showSolarComets: nextAll,
+                    }));
+                  }}
                   className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
                 />
               </label>
+
+              <div className={`ml-1.5 pl-2.5 border-l ${ui.divider} grid grid-cols-2 gap-x-2.5 gap-y-1 py-0.5`}>
+                {solarSubs.map((sub) => {
+                  const subChecked = layers.showSolarSystem && (layers[sub.key] ?? true);
+                  return (
+                    <label
+                      key={sub.key}
+                      className="flex items-center justify-between gap-1 cursor-pointer text-[10.5px]"
+                    >
+                      <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                        {sub.label}
+                      </span>
+                      <input
+                        type="checkbox"
+                        checked={subChecked}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          onChangeLayers((p) => {
+                            const baseOn = p.showSolarSystem;
+                            const nextState = {
+                              showSolarSun: baseOn ? (p.showSolarSun ?? true) : false,
+                              showSolarPlanets: baseOn ? (p.showSolarPlanets ?? true) : false,
+                              showSolarMoons: baseOn ? (p.showSolarMoons ?? true) : false,
+                              showSolarDwarfs: baseOn ? (p.showSolarDwarfs ?? true) : false,
+                              showSolarAsteroids: baseOn ? (p.showSolarAsteroids ?? true) : false,
+                              showSolarComets: baseOn ? (p.showSolarComets ?? true) : false,
+                              [sub.key]: checked,
+                            };
+                            const anyOn = Object.values(nextState).some(Boolean);
+                            return {
+                              ...p,
+                              ...nextState,
+                              showSolarSystem: anyOn,
+                            };
+                          });
+                        }}
+                        className="w-3 h-3 shrink-0 accent-cyan-500"
+                      />
+                    </label>
+                  );
+                })}
+              </div>
 
               <label
                 className={`flex items-center justify-between gap-1.5 py-0.5 ${
@@ -4066,7 +4246,8 @@ export function ControlSidebar({
                 />
               </label>
               </div>
-              )}
+                );
+              })()}
             </div>
 
             {/* 2. 항성 (Stars) */}
@@ -8768,6 +8949,83 @@ export function ControlSidebar({
                 )}
               </div>
 
+              {/* IAU MPC Observable Comets (Soft00Cmt.txt / CometEls.txt / cometels.json) Update */}
+              <div className={`border rounded-md p-2.5 space-y-2 ${cardIdleCls}`}>
+                <div className="flex items-center justify-between gap-1.5">
+                  <div className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}>
+                    <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${cometSyncing ? 'animate-spin' : ''}`} />
+                    <span>MPC 최신 혜성 궤도 갱신</span>
+                  </div>
+                  <span className={`font-mono text-[9.5px] tabular-nums shrink-0 ${ui.accentText}`}>
+                    {cometMeta ? `${cometMeta.totalCount}개` : `기본 ${getBuiltinCometCount()}개`}
+                  </span>
+                </div>
+                <p className={`text-[10px] leading-relaxed break-keep ${ui.textMuted}`}>
+                  국제천문연맹 소행성센터(MPC)의 최신 혜성 궤도 요소(Soft00Cmt.txt)를 내려받거나 로컬 파일(CometEls.txt · cometels.json)을 불러와 성도에 혜성과 꼬리를 표시합니다.
+                </p>
+                <div className="flex items-center gap-1.5">
+                  <button
+                    type="button"
+                    disabled={cometSyncing}
+                    onClick={handleSyncMpcComets}
+                    className={`flex-1 py-1.5 px-2 border rounded text-[10.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer disabled:opacity-60 ${ui.buttonActive}`}
+                  >
+                    {cometSyncing ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                    ) : (
+                      <RefreshCw className="w-3 h-3 shrink-0" />
+                    )}
+                    <span>{cometSyncing ? 'MPC 혜성 내려받는 중...' : '최신 혜성 갱신'}</span>
+                  </button>
+                  <button
+                    type="button"
+                    disabled={cometSyncing}
+                    onClick={() => cometFileInputRef.current?.click()}
+                    title="Soft00Cmt.txt / CometEls.txt / cometels.json 파일 직접 불러오기"
+                    className={`py-1.5 px-2 border rounded text-[10px] font-medium flex items-center justify-center gap-1 shrink-0 cursor-pointer disabled:opacity-60 ${ui.buttonLoad}`}
+                  >
+                    <Upload className="w-3 h-3 shrink-0" />
+                    <span>파일</span>
+                  </button>
+                  {cometMeta && (
+                    <button
+                      type="button"
+                      disabled={cometSyncing}
+                      onClick={handleResetMpcComets}
+                      title="내장 기본 혜성 목록으로 복원"
+                      className={`py-1.5 px-2 border rounded text-[10px] font-medium flex items-center justify-center gap-1 shrink-0 cursor-pointer disabled:opacity-60 ${ui.buttonIdle}`}
+                    >
+                      <RotateCcw className="w-3 h-3 shrink-0" />
+                      <span>복원</span>
+                    </button>
+                  )}
+                </div>
+                {cometMeta && (
+                  <div className={`px-2 py-1.5 rounded border text-[9.5px] space-y-0.5 ${ui.panelMuted} ${ui.border}`}>
+                    <div className={`flex items-center justify-between gap-1 ${ui.textSecondary}`}>
+                      <span className="truncate">{cometMeta.sourceLabel}</span>
+                      <span className="font-mono tabular-nums shrink-0">{cometMeta.totalCount}개</span>
+                    </div>
+                    <div className={`font-mono tabular-nums text-[9px] ${ui.textMuted}`}>
+                      최근 갱신: {new Date(cometMeta.updatedAt).toLocaleString('ko-KR', { hour12: false })}
+                    </div>
+                  </div>
+                )}
+                {cometStatusMsg && (
+                  <div
+                    className={`text-[10px] leading-snug ${
+                      cometStatusMsg.isError
+                        ? theme === 'white'
+                          ? 'text-red-600'
+                          : 'text-red-400'
+                        : ui.accentText
+                    }`}
+                  >
+                    {cometStatusMsg.text}
+                  </div>
+                )}
+              </div>
+
               {/* Layer Settings File Backup & Reset */}
               <div className={`border rounded-md p-2.5 space-y-2 ${cardIdleCls}`}>
                 <div className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}>
@@ -8815,6 +9073,13 @@ export function ControlSidebar({
         })()}
       </div>
       )}
+      <input
+        ref={cometFileInputRef}
+        type="file"
+        accept=".txt,.json,text/plain,application/json"
+        onChange={handleImportCometFile}
+        className="hidden"
+      />
       <input
         ref={layerFileInputRef}
         type="file"

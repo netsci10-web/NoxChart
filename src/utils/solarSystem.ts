@@ -779,6 +779,636 @@ export function clearMpcBrightAsteroids(): void {
   notifyMpcSubscribers();
 }
 
+// ---------------------------------------------------------------------------
+// IAU Minor Planet Center (MPC) Comets: Built-in + Live Sync + File Import
+// Supports elliptic (e < 1), parabolic (e = 1), and hyperbolic (e > 1) orbits
+// via Universal Variable (Stumpff c2/c3) Kepler solver.
+// ---------------------------------------------------------------------------
+export interface MpcCometElement {
+  id: string;
+  packedId: string;
+  name: string;
+  koName?: string;
+  orbitType: string; // 'P' | 'C' | 'D' | 'A' | 'I'
+  tpJd: number; // Julian Date of perihelion passage (TT)
+  tpIso: string; // YYYY-MM-DD
+  q: number; // Perihelion distance (AU)
+  e: number; // Eccentricity (0..inf)
+  w0: number; // Argument of perihelion (deg, J2000)
+  N0: number; // Longitude of ascending node (deg, J2000)
+  i0: number; // Inclination (deg, J2000)
+  H0: number; // Absolute total magnitude (M1)
+  K0: number; // Slope parameter (K1 / n; mag = H0 + 5*log10(Δ) + 2.5*K0*log10(r))
+  epochIso?: string;
+}
+
+export interface MpcCometSyncMeta {
+  totalCount: number;
+  sourceLabel: string;
+  sourceUrl?: string;
+  updatedAt: number;
+  isLocalFile?: boolean;
+}
+
+interface StoredMpcCometBundle {
+  meta: MpcCometSyncMeta;
+  comets: MpcCometElement[];
+}
+
+const MPC_COMET_STORAGE_KEY = 'noxchart_mpc_comets_v1';
+const GAUSS_K = 0.01720209895; // Gaussian gravitational constant (rad/day)
+
+const KNOWN_COMET_KO_NAMES: Record<string, string> = {
+  '1P': '핼리 혜성 (1P/Halley)',
+  '2P': '엥케 혜성 (2P/Encke)',
+  '12P': '폰스-브룩스 혜성 (12P)',
+  '13P': '올베르스 혜성 (13P)',
+  '24P': '샤우마스 혜성 (24P)',
+  '29P': '슈바스만-바흐만 1 (29P)',
+  '62P': '쓰친산 1 혜성 (62P)',
+  '67P': '추류모프-게라시멘코 (67P)',
+  'C/2023 A3': '쯔진산-아틀라스 (C/2023 A3)',
+  'C/2024 G3': '아틀라스 혜성 (C/2024 G3)',
+  'C/2024 E1': '비에르즈호스 혜성 (C/2024 E1)',
+  'C/2025 A6': '레몬 혜성 (C/2025 A6)',
+  'C/2025 F2': '스완 혜성 (C/2025 F2)',
+  'C/2022 E3': 'ZTF 혜성 (C/2022 E3)',
+};
+
+function resolveCometKoName(name: string, explicitKo?: string): string {
+  if (explicitKo) return explicitKo;
+  const trimmed = name.trim();
+  const periodicMatch = trimmed.match(/^(\d+[PD])\b/i);
+  if (periodicMatch) {
+    const key = periodicMatch[1].toUpperCase();
+    if (KNOWN_COMET_KO_NAMES[key]) return KNOWN_COMET_KO_NAMES[key];
+  }
+  const desigMatch = trimmed.match(/^([CPADI]\/\d{4}\s+[A-Z]\d+)/i);
+  if (desigMatch) {
+    const key = desigMatch[1].toUpperCase().replace(/\s+/g, ' ');
+    if (KNOWN_COMET_KO_NAMES[key]) return KNOWN_COMET_KO_NAMES[key];
+  }
+  return trimmed;
+}
+
+// Curated notable periodic & recent bright comets (MPC J2000 elements) so comets work out of the box
+const BUILTIN_COMETS: MpcCometElement[] = [
+  {
+    id: 'COMET_0001P',
+    packedId: '0001P',
+    name: '1P/Halley',
+    koName: '핼리 혜성 (1P/Halley)',
+    orbitType: 'P',
+    tpJd: 2446467.395,
+    tpIso: '1986-02-05',
+    q: 0.585978,
+    e: 0.967143,
+    w0: 111.3325,
+    N0: 58.4201,
+    i0: 162.2627,
+    H0: 5.5,
+    K0: 3.2,
+  },
+  {
+    id: 'COMET_0002P',
+    packedId: '0002P',
+    name: '2P/Encke',
+    koName: '엥케 혜성 (2P/Encke)',
+    orbitType: 'P',
+    tpJd: 2461445.55,
+    tpIso: '2027-02-09',
+    q: 0.33968,
+    e: 0.84705,
+    w0: 187.224,
+    N0: 334.041,
+    i0: 11.345,
+    H0: 11.5,
+    K0: 6.0,
+  },
+  {
+    id: 'COMET_0012P',
+    packedId: '0012P',
+    name: '12P/Pons-Brooks',
+    koName: '폰스-브룩스 혜성 (12P)',
+    orbitType: 'P',
+    tpJd: 2460421.63,
+    tpIso: '2024-04-21',
+    q: 0.78079,
+    e: 0.95454,
+    w0: 198.986,
+    N0: 255.855,
+    i0: 74.191,
+    H0: 5.0,
+    K0: 3.2,
+  },
+  {
+    id: 'COMET_0024P',
+    packedId: '0024P',
+    name: '24P/Schaumasse',
+    koName: '샤우마스 혜성 (24P)',
+    orbitType: 'P',
+    tpJd: 2461048.55,
+    tpIso: '2026-01-08',
+    q: 1.1839,
+    e: 0.7052,
+    w0: 57.991,
+    N0: 79.354,
+    i0: 11.734,
+    H0: 9.0,
+    K0: 6.0,
+  },
+  {
+    id: 'COMET_0029P',
+    packedId: '0029P',
+    name: '29P/Schwassmann-Wachmann',
+    koName: '슈바스만-바흐만 1 (29P)',
+    orbitType: 'P',
+    tpJd: 2458599.2,
+    tpIso: '2019-04-25',
+    q: 5.7765,
+    e: 0.04317,
+    w0: 49.02,
+    N0: 312.39,
+    i0: 9.366,
+    H0: 5.5,
+    K0: 2.0,
+  },
+  {
+    id: 'COMET_CK23A030',
+    packedId: 'CK23A030',
+    name: 'C/2023 A3 (Tsuchinshan-ATLAS)',
+    koName: '쯔진산-아틀라스 (C/2023 A3)',
+    orbitType: 'C',
+    tpJd: 2460581.24,
+    tpIso: '2024-09-27',
+    q: 0.39140,
+    e: 1.00010,
+    w0: 308.491,
+    N0: 21.559,
+    i0: 139.115,
+    H0: 4.5,
+    K0: 3.4,
+  },
+  {
+    id: 'COMET_CK24G030',
+    packedId: 'CK24G030',
+    name: 'C/2024 G3 (ATLAS)',
+    koName: '아틀라스 혜성 (C/2024 G3)',
+    orbitType: 'C',
+    tpJd: 2460688.93,
+    tpIso: '2025-01-13',
+    q: 0.09354,
+    e: 0.99998,
+    w0: 108.124,
+    N0: 220.345,
+    i0: 116.847,
+    H0: 5.5,
+    K0: 3.5,
+  },
+  {
+    id: 'COMET_CK24E010',
+    packedId: 'CK24E010',
+    name: 'C/2024 E1 (Wierzchos)',
+    koName: '비에르즈호스 혜성 (C/2024 E1)',
+    orbitType: 'C',
+    tpJd: 2461061.22,
+    tpIso: '2026-01-20',
+    q: 0.5659,
+    e: 1.00018,
+    w0: 243.73,
+    N0: 108.08,
+    i0: 75.23,
+    H0: 6.5,
+    K0: 4.0,
+  },
+  {
+    id: 'COMET_CK25A060',
+    packedId: 'CK25A060',
+    name: 'C/2025 A6 (Lemmon)',
+    koName: '레몬 혜성 (C/2025 A6)',
+    orbitType: 'C',
+    tpJd: 2460987.6,
+    tpIso: '2025-11-08',
+    q: 0.5298,
+    e: 0.9956,
+    w0: 132.95,
+    N0: 108.11,
+    i0: 143.66,
+    H0: 7.0,
+    K0: 4.0,
+  },
+];
+
+let mpcCometSyncMeta: MpcCometSyncMeta | null = null;
+let effectiveCometElements: MpcCometElement[] = BUILTIN_COMETS;
+const mpcCometSubscribers = new Set<() => void>();
+
+const notifyMpcCometSubscribers = () => {
+  for (const fn of mpcCometSubscribers) {
+    try {
+      fn();
+    } catch {
+      // ignore subscriber errors
+    }
+  }
+  notifyMpcSubscribers();
+};
+
+function gregorianToJdClient(year: number, month: number, dayFloat: number): number {
+  const intDay = Math.floor(dayFloat);
+  const fracDay = dayFloat - intDay;
+  const utcMs = Date.UTC(year, month - 1, intDay, 0, 0, 0);
+  return utcMs / 86400000 + 2440587.5 + fracDay;
+}
+
+/**
+ * Parse MPC fixed-width comet text (Soft00Cmt.txt / CometEls.txt) or JSON array (cometels.json).
+ */
+export function parseMpcCometRawText(rawText: string): MpcCometElement[] {
+  const trimmedHead = rawText.trimStart();
+  if (!trimmedHead) return [];
+
+  // JSON format (cometels.json)
+  if (trimmedHead.startsWith('[') || trimmedHead.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(trimmedHead) as unknown;
+      const rows = Array.isArray(parsed)
+        ? parsed
+        : parsed && typeof parsed === 'object' && Array.isArray((parsed as { comets?: unknown[] }).comets)
+        ? (parsed as { comets: unknown[] }).comets
+        : [];
+      const out: MpcCometElement[] = [];
+      const seen = new Set<string>();
+      for (const row of rows) {
+        if (!row || typeof row !== 'object') continue;
+        const r = row as Record<string, unknown>;
+        const year = Number(r.Year_of_perihelion);
+        const month = Number(r.Month_of_perihelion);
+        const day = Number(r.Day_of_perihelion);
+        const q = Number(r.Perihelion_dist ?? r.q);
+        const e = Number(r.e);
+        const w0 = Number(r.Peri ?? r.w0);
+        const N0 = Number(r.Node ?? r.N0);
+        const i0 = Number(r.i ?? r.i0);
+        const name = String(r.Designation_and_name || r.name || r.Name || '').trim();
+        const tpJd = Number.isFinite(Number(r.tpJd))
+          ? Number(r.tpJd)
+          : Number.isInteger(year) && Number.isInteger(month) && Number.isFinite(day)
+          ? gregorianToJdClient(year, month, day)
+          : NaN;
+        if (
+          !name ||
+          !Number.isFinite(tpJd) ||
+          !Number.isFinite(q) ||
+          q <= 0.001 ||
+          !Number.isFinite(e) ||
+          e < 0 ||
+          !Number.isFinite(w0) ||
+          !Number.isFinite(N0) ||
+          !Number.isFinite(i0)
+        ) {
+          continue;
+        }
+        const packedId = String(r.Provisional_packed_desig || r.packedId || r.Number || name).trim();
+        const slug = packedId.replace(/[^A-Za-z0-9/_-]/g, '_');
+        const id = `COMET_${slug}`;
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const orbitType = String(r.Orbit_type || r.orbitType || 'C').trim().toUpperCase() || 'C';
+        const H0 = Number.isFinite(Number(r.H ?? r.H0)) ? Number(r.H ?? r.H0) : 10.0;
+        const K0 = Number.isFinite(Number(r.G ?? r.K0)) ? Number(r.G ?? r.K0) : 4.0;
+        const tpIso =
+          typeof r.tpIso === 'string' && r.tpIso
+            ? r.tpIso
+            : Number.isInteger(year) && Number.isInteger(month) && Number.isFinite(day)
+            ? `${year}-${String(month).padStart(2, '0')}-${String(Math.floor(day)).padStart(2, '0')}`
+            : '';
+        out.push({
+          id,
+          packedId,
+          name,
+          koName: resolveCometKoName(name),
+          orbitType,
+          tpJd,
+          tpIso,
+          q,
+          e,
+          w0,
+          N0,
+          i0,
+          H0,
+          K0,
+        });
+        if (out.length >= 1200) break;
+      }
+      return out;
+    } catch {
+      return [];
+    }
+  }
+
+  // MPC fixed-width text format (Soft00Cmt.txt / CometEls.txt)
+  const lines = rawText.split(/\r?\n/);
+  const out: MpcCometElement[] = [];
+  const seen = new Set<string>();
+  for (const line of lines) {
+    if (line.length < 96) continue;
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#') || trimmed.startsWith('-')) continue;
+
+    const packedId = line.slice(0, 12).trim();
+    const year = parseInt(line.slice(14, 18).trim(), 10);
+    const month = parseInt(line.slice(19, 21).trim(), 10);
+    const day = parseFloat(line.slice(22, 29).trim());
+    const q = parseFloat(line.slice(30, 39).trim());
+    const e = parseFloat(line.slice(41, 49).trim());
+    const w0 = parseFloat(line.slice(51, 59).trim());
+    const N0 = parseFloat(line.slice(61, 69).trim());
+    const i0 = parseFloat(line.slice(71, 79).trim());
+    const epochRaw = line.slice(81, 89).trim();
+    const H0Raw = parseFloat(line.slice(91, 95).trim());
+    const K0Raw = parseFloat(line.slice(96, 100).trim());
+    const nameRaw = line.length >= 103 ? line.slice(102, 158).trim() : '';
+
+    if (
+      !Number.isInteger(year) ||
+      !Number.isInteger(month) ||
+      month < 1 ||
+      month > 12 ||
+      !Number.isFinite(day) ||
+      day < 0 ||
+      day > 32 ||
+      !Number.isFinite(q) ||
+      q <= 0.001 ||
+      q > 100 ||
+      !Number.isFinite(e) ||
+      e < 0 ||
+      e > 15 ||
+      !Number.isFinite(w0) ||
+      !Number.isFinite(N0) ||
+      !Number.isFinite(i0)
+    ) {
+      continue;
+    }
+
+    const tpJd = gregorianToJdClient(year, month, day);
+    if (!Number.isFinite(tpJd)) continue;
+    const name = nameRaw || packedId;
+    if (!name) continue;
+    const slug = (packedId || name).replace(/[^A-Za-z0-9/_-]/g, '_');
+    const id = `COMET_${slug}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+
+    const orbitTypeMatch = name.match(/^(\d+[PD]|[CPADI]\b)/i);
+    const orbitType = orbitTypeMatch ? orbitTypeMatch[1].slice(-1).toUpperCase() : 'C';
+    const tpIso = `${year}-${String(month).padStart(2, '0')}-${String(Math.floor(day)).padStart(2, '0')}`;
+    const epochIso =
+      /^\d{8}$/.test(epochRaw)
+        ? `${epochRaw.slice(0, 4)}-${epochRaw.slice(4, 6)}-${epochRaw.slice(6, 8)}`
+        : undefined;
+
+    out.push({
+      id,
+      packedId: packedId || slug,
+      name,
+      koName: resolveCometKoName(name),
+      orbitType,
+      tpJd,
+      tpIso,
+      q,
+      e,
+      w0,
+      N0,
+      i0,
+      H0: Number.isFinite(H0Raw) ? H0Raw : 10.0,
+      K0: Number.isFinite(K0Raw) ? K0Raw : 4.0,
+      epochIso,
+    });
+    if (out.length >= 1200) break;
+  }
+  return out;
+}
+
+function hydrateMpcCometsFromStorage() {
+  if (typeof window === 'undefined') return;
+  try {
+    const raw = window.localStorage.getItem(MPC_COMET_STORAGE_KEY);
+    if (!raw) return;
+    const parsed = JSON.parse(raw) as StoredMpcCometBundle;
+    if (!parsed || !Array.isArray(parsed.comets) || parsed.comets.length === 0) return;
+    effectiveCometElements = parsed.comets.map((c) => ({
+      ...c,
+      koName: resolveCometKoName(c.name, c.koName),
+    }));
+    mpcCometSyncMeta = {
+      ...parsed.meta,
+      totalCount: effectiveCometElements.length,
+    };
+  } catch {
+    // Ignore corrupted storage
+  }
+}
+
+hydrateMpcCometsFromStorage();
+
+export function subscribeMpcComets(listener: () => void): () => void {
+  mpcCometSubscribers.add(listener);
+  return () => {
+    mpcCometSubscribers.delete(listener);
+  };
+}
+
+export function getMpcCometSyncMeta(): MpcCometSyncMeta | null {
+  return mpcCometSyncMeta;
+}
+
+export function getBuiltinCometCount(): number {
+  return BUILTIN_COMETS.length;
+}
+
+function persistCometBundle(comets: MpcCometElement[], meta: MpcCometSyncMeta) {
+  effectiveCometElements = comets.map((c) => ({
+    ...c,
+    koName: resolveCometKoName(c.name, c.koName),
+  }));
+  mpcCometSyncMeta = meta;
+  if (typeof window !== 'undefined') {
+    try {
+      const bundle: StoredMpcCometBundle = {
+        meta,
+        comets: effectiveCometElements,
+      };
+      window.localStorage.setItem(MPC_COMET_STORAGE_KEY, JSON.stringify(bundle));
+    } catch {
+      // Ignore storage quota errors
+    }
+  }
+  notifyMpcCometSubscribers();
+}
+
+export async function syncMpcComets(force = true): Promise<MpcCometSyncMeta> {
+  const res = await fetch(`/api/mpc/comets${force ? '?force=1' : ''}`, {
+    method: 'GET',
+    headers: { Accept: 'application/json' },
+  });
+  const ct = res.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) {
+    throw new Error(
+      '현재 호스팅 환경에서는 MPC 프록시 API를 사용할 수 없습니다. Soft00Cmt.txt 또는 CometEls.txt 파일을 직접 불러와 주세요.'
+    );
+  }
+  const payload = (await res.json().catch(() => ({}))) as {
+    error?: string;
+    sourceUrl?: string;
+    fetchedAt?: number;
+    comets?: MpcCometElement[];
+  };
+  if (!res.ok || !Array.isArray(payload.comets) || payload.comets.length === 0) {
+    throw new Error(
+      payload.error || 'MPC 최신 혜성 목록(Soft00Cmt.txt)을 불러오지 못했습니다.'
+    );
+  }
+
+  const isGz = Boolean(payload.sourceUrl && payload.sourceUrl.includes('cometels.json'));
+  const meta: MpcCometSyncMeta = {
+    totalCount: payload.comets.length,
+    sourceLabel: isGz ? 'MPC cometels.json.gz' : 'MPC Soft00Cmt.txt',
+    sourceUrl: payload.sourceUrl || '',
+    updatedAt: Date.now(),
+    isLocalFile: false,
+  };
+  persistCometBundle(payload.comets, meta);
+  return meta;
+}
+
+export function importMpcCometFileText(
+  rawText: string,
+  fileName = 'Soft00Cmt.txt'
+): MpcCometSyncMeta {
+  const parsed = parseMpcCometRawText(rawText);
+  if (parsed.length === 0) {
+    throw new Error(
+      '혜성 궤도 데이터를 해석하지 못했습니다. MPC Soft00Cmt.txt, CometEls.txt 또는 cometels.json 파일인지 확인해 주세요.'
+    );
+  }
+  const meta: MpcCometSyncMeta = {
+    totalCount: parsed.length,
+    sourceLabel: fileName,
+    updatedAt: Date.now(),
+    isLocalFile: true,
+  };
+  persistCometBundle(parsed, meta);
+  return meta;
+}
+
+export function clearMpcComets(): void {
+  effectiveCometElements = BUILTIN_COMETS;
+  mpcCometSyncMeta = null;
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.removeItem(MPC_COMET_STORAGE_KEY);
+    } catch {
+      // Ignore
+    }
+  }
+  notifyMpcCometSubscribers();
+}
+
+function stumpffC2C3(z: number): { c2: number; c3: number } {
+  if (z > 1e-5) {
+    const s = Math.sqrt(z);
+    return {
+      c2: (1 - Math.cos(s)) / z,
+      c3: (s - Math.sin(s)) / (s * z),
+    };
+  }
+  if (z < -1e-5) {
+    const s = Math.sqrt(-z);
+    return {
+      c2: (Math.cosh(s) - 1) / -z,
+      c3: (Math.sinh(s) - s) / (-z * s),
+    };
+  }
+  // Taylor series around z = 0 (exact for parabolic & near-parabolic)
+  return {
+    c2: 0.5 - z / 24 + (z * z) / 720 - (z * z * z) / 40320,
+    c3: 1 / 6 - z / 120 + (z * z) / 5040 - (z * z * z) / 362880,
+  };
+}
+
+/**
+ * Universal conic-section orbital plane coordinates (xOrb, yOrb, r) in AU
+ * from perihelion passage time dtDays = jd - tpJd, perihelion q (AU), eccentricity e.
+ * Handles elliptic (e < 1), parabolic (e = 1), and hyperbolic (e > 1) orbits smoothly.
+ */
+function solveCometOrbitalXY(
+  dtDays: number,
+  q: number,
+  e: number
+): { xOrb: number; yOrb: number; r: number } | null {
+  if (!Number.isFinite(dtDays) || !Number.isFinite(q) || q <= 0 || !Number.isFinite(e) || e < 0) {
+    return null;
+  }
+
+  // Fast elliptic reduction modulo orbital period when e < 0.995 so far-epoch periodic comets stay exact
+  if (e < 0.995) {
+    const a = q / (1 - e);
+    const nRadPerDay = GAUSS_K / Math.pow(a, 1.5);
+    const twoPi = Math.PI * 2;
+    let M = (nRadPerDay * dtDays) % twoPi;
+    if (M > Math.PI) M -= twoPi;
+    if (M < -Math.PI) M += twoPi;
+
+    let E = M + e * Math.sin(M) * (1 + e * Math.cos(M));
+    for (let iter = 0; iter < 12; iter++) {
+      const f = E - e * Math.sin(E) - M;
+      const fp = 1 - e * Math.cos(E);
+      const dE = f / fp;
+      E -= dE;
+      if (Math.abs(dE) < 1e-9) break;
+    }
+    const xOrb = a * (Math.cos(E) - e);
+    const yOrb = a * Math.sqrt(Math.max(0, 1 - e * e)) * Math.sin(E);
+    const r = Math.hypot(xOrb, yOrb);
+    return { xOrb, yOrb, r };
+  }
+
+  // Universal variable (Stumpff) solver for near-parabolic (e ≈ 1), exact parabolic (e = 1), and hyperbolic (e > 1)
+  const alpha = (1 - e) / q;
+  const target = GAUSS_K * dtDays;
+
+  // Exact Barker cubic seed (exact for e = 1, excellent initial guess for e ≈ 1 and e > 1)
+  const W = (1.5 * target) / (Math.SQRT2 * Math.pow(q, 1.5));
+  const Y = Math.cbrt(W + Math.sqrt(W * W + 1));
+  const sBarker = Y - 1 / Y;
+  let chi = Math.sqrt(2 * q) * sBarker;
+
+  for (let iter = 0; iter < 18; iter++) {
+    const z = alpha * chi * chi;
+    // Clamp extreme hyperbolic z to prevent cosh/sinh overflow on ancient/distant comets
+    if (z < -600) return null;
+    const { c2, c3 } = stumpffC2C3(z);
+    const f = q * chi + e * chi * chi * chi * c3 - target;
+    const fp = q + e * chi * chi * c2;
+    if (!Number.isFinite(f) || !Number.isFinite(fp) || fp <= 1e-12) break;
+    const dChi = f / fp;
+    chi -= dChi;
+    if (Math.abs(dChi) < 1e-8) break;
+  }
+
+  const z = alpha * chi * chi;
+  if (!Number.isFinite(z) || z < -600) return null;
+  const { c2, c3 } = stumpffC2C3(z);
+  const xOrb = q - chi * chi * c2;
+  const yOrb = Math.sqrt(q * (1 + e)) * chi * (1 - z * c3);
+  const r = Math.hypot(xOrb, yOrb);
+  if (!Number.isFinite(xOrb) || !Number.isFinite(yOrb) || !Number.isFinite(r) || r <= 0) {
+    return null;
+  }
+  return { xOrb, yOrb, r };
+}
+
 interface PlanetaryMoonDef {
   id: string;
   name: string;
@@ -1304,6 +1934,111 @@ export function getSolarSystemBodies(timestampMs: number): SolarSystemBody[] {
         });
       }
     }
+  }
+
+  // 4. Comets (Built-in notable comets + MPC Soft00Cmt.txt / CometEls.txt / cometels.json)
+  for (const comet of effectiveCometElements) {
+    const dtDays = jd - comet.tpJd;
+    const orb = solveCometOrbitalXY(dtDays, comet.q, comet.e);
+    if (!orb || orb.r > 80) continue;
+
+    const NRad = comet.N0 * DEG2RAD;
+    const iRad = comet.i0 * DEG2RAD;
+    const wRad = comet.w0 * DEG2RAD;
+    const cosN = Math.cos(NRad);
+    const sinN = Math.sin(NRad);
+    const cosI = Math.cos(iRad);
+    const sinI = Math.sin(iRad);
+    const cosW = Math.cos(wRad);
+    const sinW = Math.sin(wRad);
+
+    const Px = cosN * cosW - sinN * sinW * cosI;
+    const Py = sinN * cosW + cosN * sinW * cosI;
+    const Pz = sinW * sinI;
+    const Qx = -cosN * sinW - sinN * cosW * cosI;
+    const Qy = -sinN * sinW + cosN * cosW * cosI;
+    const Qz = cosW * sinI;
+
+    const xh = Px * orb.xOrb + Qx * orb.yOrb;
+    const yh = Py * orb.xOrb + Qy * orb.yOrb;
+    const zh = Pz * orb.xOrb + Qz * orb.yOrb;
+
+    const xg = xh + xs;
+    const yg = yh + ys;
+    const zg = zh;
+    const distAu = Math.hypot(xg, yg, zg);
+    if (!Number.isFinite(distAu) || distAu < 0.002) continue;
+
+    const lonGeo = norm360(Math.atan2(yg, xg) * RAD2DEG);
+    const latGeo = Math.atan2(zg, Math.hypot(xg, yg)) * RAD2DEG;
+    const eq = eclipticToEquatorial(lonGeo, latGeo, ecl);
+
+    // 3D anti-solar tail direction on sky (project a step radially outward from Sun)
+    const tailStep = 0.05 / Math.max(0.1, orb.r);
+    const xgt = xh * (1 + tailStep) + xs;
+    const ygt = yh * (1 + tailStep) + ys;
+    const zgt = zh * (1 + tailStep);
+    const eqTail = eclipticToEquatorial(
+      norm360(Math.atan2(ygt, xgt) * RAD2DEG),
+      Math.atan2(zgt, Math.hypot(xgt, ygt)) * RAD2DEG,
+      ecl
+    );
+    const ra1 = eq.ra * DEG2RAD;
+    const dec1 = eq.dec * DEG2RAD;
+    const ra2 = eqTail.ra * DEG2RAD;
+    const dec2 = eqTail.dec * DEG2RAD;
+    const dRa = ra2 - ra1;
+    const tailPaDeg = norm360(
+      Math.atan2(
+        Math.sin(dRa) * Math.cos(dec2),
+        Math.cos(dec1) * Math.sin(dec2) - Math.sin(dec1) * Math.cos(dec2) * Math.cos(dRa)
+      ) * RAD2DEG
+    );
+
+    const cosFv = Math.max(
+      -1,
+      Math.min(1, (orb.r * orb.r + distAu * distAu - rSun * rSun) / (2 * orb.r * distAu))
+    );
+    const phasePct = Math.round(((1 + cosFv) / 2) * 100);
+    const cosElong = Math.max(
+      -1,
+      Math.min(1, (rSun * rSun + distAu * distAu - orb.r * orb.r) / (2 * rSun * distAu))
+    );
+    const elong = Math.acos(cosElong) * RAD2DEG;
+
+    // Standard MPC total comet visual magnitude: m1 = H + 5*log10(Δ) + 2.5*K*log10(r)
+    const magRaw =
+      comet.H0 +
+      5 * Math.log10(Math.max(0.01, distAu)) +
+      2.5 * comet.K0 * Math.log10(Math.max(0.05, orb.r));
+    const mag = Math.max(-5, Math.min(28, Number.isFinite(magRaw) ? magRaw : 18));
+
+    const orbitLabel =
+      comet.orbitType === 'P'
+        ? '주기혜성'
+        : comet.e > 1.0005
+        ? '쌍곡선 혜성'
+        : '장주기 혜성';
+
+    bodies.push({
+      id: comet.id,
+      name: comet.name,
+      koName: resolveCometKoName(comet.name, comet.koName),
+      symbol: '☄',
+      color: '#67E8F9',
+      group: 'comet',
+      category: `혜성 (${orbitLabel})`,
+      ra: eq.ra,
+      dec: eq.dec,
+      mag: Number(mag.toFixed(1)),
+      distAu: Number(distAu.toFixed(3)),
+      helioDistAu: Number(orb.r.toFixed(3)),
+      phasePct,
+      elongationDeg: Number(elong.toFixed(1)),
+      tailPaDeg: Number(tailPaDeg.toFixed(1)),
+      perihelionIso: comet.tpIso,
+      eccentricity: Number(comet.e.toFixed(5)),
+    });
   }
 
   return bodies;

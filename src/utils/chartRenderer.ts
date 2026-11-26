@@ -3312,13 +3312,23 @@ function renderStarChartPass(
     }
   }
 
-  // 8b. Solar System Bodies (Sun, Moon, Mercury–Neptune) at real observation time
+  // 8b. Solar System Bodies (Sun, Moon, Mercury–Neptune, Dwarfs, Asteroids, Comets) at real observation time
+  const isSolarGroupVisible = (group: string): boolean => {
+    if (group === 'star') return layers.showSolarSun ?? true;
+    if (group === 'planet') return layers.showSolarPlanets ?? true;
+    if (group === 'moon') return layers.showSolarMoons ?? true;
+    if (group === 'dwarf') return layers.showSolarDwarfs ?? true;
+    if (group === 'asteroid') return layers.showSolarAsteroids ?? true;
+    if (group === 'comet') return layers.showSolarComets ?? true;
+    return true;
+  };
   if (layers.showSolarSystem) {
     // 8b-0. Optional apparent geocentric orbital paths for Sun, Moon, Planets, and Moons
     if (layers.showSolarSystemOrbits) {
       const orbitTracks = getSolarSystemOrbitTracks(obsTimeMs);
       ctx.save();
       for (const track of orbitTracks) {
+        if (!isSolarGroupVisible(track.group)) continue;
         if (track.isPlanetaryMoon && view.fsz > 5.0) continue;
         const isSelOrbit = selected?.kind === 'planet' && selected.data.id === track.id;
         const orbitColor =
@@ -3582,11 +3592,18 @@ function renderStarChartPass(
     ctx.save();
     for (const body of solarBodies) {
       const isSelected = selected?.kind === 'planet' && selected.data.id === body.id;
+      if (!isSelected && !isSolarGroupVisible(body.group)) continue;
       const isPlanetaryMoon = body.group === 'moon' && body.id !== 'Moon';
+      const isComet = body.group === 'comet';
       const isMinorBody = body.group === 'dwarf' || body.group === 'asteroid';
 
       // Visibility gating so wide-field views stay clean while zoomed/selected targets shine
       if (isPlanetaryMoon && !isSelected && view.fsz > 12) continue;
+      if (isComet && !isSelected) {
+        if (view.fsz > 65 && body.mag > Math.max(magLimit + 2.5, 11.5)) continue;
+        if (view.fsz > 18 && body.mag > Math.max(magLimit + 2.8, 14.0)) continue;
+        if (body.mag > Math.max(magLimit + 3.2, 18.0)) continue;
+      }
       if (isMinorBody && !isSelected) {
         const isMpcExtra = body.id.startsWith('MPC_');
         if (isMpcExtra) {
@@ -3661,15 +3678,17 @@ function renderStarChartPass(
           ? 5.0
           : isPlanetaryMoon
           ? 2.6
+          : isComet
+          ? Math.max(3.4, Math.min(6.2, 5.8 - Math.max(0, body.mag - 4) * 0.22))
           : isMinorBody
           ? 3.4
           : 4.0;
 
       const maxDiskR = Math.min(width, height) * 0.46;
       const baseR =
-        layers.showPlanetSurface && !isMinorBody
+        layers.showPlanetSurface && !isMinorBody && !isComet
           ? Math.min(maxDiskR, Math.max(minIconR, trueRadiusPx))
-          : minIconR * (isMinorBody || isPlanetaryMoon ? 1.0 : 0.85);
+          : minIconR * (isMinorBody || isPlanetaryMoon || isComet ? 1.0 : 0.85);
 
       const fillColor =
         theme === 'red'
@@ -3681,12 +3700,100 @@ function renderStarChartPass(
             ? '#7C3AED'
             : body.group === 'asteroid'
             ? '#047857'
+            : body.group === 'comet'
+            ? '#0E7490'
             : '#1D4ED8'
           : body.color;
 
       ctx.globalAlpha = (dimmed ? 0.2 : 1.0) * bodyExtAlpha;
 
-      if (isMinorBody) {
+      if (isComet) {
+        // Comet coma glow + nucleus + anti-solar tail oriented along true sky PA
+        ctx.save();
+        const epsDeg = Math.min(0.12, Math.max(0.002, view.fsz * 0.006));
+        const pN = projectStereographic(body.ra, Math.min(89.95, body.dec + epsDeg), proj, projMargin + 40);
+        const cosDecSafe = Math.max(0.12, Math.cos(body.dec * DEG2RAD));
+        const pE = projectStereographic(
+          ((body.ra + epsDeg / cosDecSafe) % 360 + 360) % 360,
+          body.dec,
+          proj,
+          projMargin + 40
+        );
+        let tailUx = 0.72;
+        let tailUy = -0.69;
+        if (pN && pE && body.tailPaDeg !== undefined) {
+          const nx = pN.x - pt.x;
+          const ny = pN.y - pt.y;
+          const nLen = Math.hypot(nx, ny) || 1;
+          const ex = pE.x - pt.x;
+          const ey = pE.y - pt.y;
+          const eLen = Math.hypot(ex, ey) || 1;
+          const paRad = body.tailPaDeg * DEG2RAD;
+          const tx = (nx / nLen) * Math.cos(paRad) + (ex / eLen) * Math.sin(paRad);
+          const ty = (ny / nLen) * Math.cos(paRad) + (ey / eLen) * Math.sin(paRad);
+          const tLen = Math.hypot(tx, ty) || 1;
+          tailUx = tx / tLen;
+          tailUy = ty / tLen;
+        }
+
+        const brightnessFactor = Math.max(0.35, Math.min(1.6, (14 - body.mag) / 8));
+        const tailLen = Math.max(12, Math.min(34, (14 + brightnessFactor * 12) * (isSelected ? 1.25 : 1)));
+        const comaR = Math.max(4.5, baseR * 1.45);
+        const tailEndX = pt.x + tailUx * tailLen;
+        const tailEndY = pt.y + tailUy * tailLen;
+        const perpX = -tailUy;
+        const perpY = tailUx;
+        const spread = Math.max(3.2, comaR * 0.85);
+
+        // Translucent wedge tail fading away from nucleus
+        const tailGrad = ctx.createLinearGradient(pt.x, pt.y, tailEndX, tailEndY);
+        if (theme === 'red') {
+          tailGrad.addColorStop(0, 'rgba(239, 68, 68, 0.52)');
+          tailGrad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+        } else if (theme === 'white') {
+          tailGrad.addColorStop(0, 'rgba(14, 116, 144, 0.42)');
+          tailGrad.addColorStop(1, 'rgba(14, 116, 144, 0)');
+        } else {
+          tailGrad.addColorStop(0, 'rgba(103, 232, 249, 0.56)');
+          tailGrad.addColorStop(0.55, 'rgba(56, 189, 248, 0.22)');
+          tailGrad.addColorStop(1, 'rgba(56, 189, 248, 0)');
+        }
+        ctx.fillStyle = tailGrad;
+        ctx.beginPath();
+        ctx.moveTo(pt.x + perpX * (baseR * 0.35), pt.y + perpY * (baseR * 0.35));
+        ctx.lineTo(tailEndX + perpX * spread, tailEndY + perpY * spread);
+        ctx.lineTo(tailEndX - perpX * spread, tailEndY - perpY * spread);
+        ctx.lineTo(pt.x - perpX * (baseR * 0.35), pt.y - perpY * (baseR * 0.35));
+        ctx.closePath();
+        ctx.fill();
+
+        // Fuzzy glowing coma
+        const comaGrad = ctx.createRadialGradient(pt.x, pt.y, 0.6, pt.x, pt.y, comaR);
+        if (theme === 'red') {
+          comaGrad.addColorStop(0, 'rgba(252, 165, 165, 0.95)');
+          comaGrad.addColorStop(0.45, 'rgba(239, 68, 68, 0.55)');
+          comaGrad.addColorStop(1, 'rgba(239, 68, 68, 0)');
+        } else if (theme === 'white') {
+          comaGrad.addColorStop(0, 'rgba(14, 116, 144, 0.92)');
+          comaGrad.addColorStop(0.5, 'rgba(14, 116, 144, 0.32)');
+          comaGrad.addColorStop(1, 'rgba(14, 116, 144, 0)');
+        } else {
+          comaGrad.addColorStop(0, 'rgba(240, 253, 255, 0.98)');
+          comaGrad.addColorStop(0.42, 'rgba(103, 232, 249, 0.58)');
+          comaGrad.addColorStop(1, 'rgba(103, 232, 249, 0)');
+        }
+        ctx.fillStyle = comaGrad;
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, comaR, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Crisp nucleus dot
+        ctx.fillStyle = theme === 'white' ? '#0E7490' : theme === 'red' ? '#FCA5A5' : '#ECFEFF';
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, isSelected ? 2.1 : 1.6, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.restore();
+      } else if (isMinorBody) {
         // Distinct diamond reticle + core for Dwarf Planets & Asteroids
         const dr = baseR + 1.4;
         ctx.save();
@@ -4072,7 +4179,7 @@ function renderStarChartPass(
         x: pt.x,
         y: pt.y,
         radius: Math.max(isPlanetaryMoon ? 7 : 10, baseR + 4),
-        mag: isMinorBody || isPlanetaryMoon ? body.mag : Math.min(body.mag, -3),
+        mag: isMinorBody || isComet || isPlanetaryMoon ? body.mag : Math.min(body.mag, -3),
         item: { kind: 'planet', data: body },
       });
 
@@ -4082,11 +4189,15 @@ function renderStarChartPass(
           theme === 'red'
             ? '#EF4444'
             : theme === 'white'
-            ? '#0F172A'
+            ? body.group === 'comet'
+              ? '#0E7490'
+              : '#0F172A'
             : body.group === 'dwarf'
             ? '#D8B4FE'
             : body.group === 'asteroid'
             ? '#6EE7B7'
+            : body.group === 'comet'
+            ? '#67E8F9'
             : isPlanetaryMoon
             ? '#E2E8F0'
             : '#FDE68A';
@@ -4098,7 +4209,7 @@ function renderStarChartPass(
           radius: baseR + 3,
           color: labelColor,
           font:
-            isMinorBody || isPlanetaryMoon
+            isMinorBody || isComet || isPlanetaryMoon
               ? '500 10px "Pretendard", "IBM Plex Sans", sans-serif'
               : '600 11px "Pretendard", "IBM Plex Sans", sans-serif',
         });

@@ -121,6 +121,12 @@ export interface LayerSettings {
   showConstellationBoundaries: boolean;
   showConstellationNames: boolean;
   showSolarSystem: boolean;
+  showSolarSun: boolean;
+  showSolarPlanets: boolean;
+  showSolarMoons: boolean;
+  showSolarDwarfs: boolean;
+  showSolarAsteroids: boolean;
+  showSolarComets: boolean;
   showPlanetSurface: boolean;
   showSolarSystemOrbits: boolean;
   showSolarSystemLabels: boolean;
@@ -246,7 +252,7 @@ export interface ObserverConfig {
   bortleClass: number; // 1..9 보틀 등급 (현재 관측지 기준 자동 설정 + 수동 조정 가능)
 }
 
-export type SolarSystemGroup = 'star' | 'planet' | 'dwarf' | 'asteroid' | 'moon';
+export type SolarSystemGroup = 'star' | 'planet' | 'dwarf' | 'asteroid' | 'comet' | 'moon';
 
 export interface SolarSystemBody {
   id: string;
@@ -263,6 +269,10 @@ export interface SolarSystemBody {
   distAu: number; // Geocentric distance in AU
   phasePct: number; // Illuminated fraction 0..100
   elongationDeg: number; // Solar elongation in degrees
+  helioDistAu?: number; // Heliocentric distance in AU (comets)
+  tailPaDeg?: number; // Anti-solar comet tail position angle on sky (0..360°, N through E)
+  perihelionIso?: string; // Perihelion passage date YYYY-MM-DD (comets)
+  eccentricity?: number; // Orbital eccentricity e (comets)
 }
 
 export type SelectedItem =

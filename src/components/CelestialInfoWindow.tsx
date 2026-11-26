@@ -1124,6 +1124,43 @@ export function CelestialInfoWindow({
                   {selected.data.phasePct}% · {selected.data.elongationDeg.toFixed(1)}°
                 </span>
               </div>
+              {selected.data.group === 'comet' && (
+                <>
+                  {selected.data.helioDistAu !== undefined && (
+                    <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+                      <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
+                        태양 거리 (r)
+                      </span>
+                      <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
+                        {selected.data.helioDistAu.toFixed(3)} AU
+                      </span>
+                    </div>
+                  )}
+                  {selected.data.perihelionIso && (
+                    <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+                      <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
+                        근일점 통과
+                      </span>
+                      <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
+                        {selected.data.perihelionIso}
+                      </span>
+                    </div>
+                  )}
+                  {selected.data.eccentricity !== undefined && (
+                    <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+                      <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
+                        이심률 / 꼬리 PA
+                      </span>
+                      <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
+                        e={selected.data.eccentricity.toFixed(4)}
+                        {selected.data.tailPaDeg !== undefined
+                          ? ` · PA ${selected.data.tailPaDeg.toFixed(0)}°`
+                          : ''}
+                      </span>
+                    </div>
+                  )}
+                </>
+              )}
               {selectedPlanetPhys && (
                 <div className="flex items-center justify-between gap-1 px-2 py-1.5">
                   <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>

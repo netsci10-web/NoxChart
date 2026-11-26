@@ -303,6 +303,12 @@ const DEFAULT_LAYERS: LayerSettings = {
   showConstellationBoundaries: false,
   showConstellationNames: true,
   showSolarSystem: true,
+  showSolarSun: true,
+  showSolarPlanets: true,
+  showSolarMoons: true,
+  showSolarDwarfs: true,
+  showSolarAsteroids: true,
+  showSolarComets: true,
   showPlanetSurface: true,
   showSolarSystemOrbits: false,
   showSolarSystemLabels: true,
@@ -899,6 +905,12 @@ export default function App() {
       ...(tempHiddenLayers.solar
         ? {
             showSolarSystem: false,
+            showSolarSun: false,
+            showSolarPlanets: false,
+            showSolarMoons: false,
+            showSolarDwarfs: false,
+            showSolarAsteroids: false,
+            showSolarComets: false,
             showPlanetSurface: false,
             showSolarSystemOrbits: false,
             showSolarSystemLabels: false,
@@ -2934,7 +2946,24 @@ export default function App() {
       const next = { ...cur, [bodyId]: startMs };
       solarTrailsRef.current = next;
       setSolarTrails(next);
-      setLayers((l) => (l.showSolarSystem ? l : { ...l, showSolarSystem: true }));
+      setLayers((l) => {
+        const body = getSolarSystemBodies(startMs).find((b) => b.id === bodyId);
+        const groupPatch: Partial<LayerSettings> =
+          body?.group === 'star'
+            ? { showSolarSun: true }
+            : body?.group === 'planet'
+            ? { showSolarPlanets: true }
+            : body?.group === 'moon'
+            ? { showSolarMoons: true }
+            : body?.group === 'dwarf'
+            ? { showSolarDwarfs: true }
+            : body?.group === 'asteroid'
+            ? { showSolarAsteroids: true }
+            : body?.group === 'comet'
+            ? { showSolarComets: true }
+            : {};
+        return { ...l, showSolarSystem: true, ...groupPatch };
+      });
 
       const trail = getSolarSystemDailyTrail(bodyId, startMs, 10);
       if (trail) {
@@ -5203,6 +5232,12 @@ export default function App() {
       showConstellationBoundaries: false,
       showConstellationNames: false,
       showSolarSystem: true,
+      showSolarSun: true,
+      showSolarPlanets: true,
+      showSolarMoons: true,
+      showSolarDwarfs: true,
+      showSolarAsteroids: true,
+      showSolarComets: true,
       showPlanetSurface: true,
       showSolarSystemLabels: true,
       showSolarSystemOrbits: false,
