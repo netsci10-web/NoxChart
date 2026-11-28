@@ -57,6 +57,7 @@ import {
   DEG2RAD,
   equatorialToHorizontal,
   formatAngularDistanceDMS,
+  formatCardinalLabel,
   formatDec,
   formatRA,
   getCompassDirection,
@@ -64,6 +65,7 @@ import {
   getHorizonSensorScreenAngleDeg,
   getLSTDeg,
   getStereographicRadiusPx,
+  positionAngleDeg,
   projectStereographic,
   RAD2DEG,
   unprojectStereographic,
@@ -599,9 +601,21 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       magLimit: number;
       dsoMagLimit: number;
       stars: number;
+      gaiaStars: number;
       dsos: number;
+      doubles: number;
+      solar: number;
       northAngleDeg: number;
-    }>({ magLimit: 6.2, dsoMagLimit: 9.7, stars: 0, dsos: 0, northAngleDeg: 0 });
+    }>({
+      magLimit: 6.2,
+      dsoMagLimit: 9.7,
+      stars: 0,
+      gaiaStars: 0,
+      dsos: 0,
+      doubles: 0,
+      solar: 0,
+      northAngleDeg: 0,
+    });
     const [planetTexRev, setPlanetTexRev] = useState(0);
     const [mpcCatalogRev, setMpcCatalogRev] = useState(0);
     useEffect(() => {
@@ -1095,6 +1109,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           showHorizon: false,
           showTerrain: false,
           showEcliptic: false,
+          showCelestialPoles: false,
           showMilkyWay: false,
           showNebulaContours: false,
           showConstellationLines: false,
@@ -1393,7 +1408,10 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           magLimit: result.magLimit,
           dsoMagLimit: result.dsoMagLimit,
           stars: result.visibleStarCount,
+          gaiaStars: result.visibleGaiaCount,
           dsos: result.visibleDsoCount,
+          doubles: result.visibleDoubleCount,
+          solar: result.visibleSolarCount,
           northAngleDeg: result.northAngleDeg,
         });
       });
@@ -1434,8 +1452,9 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         for (const t of targetsRef.current) {
           const d = Math.hypot(t.x - x, t.y - y);
           if (d <= t.radius + extraPadding) {
-            const kindBonus = t.kind === 'dso' ? -2 : t.kind === 'double' ? -1.5 : 0;
-            const score = d + kindBonus + t.mag * 0.25;
+            const kindBonus = t.kind === 'dso' ? -1.4 : t.kind === 'double' ? -1.2 : 0;
+            const magPenalty = Math.min(1.2, Math.max(0, t.mag) * 0.06);
+            const score = d + kindBonus + magPenalty;
             if (score < bestScore) {
               bestScore = score;
               best = t;
@@ -2334,8 +2353,9 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       ? equatorialToHorizontal(pointerEq.raDeg, pointerEq.decDeg, lstDeg, observer.lat)
       : null;
 
+    const nameLang = layers.starLabelLanguage ?? 'ko';
     const gaiaActive =
-      layers.enableGaiaLive && view.fsz <= GAIA_LIVE_MAX_FSZ && renderStats.magLimit > 9.0;
+      layers.enableGaiaLive && view.fsz <= GAIA_LIVE_MAX_FSZ && renderStats.magLimit > 8.3;
 
     const formattedFov =
       view.fsz >= 10
@@ -2546,14 +2566,16 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                     )}
                     {(
                       [
-                        { label: '북', az: 0 },
-                        { label: '동', az: 90 },
-                        { label: '남', az: 180 },
-                        { label: '서', az: 270 },
+                        { az: 0 },
+                        { az: 90 },
+                        { az: 180 },
+                        { az: 270 },
                       ] as const
-                    ).map((dir) => (
+                    ).map((dir) => {
+                      const dirLabel = formatCardinalLabel(dir.az, nameLang);
+                      return (
                       <button
-                        key={dir.label}
+                        key={dir.az}
                         type="button"
                         role="menuitem"
                         onClick={() => {
@@ -2570,13 +2592,14 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                       >
                         <span className="flex items-center gap-2">
                           <Compass className="w-3.5 h-3.5 shrink-0 opacity-75" />
-                          <span>{dir.label}</span>
+                          <span>{dirLabel}</span>
                         </span>
                         <span className="font-mono text-[10px] opacity-60 tabular-nums">
                           {dir.az}°
                         </span>
                       </button>
-                    ))}
+                      );
+                    })}
                   </>
                 );
               };
@@ -2734,11 +2757,20 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             <span aria-hidden="true" className={`shrink-0 ${ui.textMuted}`}>·</span>
             <span className={`shrink-0 ${ui.textPrimary}`}>
               {view.coordSystem === 'horizontal'
-                ? `고도 ${centerAltAz.altDeg.toFixed(1)}° · 방위각 ${centerAltAz.azDeg.toFixed(1)}° (${getCompassDirection(centerAltAz.azDeg)})`
+                ? `고도 ${centerAltAz.altDeg.toFixed(1)}° · 방위각 ${centerAltAz.azDeg.toFixed(1)}° (${getCompassDirection(centerAltAz.azDeg, nameLang)})`
                 : `RA ${formatRA(view.ra * 15)} · Dec ${formatDec(view.dec)}`}
             </span>
             <span aria-hidden="true" className={`shrink-0 ${ui.textMuted}`}>·</span>
-            <span className={`shrink-0 ${ui.textMuted}`}>천체 {renderStats.stars + renderStats.dsos}개</span>
+            <span className={`shrink-0 ${ui.textMuted}`}>
+              천체{' '}
+              {(
+                renderStats.stars +
+                renderStats.dsos +
+                renderStats.doubles +
+                renderStats.solar
+              ).toLocaleString()}
+              개
+            </span>
             {observer.minAltitudeDeg > -90 && (
               <>
                 <span aria-hidden="true" className={`shrink-0 ${ui.textMuted}`}>·</span>
@@ -2756,36 +2788,58 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                     ? formatObjectDisplayName(
                         selected.data.koName,
                         selected.data.name,
-                        formatCatalogCode(selected.data.id) || selected.data.id
+                        formatCatalogCode(selected.data.id) || selected.data.id,
+                        nameLang
                       )
                     : selected.kind === 'planet'
                     ? formatObjectDisplayName(
                         selected.data.koName,
                         selected.data.name,
-                        selected.data.id
+                        selected.data.id,
+                        nameLang
                       )
                     : selected.kind === 'double'
                     ? formatObjectDisplayName(
                         selected.data.koName,
                         selected.data.name,
-                        selected.data.bayer || selected.data.disc
+                        selected.data.bayer || selected.data.disc,
+                        nameLang
                       )
                     : formatObjectDisplayName(
                         selected.data.koName,
                         selected.data.name,
-                        selected.data.bayer || selected.data.id
+                        selected.data.bayer || selected.data.id,
+                        nameLang
                       )}
                 </span>
               </>
             )}
-            {gaiaActive && (
+            {(gaiaActive || (catalogs.localStarCount > 0 && renderStats.magLimit > 8.0)) && (
               <>
                 <span aria-hidden="true" className={`shrink-0 ${ui.textMuted}`}>·</span>
                 <span className={`shrink-0 ${ui.accentText}`}>
                   {catalogs.gaiaLoading
-                    ? 'Gaia 로딩'
+                    ? catalogs.gaiaProgress.mode === 'tile' && catalogs.gaiaProgress.totalTiles > 0
+                      ? `Gaia ${catalogs.localStarCount > 0 ? '보완 ' : ''}로딩 (${catalogs.gaiaProgress.loadedTiles}/${catalogs.gaiaProgress.totalTiles})`
+                      : catalogs.localStarCount > 0
+                      ? 'Gaia 보완 로딩...'
+                      : 'Gaia 로딩...'
+                    : catalogs.gaiaProgress.status === 'local'
+                    ? `로컬 성표 (≤${catalogs.localContinuousMaxMag.toFixed(1)}m)`
+                    : catalogs.gaiaProgress.status === 'error'
+                    ? catalogs.localStarCount > 0
+                      ? `로컬 성표 (Gaia 지연)`
+                      : 'Gaia 지연'
+                    : renderStats.gaiaStars > 0
+                    ? catalogs.localStarCount > 0 && catalogs.gaiaStars.length > 0
+                      ? `로컬+Gaia (${renderStats.gaiaStars.toLocaleString()})`
+                      : catalogs.localStarCount > 0
+                      ? `로컬 성표 (${renderStats.gaiaStars.toLocaleString()})`
+                      : `Gaia DR3 (${renderStats.gaiaStars.toLocaleString()})`
                     : catalogs.gaiaStars.length > 0
-                    ? `Gaia DR3 (${catalogs.gaiaStars.length})`
+                    ? 'Gaia DR3 (0)'
+                    : catalogs.localStarCount > 0
+                    ? `로컬 성표 (≤${catalogs.localContinuousMaxMag.toFixed(1)}m)`
                     : 'Hipparcos'}
                 </span>
               </>
@@ -2811,7 +2865,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
               <span aria-hidden="true" className="shrink-0">|</span>
               <span className="shrink-0">
                 고도 {pointerAltAz.altDeg.toFixed(1)}° · 방위각 {pointerAltAz.azDeg.toFixed(1)}° (
-                {getCompassDirection(pointerAltAz.azDeg)})
+                {getCompassDirection(pointerAltAz.azDeg, nameLang)})
               </span>
             </div>
           </div>
@@ -2867,38 +2921,56 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                   <span className={`font-semibold ${ui.accentText}`}>척도</span>
                   <span className={`text-[10.5px] ${ui.textMuted}`}>
                     · 두 번째 점을 클릭하세요
-                    {rulerHoverPoint && (
-                      <span className={`ml-1.5 font-mono font-semibold ${ui.textPrimary}`}>
-                        {formatAngularDistanceDMS(
-                          angularDistanceDeg(
-                            rulerMeasurement.start.raDeg,
-                            rulerMeasurement.start.decDeg,
-                            rulerHoverPoint.raDeg,
-                            rulerHoverPoint.decDeg
-                          )
-                        )}
-                      </span>
-                    )}
-                  </span>
-                </>
-              ) : (
-                <>
-                  <span className={`font-semibold ${ui.accentText}`}>척도</span>
-                  <span className={`font-mono font-semibold ${ui.textPrimary}`}>
-                    {formatAngularDistanceDMS(
-                      angularDistanceDeg(
+                    {rulerHoverPoint && (() => {
+                      const sepDeg = angularDistanceDeg(
                         rulerMeasurement.start.raDeg,
                         rulerMeasurement.start.decDeg,
-                        rulerMeasurement.end.raDeg,
-                        rulerMeasurement.end.decDeg
-                      )
-                    )}
-                  </span>
-                  <span className={`hidden sm:inline text-[10.5px] ${ui.textMuted}`}>
-                    · 다른 곳 클릭 시 새 측정
+                        rulerHoverPoint.raDeg,
+                        rulerHoverPoint.decDeg
+                      );
+                      if (sepDeg < 1e-5) return null;
+                      const paDeg = positionAngleDeg(
+                        rulerMeasurement.start.raDeg,
+                        rulerMeasurement.start.decDeg,
+                        rulerHoverPoint.raDeg,
+                        rulerHoverPoint.decDeg
+                      );
+                      return (
+                        <span className={`ml-1.5 font-mono font-semibold ${ui.textPrimary}`}>
+                          {formatAngularDistanceDMS(sepDeg)} · 방위 {paDeg.toFixed(1)}° ({getCompassDirection(paDeg, nameLang)})
+                        </span>
+                      );
+                    })()}
                   </span>
                 </>
-              )}
+              ) : (() => {
+                const sepDeg = angularDistanceDeg(
+                  rulerMeasurement.start.raDeg,
+                  rulerMeasurement.start.decDeg,
+                  rulerMeasurement.end.raDeg,
+                  rulerMeasurement.end.decDeg
+                );
+                const paDeg = positionAngleDeg(
+                  rulerMeasurement.start.raDeg,
+                  rulerMeasurement.start.decDeg,
+                  rulerMeasurement.end.raDeg,
+                  rulerMeasurement.end.decDeg
+                );
+                return (
+                  <>
+                    <span className={`font-semibold ${ui.accentText}`}>척도</span>
+                    <span className={`font-mono font-semibold ${ui.textPrimary}`}>
+                      {formatAngularDistanceDMS(sepDeg)}
+                      {sepDeg >= 1e-5 && (
+                        <> · 방위 {paDeg.toFixed(1)}° ({getCompassDirection(paDeg, nameLang)})</>
+                      )}
+                    </span>
+                    <span className={`hidden sm:inline text-[10.5px] ${ui.textMuted}`}>
+                      · 다른 곳 클릭 시 새 측정
+                    </span>
+                  </>
+                );
+              })()}
             </div>
             {rulerMeasurement && onClearRuler && (
               <button
@@ -3103,7 +3175,9 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                   {(() => {
                     const displayName = formatObjectDisplayName(
                       hoveredTarget.item.data.koName,
-                      hoveredTarget.item.data.name
+                      hoveredTarget.item.data.name,
+                      '',
+                      nameLang
                     );
                     return displayName ? ` · ${displayName}` : '';
                   })()}
@@ -3123,7 +3197,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                   {formatObjectDisplayName(
                     hoveredTarget.item.data.koName,
                     hoveredTarget.item.data.name,
-                    hoveredTarget.item.data.id
+                    hoveredTarget.item.data.id,
+                    nameLang
                   )}
                 </div>
                 <div className={`text-[11px] font-mono tabular-nums ${ui.textMuted}`}>
@@ -3139,7 +3214,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                   {formatObjectDisplayName(
                     hoveredTarget.item.data.koName,
                     hoveredTarget.item.data.name,
-                    hoveredTarget.item.data.bayer || hoveredTarget.item.data.disc
+                    hoveredTarget.item.data.bayer || hoveredTarget.item.data.disc,
+                    nameLang
                   )}
                   {' · '}
                   <span className={ui.accentText}>
@@ -3160,7 +3236,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                   {formatObjectDisplayName(
                     hoveredTarget.item.data.koName,
                     hoveredTarget.item.data.name,
-                    hoveredTarget.item.data.bayer || hoveredTarget.item.data.id
+                    hoveredTarget.item.data.bayer || hoveredTarget.item.data.id,
+                    nameLang
                   )}
                 </div>
                 <div className={`text-[11px] font-mono tabular-nums ${ui.textMuted}`}>

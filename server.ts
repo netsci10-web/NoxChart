@@ -156,6 +156,7 @@ interface CacheEntry {
   centerRa: number;
   centerDec: number;
   radius: number;
+  minMag: number;
   requestedMag: number;
   effectiveMaxMag: number;
   truncated: boolean;
@@ -182,8 +183,14 @@ function quantizeConeParams(ra: number, dec: number, radius: number, magLimit: n
   return { qRa, qDec, qRad, qMag };
 }
 
-function getCacheKey(qRa: number, qDec: number, qRad: number, qMag: number): string {
-  return `${qRa.toFixed(3)}_${qDec.toFixed(3)}_${qRad.toFixed(3)}_${qMag.toFixed(1)}`;
+function getCacheKey(
+  qRa: number,
+  qDec: number,
+  qRad: number,
+  qMag: number,
+  qMinMag = 8.3
+): string {
+  return `${qRa.toFixed(3)}_${qDec.toFixed(3)}_${qRad.toFixed(3)}_${qMinMag.toFixed(2)}_${qMag.toFixed(1)}`;
 }
 
 function setMapLruCache(
@@ -534,17 +541,18 @@ async function queryGaiaGavoBox(
 }
 
 async function queryGaiaTap(adql: string, timeoutMs = 15000): Promise<GaiaStarTuple[] | null> {
-  const aip = await queryGaiaAipTap(adql, true, timeoutMs, true);
-  if (aip) return aip;
-  const ari = await queryGaiaAriTap(adql, Math.min(timeoutMs, 12000), true);
+  // ARI (Heidelberg) returns clean CSV in ~1-2s; try it first so zoomed-in Gaia DR3 loads immediately
+  const ari = await queryGaiaAriTap(adql, Math.min(timeoutMs, 9000), true);
   if (ari) return ari;
+  const irsa = await queryGaiaIrsaTap(adql, Math.min(timeoutMs, 9000), true);
+  if (irsa) return irsa;
+  const aip = await queryGaiaAipTap(adql, true, Math.min(timeoutMs, 9000), true);
+  if (aip) return aip;
   const gavoAdql = adql
     .replace(/phot_g_mean_mag\s*,\s*bp_rp/gi, 'phot_g_mean_mag, phot_bp_mean_mag, phot_rp_mean_mag')
     .replace(/gaiadr3\.gaia_source/gi, 'gaia.dr3lite');
-  const gavo = await queryGaiaGavoTapRaw(gavoAdql, Math.min(timeoutMs, 10000), true);
+  const gavo = await queryGaiaGavoTapRaw(gavoAdql, Math.min(timeoutMs, 9000), true);
   if (gavo) return gavo;
-  const irsa = await queryGaiaIrsaTap(adql, Math.min(timeoutMs, 12000), true);
-  if (irsa) return irsa;
   return queryGaiaEsaTap(adql, Math.min(timeoutMs, 8000), true);
 }
 
@@ -1332,6 +1340,10 @@ async function createServer() {
   // - cone mode: adaptive eyepiece & ultra-deep high-mag queries (<= 3.2°, down to 0.015° radius, up to 20.0m)
   app.get('/api/gaia', async (req, res) => {
     const mode = String(req.query.mode || 'cone');
+    const rawMinMag = Number(req.query.minMag);
+    const qMinMag = Number.isFinite(rawMinMag)
+      ? Math.max(8.3, Math.min(19.5, Math.round(rawMinMag * 20) / 20))
+      : 8.3;
 
     if (mode === 'tile') {
       const raMin = Number(req.query.raMin);
@@ -1356,10 +1368,30 @@ async function createServer() {
 
       const clampedDecMin = Math.max(-90, Math.min(90, decMin));
       const clampedDecMax = Math.max(-90, Math.min(90, decMax));
-      const magLimit = Math.max(8.8, Math.min(15.5, Number.isFinite(rawMag) ? rawMag : 13.0));
+      const magLimit = Math.max(
+        Math.min(15.5, qMinMag + 0.1),
+        Math.min(15.5, Number.isFinite(rawMag) ? rawMag : 13.0)
+      );
       const qMag = Math.ceil(magLimit * 2) / 2;
 
-      const tileKey = `${raMin.toFixed(2)}_${raMax.toFixed(2)}_${clampedDecMin.toFixed(2)}_${clampedDecMax.toFixed(2)}`;
+      if (qMag <= qMinMag) {
+        res.json({
+          mode: 'tile',
+          stars: [],
+          raMin,
+          raMax,
+          decMin: clampedDecMin,
+          decMax: clampedDecMax,
+          minMag: qMinMag,
+          requestedMag: qMag,
+          effectiveMaxMag: qMinMag,
+          truncated: false,
+          cached: true,
+        });
+        return;
+      }
+
+      const tileKey = `${raMin.toFixed(2)}_${raMax.toFixed(2)}_${clampedDecMin.toFixed(2)}_${clampedDecMax.toFixed(2)}_${qMinMag.toFixed(2)}`;
       const cached = GAIA_TILE_CACHE.get(tileKey);
       if (
         cached &&
@@ -1369,7 +1401,7 @@ async function createServer() {
         const sliced =
           cached.requestedMag === qMag
             ? cached.stars
-            : cached.stars.filter((s) => s[3] <= qMag);
+            : cached.stars.filter((s) => s[3] > qMinMag && s[3] <= qMag);
         res.setHeader('Cache-Control', 'public, max-age=3600');
         res.json({
           mode: 'tile',
@@ -1378,6 +1410,7 @@ async function createServer() {
           raMax,
           decMin: clampedDecMin,
           decMax: clampedDecMax,
+          minMag: qMinMag,
           requestedMag: qMag,
           effectiveMaxMag: Math.min(qMag, cached.effectiveMaxMag),
           truncated: cached.truncated && cached.effectiveMaxMag < qMag,
@@ -1419,7 +1452,7 @@ async function createServer() {
         `FROM gaiadr3.gaia_source ` +
         `WHERE 1=CONTAINS(POINT('ICRS',ra,dec),CIRCLE('ICRS',${centerRa.toFixed(4)},${centerDec.toFixed(4)},${circleRad.toFixed(3)})) ` +
         `${boxClause} ` +
-        `AND phot_g_mean_mag > 8.3 AND phot_g_mean_mag <= ${qMag.toFixed(2)} ` +
+        `AND phot_g_mean_mag > ${qMinMag.toFixed(2)} AND phot_g_mean_mag <= ${qMag.toFixed(2)} ` +
         `ORDER BY phot_g_mean_mag ASC`;
 
       const stars = await queryGaiaTap(adql, 15000);
@@ -1431,8 +1464,9 @@ async function createServer() {
           raMax,
           decMin: clampedDecMin,
           decMax: clampedDecMax,
+          minMag: qMinMag,
           requestedMag: qMag,
-          effectiveMaxMag: 8.3,
+          effectiveMaxMag: qMinMag,
           degraded: true,
         });
         return;
@@ -1447,6 +1481,7 @@ async function createServer() {
         centerRa,
         centerDec,
         radius: circleRad,
+        minMag: qMinMag,
         requestedMag: qMag,
         effectiveMaxMag,
         truncated,
@@ -1460,6 +1495,7 @@ async function createServer() {
         raMax,
         decMin: clampedDecMin,
         decMax: clampedDecMax,
+        minMag: qMinMag,
         requestedMag: qMag,
         effectiveMaxMag,
         truncated,
@@ -1481,10 +1517,27 @@ async function createServer() {
     const ra = ((rawRa % 360) + 360) % 360;
     const dec = Math.max(-90, Math.min(90, rawDec));
     const radius = Math.max(0.015, Math.min(5.5, Number.isFinite(rawRadius) ? rawRadius : 1.5));
-    const magLimit = Math.max(8.8, Math.min(20.0, Number.isFinite(rawMag) ? rawMag : 13.5));
+    const magLimit = Math.max(
+      Math.min(20.0, qMinMag + 0.1),
+      Math.min(20.0, Number.isFinite(rawMag) ? rawMag : 13.5)
+    );
 
     const { qRa, qDec, qRad, qMag } = quantizeConeParams(ra, dec, radius, magLimit);
-    const cacheKey = getCacheKey(qRa, qDec, qRad, qMag);
+    if (qMag <= qMinMag) {
+      res.json({
+        stars: [],
+        centerRa: qRa,
+        centerDec: qDec,
+        radius: qRad,
+        minMag: qMinMag,
+        effectiveMaxMag: qMinMag,
+        truncated: false,
+        cached: true,
+      });
+      return;
+    }
+
+    const cacheKey = getCacheKey(qRa, qDec, qRad, qMag, qMinMag);
     const cached = GAIA_CACHE.get(cacheKey);
     if (cached && Date.now() - cached.fetchedAt < CACHE_TTL_MS) {
       res.setHeader('Cache-Control', 'public, max-age=1800');
@@ -1493,6 +1546,7 @@ async function createServer() {
         centerRa: cached.centerRa,
         centerDec: cached.centerDec,
         radius: cached.radius,
+        minMag: qMinMag,
         effectiveMaxMag: cached.effectiveMaxMag,
         truncated: cached.truncated,
         cached: true,
@@ -1506,7 +1560,7 @@ async function createServer() {
       `SELECT TOP ${maxRows} source_id, ra, dec, phot_g_mean_mag, bp_rp ` +
       `FROM gaiadr3.gaia_source ` +
       `WHERE 1=CONTAINS(POINT('ICRS',ra,dec),CIRCLE('ICRS',${qRa.toFixed(4)},${qDec.toFixed(4)},${qRad.toFixed(4)})) ` +
-      `AND phot_g_mean_mag > 8.3 AND phot_g_mean_mag <= ${qMag.toFixed(2)} ` +
+      `AND phot_g_mean_mag > ${qMinMag.toFixed(2)} AND phot_g_mean_mag <= ${qMag.toFixed(2)} ` +
       `ORDER BY phot_g_mean_mag ASC`;
 
     const stars = await queryGaiaTap(adql, 15000);
@@ -1516,7 +1570,8 @@ async function createServer() {
         centerRa: qRa,
         centerDec: qDec,
         radius: qRad,
-        effectiveMaxMag: 8.3,
+        minMag: qMinMag,
+        effectiveMaxMag: qMinMag,
         degraded: true,
       });
       return;
@@ -1531,6 +1586,7 @@ async function createServer() {
       centerRa: qRa,
       centerDec: qDec,
       radius: qRad,
+      minMag: qMinMag,
       requestedMag: qMag,
       effectiveMaxMag,
       truncated,
@@ -1542,6 +1598,7 @@ async function createServer() {
       centerRa: qRa,
       centerDec: qDec,
       radius: qRad,
+      minMag: qMinMag,
       effectiveMaxMag,
       truncated,
       cached: false,

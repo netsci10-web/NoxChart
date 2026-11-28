@@ -43,7 +43,9 @@ import {
 } from 'lucide-react';
 import {
   CatalogSnapshot,
+  GAIA_LIVE_MAX_FSZ,
   getVisibleUltraTileKeys,
+  retryGaiaLiveFetch,
   searchGaiaCatalog,
   searchHipparcosCatalog,
   searchLoadedGaiaStars,
@@ -58,9 +60,12 @@ import {
 import {
   ChartViewState,
   Constellation,
+  ConstellationNameStyle,
+  ConstellationProjectionMode,
   DEFAULT_SENSOR_EXPORT_CAPTION,
   DeepSkyObject,
   DoubleStarSystem,
+  DsoNameStyle,
   EquipmentCategory,
   EquipmentItem,
   EquipmentLockerState,
@@ -74,6 +79,7 @@ import {
   SensorExportCaptionConfig,
   SolarSystemBody,
   Star,
+  StarNameStyle,
   ThemeMode,
 } from '../types/astronomy';
 import {
@@ -81,6 +87,7 @@ import {
   computeAtmosphericExtinctionMag,
   createProjectionParams,
   equatorialToHorizontal,
+  formatCardinalLabel,
   getDsoLimitingMagnitude,
   getLimitingMagnitude,
   getLSTDeg,
@@ -107,6 +114,7 @@ import {
   disconnectNoxchartFolder,
   downloadStarCatalogTier,
   exportStarPackToFile,
+  findLocalStarById,
   formatByteSize,
   getLocalStarCatalogState,
   getLocalStarsInFrame,
@@ -124,7 +132,10 @@ import {
 } from '../utils/localStarCatalogs';
 import {
   formatCatalogCode,
+  formatConstellationDisplayName,
+  formatDsoChartLabel,
   formatObjectDisplayName,
+  formatStarLabelByStyle,
   getBayerBaseSearchAliases,
   getBayerExpandedNames,
   getDsoSearchAliases,
@@ -501,6 +512,7 @@ export function ControlSidebar({
   const siteFileInputRef = useRef<HTMLInputElement>(null);
   const layerFileInputRef = useRef<HTMLInputElement>(null);
   const ui = getUiTheme(theme);
+  const nameLang = layers.starLabelLanguage ?? 'ko';
 
   useEffect(() => {
     try {
@@ -521,17 +533,28 @@ export function ControlSidebar({
     }
   }, [presetMosaicOverrides]);
 
-  // Live full-sky Hipparcos (118,216 stars) lookup when user searches a HIP number
+  // Live full-sky Hipparcos (118,216 stars) fallback lookup ONLY when not already found in built-in / downloaded local catalogs
   useEffect(() => {
     const trimmed = query.trim();
     const compact = trimmed.replace(/\s+/g, '').toLowerCase();
+    const hipMatch = /^(?:hip)?(\d{2,6})$/.exec(compact);
     const isHipQuery =
-      (exploreCategory === 'all' || exploreCategory === 'star') &&
-      (/^hip\d+$/.test(compact) || /^\d{2,6}$/.test(compact));
-    if (!isHipQuery) {
+      (exploreCategory === 'all' || exploreCategory === 'star') && Boolean(hipMatch);
+    if (!isHipQuery || !hipMatch) {
       setRemoteHipHits([]);
       return;
     }
+
+    const hipNum = Number(hipMatch[1]);
+    const hasExactBuiltInOrLocal =
+      catalogs.brightStars.some((s) => s.hip === hipNum) ||
+      catalogs.deepStars.some((s) => s.hip === hipNum) ||
+      Boolean(findLocalStarById(`HIP ${hipNum}`));
+    if (hasExactBuiltInOrLocal) {
+      setRemoteHipHits([]);
+      return;
+    }
+
     let cancelled = false;
     const timer = window.setTimeout(() => {
       void searchHipparcosCatalog(trimmed).then((hits) => {
@@ -542,9 +565,9 @@ export function ControlSidebar({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [exploreCategory, query]);
+  }, [exploreCategory, query, catalogs.brightStars, catalogs.deepStars, catalogs.localStarRevision]);
 
-  // Live server-cache + Gaia DR3 TAP primary-key lookup when user searches a Gaia DR3 ID
+  // Live server-cache + Gaia DR3 TAP fallback lookup ONLY when not found in downloaded local star catalogs
   useEffect(() => {
     const trimmed = query.trim();
     const compact = trimmed.replace(/\s+/g, '').toLowerCase();
@@ -556,6 +579,27 @@ export function ControlSidebar({
       setGaiaSearching(false);
       return;
     }
+
+    // Check downloaded local star catalogs first (0ms) — skip online Gaia DR3 lookup if found locally
+    if (catalogs.localStarCount > 0) {
+      const exactLocal = findLocalStarById(trimmed);
+      if (exactLocal) {
+        setRemoteGaiaHits([]);
+        setGaiaSearching(false);
+        return;
+      }
+      const localMatches = searchLocalStarCatalogs(
+        trimmed,
+        { raHours: view.ra, decDeg: view.dec },
+        5
+      );
+      if (localMatches.some((h) => h.score >= 112)) {
+        setRemoteGaiaHits([]);
+        setGaiaSearching(false);
+        return;
+      }
+    }
+
     let cancelled = false;
     setGaiaSearching(true);
     const timer = window.setTimeout(() => {
@@ -574,7 +618,7 @@ export function ControlSidebar({
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [exploreCategory, query]);
+  }, [exploreCategory, query, catalogs.localStarCount, catalogs.localStarRevision]);
 
   useEffect(() => {
     setViewportResultLimit(150);
@@ -607,9 +651,9 @@ export function ControlSidebar({
   const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
 
   const conLookupByAbbr = useMemo(() => {
-    const map = new Map<string, { koName: string; abbr: string }>();
+    const map = new Map<string, { koName: string; name: string; abbr: string }>();
     for (const c of catalogs.constellations) {
-      map.set(c.abbr.toLowerCase(), { koName: c.koName, abbr: c.abbr });
+      map.set(c.abbr.toLowerCase(), { koName: c.koName, name: c.name, abbr: c.abbr });
     }
     return map;
   }, [catalogs.constellations]);
@@ -621,10 +665,11 @@ export function ControlSidebar({
     if (!trimmed) return { hasCon: false, sortKey: '', label: '별자리 미지정' };
     const found = conLookupByAbbr.get(trimmed.toLowerCase());
     if (found) {
+      const display = formatObjectDisplayName(found.koName, found.name, found.abbr, nameLang);
       return {
         hasCon: true,
-        sortKey: found.koName,
-        label: `${found.koName} (${found.abbr})`,
+        sortKey: display,
+        label: `${display} (${found.abbr})`,
       };
     }
     return { hasCon: true, sortKey: trimmed, label: trimmed };
@@ -709,8 +754,8 @@ export function ControlSidebar({
         return a.num - b.num;
       }
       if (exploreSort === 'name') {
-        const na = formatObjectDisplayName(a.item.koName, a.item.name, a.item.id);
-        const nb = formatObjectDisplayName(b.item.koName, b.item.name, b.item.id);
+        const na = formatObjectDisplayName(a.item.koName, a.item.name, a.item.id, nameLang);
+        const nb = formatObjectDisplayName(b.item.koName, b.item.name, b.item.id, nameLang);
         const cmp = na.localeCompare(nb, 'ko', { numeric: true, sensitivity: 'base' });
         if (cmp !== 0) return cmp * dir;
         return a.num - b.num;
@@ -730,7 +775,7 @@ export function ControlSidebar({
       return b.score - a.score || a.num - b.num;
     });
     return scored.map((s) => s.item);
-  }, [messierList, query, exploreSort, exploreSortDir, conLookupByAbbr, lstDeg, observer.lat]);
+  }, [messierList, query, exploreSort, exploreSortDir, conLookupByAbbr, lstDeg, observer.lat, nameLang]);
 
   const filteredCaldwell = useMemo(() => {
     const q = query.trim().toLowerCase();
@@ -769,8 +814,8 @@ export function ControlSidebar({
         return a.item.caldwellNumber - b.item.caldwellNumber;
       }
       if (exploreSort === 'name') {
-        const na = formatObjectDisplayName(a.item.koName, a.item.name, a.item.caldwellId);
-        const nb = formatObjectDisplayName(b.item.koName, b.item.name, b.item.caldwellId);
+        const na = formatObjectDisplayName(a.item.koName, a.item.name, a.item.caldwellId, nameLang);
+        const nb = formatObjectDisplayName(b.item.koName, b.item.name, b.item.caldwellId, nameLang);
         const cmp = na.localeCompare(nb, 'ko', { numeric: true, sensitivity: 'base' });
         if (cmp !== 0) return cmp * dir;
         return a.item.caldwellNumber - b.item.caldwellNumber;
@@ -790,7 +835,7 @@ export function ControlSidebar({
       return b.score - a.score || a.item.caldwellNumber - b.item.caldwellNumber;
     });
     return scored.map((s) => s.item);
-  }, [catalogs.caldwell, query, exploreSort, exploreSortDir, conLookupByAbbr, lstDeg, observer.lat]);
+  }, [catalogs.caldwell, query, exploreSort, exploreSortDir, conLookupByAbbr, lstDeg, observer.lat, nameLang]);
 
   const ngcIcList = useMemo(() => {
     if (exploreCategory !== 'ngcic') return [];
@@ -925,8 +970,8 @@ export function ControlSidebar({
         return a.item.dso.mag - b.item.dso.mag;
       }
       if (exploreSort === 'name') {
-        const na = formatObjectDisplayName(a.item.dso.koName, a.item.dso.name, a.item.displayId);
-        const nb = formatObjectDisplayName(b.item.dso.koName, b.item.dso.name, b.item.displayId);
+        const na = formatObjectDisplayName(a.item.dso.koName, a.item.dso.name, a.item.displayId, nameLang);
+        const nb = formatObjectDisplayName(b.item.dso.koName, b.item.dso.name, b.item.displayId, nameLang);
         const cmp = na.localeCompare(nb, 'ko', { numeric: true, sensitivity: 'base' });
         if (cmp !== 0) return cmp * dir;
         return a.item.displayId.localeCompare(b.item.displayId, 'en', { numeric: true });
@@ -949,7 +994,7 @@ export function ControlSidebar({
       items: scored.slice(0, 100).map((s) => s.item),
       totalMatches: scored.length,
     };
-  }, [exploreCategory, ngcIcList, ngcIcFilter, query, exploreSort, exploreSortDir, conLookupByAbbr, lstDeg, observer.lat]);
+  }, [exploreCategory, ngcIcList, ngcIcFilter, query, exploreSort, exploreSortDir, conLookupByAbbr, lstDeg, observer.lat, nameLang]);
 
   const [mpcRev, setMpcRev] = useState(0);
   const [mpcMeta, setMpcMeta] = useState<MpcAsteroidSyncMeta | null>(() => getMpcAsteroidSyncMeta());
@@ -1222,7 +1267,9 @@ export function ControlSidebar({
         return (a.ra - b.ra) * dir;
       }
       if (exploreSort === 'name') {
-        return (a.koName || a.name).localeCompare(b.koName || b.name, 'ko', { numeric: true }) * dir;
+        const na = formatObjectDisplayName(a.koName, a.name, a.id, nameLang);
+        const nb = formatObjectDisplayName(b.koName, b.name, b.id, nameLang);
+        return na.localeCompare(nb, 'ko', { numeric: true }) * dir;
       }
       if (exploreSort === 'mag') {
         return (a.mag - b.mag) * dir;
@@ -1243,11 +1290,18 @@ export function ControlSidebar({
     layers.cometMaxMag,
     layers.cometHideBelowHorizon,
     layers.cometHideNearSun,
+    nameLang,
   ]);
 
   const sortedConstellations = useMemo(
-    () => [...catalogs.constellations].sort((a, b) => a.koName.localeCompare(b.koName, 'ko')),
-    [catalogs.constellations]
+    () =>
+      [...catalogs.constellations].sort((a, b) =>
+        formatObjectDisplayName(a.koName, a.name, a.abbr, nameLang).localeCompare(
+          formatObjectDisplayName(b.koName, b.name, b.abbr, nameLang),
+          'ko'
+        )
+      ),
+    [catalogs.constellations, nameLang]
   );
 
   const filteredConstellations = useMemo(() => {
@@ -1261,7 +1315,12 @@ export function ControlSidebar({
     if (exploreSort === 'default') return matched;
     return [...matched].sort((a, b) => {
       if (exploreSort === 'name' || exploreSort === 'constellation') {
-        return a.koName.localeCompare(b.koName, 'ko') * dir;
+        return (
+          formatObjectDisplayName(a.koName, a.name, a.abbr, nameLang).localeCompare(
+            formatObjectDisplayName(b.koName, b.name, b.abbr, nameLang),
+            'ko'
+          ) * dir
+        );
       }
       if (exploreSort === 'category') {
         return (a.ra - b.ra) * dir;
@@ -1273,7 +1332,7 @@ export function ControlSidebar({
       }
       return a.abbr.localeCompare(b.abbr, 'en') * dir;
     });
-  }, [sortedConstellations, query, exploreSort, exploreSortDir, lstDeg, observer.lat]);
+  }, [sortedConstellations, query, exploreSort, exploreSortDir, lstDeg, observer.lat, nameLang]);
 
   const allSearchResults = useMemo(() => {
     if (exploreCategory !== 'all') {
@@ -1378,15 +1437,7 @@ export function ControlSidebar({
           if (isInFrame(s.ra, s.dec)) tryAddStar(s);
         }
       }
-      // 3. Live Gaia DR3 stars currently loaded on chart
-      if (magMax > 8.0 && catalogs.gaiaStars.length > 0) {
-        for (let i = 0; i < catalogs.gaiaStars.length; i++) {
-          const s = catalogs.gaiaStars[i];
-          if (s.mag < magMin || s.mag > magMax) continue;
-          if (isInFrame(s.ra, s.dec)) tryAddStar(s, 'Gaia DR3');
-        }
-      }
-      // 4. Locally downloaded star catalogs (fast spatial index)
+      // 3. Locally downloaded star catalogs (primary built-in extension, fast spatial index)
       if (magMax > 8.0 && (catalogs.localStarCount > 0 || localStarState.totalStars > 0)) {
         const localFrame = getLocalStarsInFrame(
           { raHours: view.ra, decDeg: view.dec, fszDeg: view.fsz },
@@ -1401,6 +1452,14 @@ export function ControlSidebar({
         }
         if (localFrame.totalCount > localFrame.stars.length) {
           extraUncollectedLocal = localFrame.totalCount - localFrame.stars.length;
+        }
+      }
+      // 4. Live Gaia DR3 stars supplementing beyond local catalogs
+      if (magMax > 8.0 && catalogs.gaiaStars.length > 0) {
+        for (let i = 0; i < catalogs.gaiaStars.length; i++) {
+          const s = catalogs.gaiaStars[i];
+          if (s.mag < magMin || s.mag > magMax) continue;
+          if (isInFrame(s.ra, s.dec)) tryAddStar(s, 'Gaia DR3');
         }
       }
       // 5. Hipparcos Ultra tiles (when loaded)
@@ -1420,7 +1479,7 @@ export function ControlSidebar({
 
       const dir = exploreSortDir === 'asc' ? 1 : -1;
       const sortNameOfStar = (s: Star) =>
-        formatObjectDisplayName(s.koName, s.name, s.bayer || s.id);
+        formatObjectDisplayName(s.koName, s.name, s.bayer || s.id, nameLang);
       vpStars.sort((a, b) => {
         if (exploreSort === 'category') {
           const ca = STAR_CATEGORY_INFO(a.star, a.badge).rank;
@@ -1822,23 +1881,34 @@ export function ControlSidebar({
 
     const dir = exploreSortDir === 'asc' ? 1 : -1;
     const getGlobalItemName = (item: GlobalSearchItem): string => {
-      if (item.kind === 'planet') return item.body.koName || item.body.name || item.body.id;
-      if (item.kind === 'constellation') return item.con.koName || item.con.name || item.con.abbr;
+      if (item.kind === 'planet') {
+        return formatObjectDisplayName(item.body.koName, item.body.name, item.body.id, nameLang);
+      }
+      if (item.kind === 'constellation') {
+        return formatObjectDisplayName(item.con.koName, item.con.name, item.con.abbr, nameLang);
+      }
       if (item.kind === 'star') {
         return formatObjectDisplayName(
           item.star.koName,
           item.star.name,
-          item.star.bayer || item.star.id
+          item.star.bayer || item.star.id,
+          nameLang
         );
       }
       if (item.kind === 'double') {
         return formatObjectDisplayName(
           item.sys.koName,
           item.sys.name,
-          item.sys.bayer || item.sys.disc
+          item.sys.bayer || item.sys.disc,
+          nameLang
         );
       }
-      return formatObjectDisplayName(item.dso.koName, item.dso.name, item.primaryId || item.dso.id);
+      return formatObjectDisplayName(
+        item.dso.koName,
+        item.dso.name,
+        item.primaryId || item.dso.id,
+        nameLang
+      );
     };
     const getGlobalItemAlt = (item: GlobalSearchItem): number => {
       const ra =
@@ -1940,6 +2010,7 @@ export function ControlSidebar({
     selected,
     remoteHipHits,
     remoteGaiaHits,
+    nameLang,
   ]);
 
   const filteredStars = useMemo(() => {
@@ -1966,7 +2037,7 @@ export function ControlSidebar({
 
     const dir = exploreSortDir === 'asc' ? 1 : -1;
     const starDisplayName = (s: Star) =>
-      formatObjectDisplayName(s.koName, s.name, s.bayer || s.id);
+      formatObjectDisplayName(s.koName, s.name, s.bayer || s.id, nameLang);
     const sortStarEntries = (list: StarBrowseEntry[], useScoreDefault: boolean) => {
       list.sort((a, b) => {
         if (exploreSort === 'category') {
@@ -2106,13 +2177,6 @@ export function ControlSidebar({
           if (isInFrame(s.ra, s.dec)) tryAddStar(s);
         }
       }
-      if (magMax > 8.0 && catalogs.gaiaStars.length > 0) {
-        for (let i = 0; i < catalogs.gaiaStars.length; i++) {
-          const s = catalogs.gaiaStars[i];
-          if (s.mag < magMin || s.mag > magMax) continue;
-          if (isInFrame(s.ra, s.dec)) tryAddStar(s, 'Gaia DR3');
-        }
-      }
       if (magMax > 8.0 && (catalogs.localStarCount > 0 || localStarState.totalStars > 0)) {
         const localFrame = getLocalStarsInFrame(
           { raHours: view.ra, decDeg: view.dec, fszDeg: view.fsz },
@@ -2127,6 +2191,13 @@ export function ControlSidebar({
         }
         if (!textSubFilter && localFrame.totalCount > localFrame.stars.length) {
           extraUncollectedLocal = localFrame.totalCount - localFrame.stars.length;
+        }
+      }
+      if (magMax > 8.0 && catalogs.gaiaStars.length > 0) {
+        for (let i = 0; i < catalogs.gaiaStars.length; i++) {
+          const s = catalogs.gaiaStars[i];
+          if (s.mag < magMin || s.mag > magMax) continue;
+          if (isInFrame(s.ra, s.dec)) tryAddStar(s, 'Gaia DR3');
         }
       }
       if (magMax > 8.0 && catalogs.ultraStarTiles.size > 0) {
@@ -2347,6 +2418,7 @@ export function ControlSidebar({
     selected,
     remoteHipHits,
     remoteGaiaHits,
+    nameLang,
   ]);
 
   const jumpToDso = (dso: DeepSkyObject) => {
@@ -2639,6 +2711,94 @@ export function ControlSidebar({
           )}
         </button>
       </div>
+
+      {/* Live Gaia DR3 Async Loading / Error Progress Strip (visible across all sidebar tabs) */}
+      {layers.enableGaiaLive &&
+        (catalogs.gaiaLoading || catalogs.gaiaProgress.status === 'error') && (() => {
+          const gp = catalogs.gaiaProgress;
+          const isTileProgress = gp.mode === 'tile' && gp.totalTiles > 0;
+          const pct = isTileProgress
+            ? Math.max(8, Math.min(100, Math.round((gp.loadedTiles / gp.totalTiles) * 100)))
+            : 0;
+          const isError = !catalogs.gaiaLoading && gp.status === 'error';
+          const stripCls = isError
+            ? theme === 'white'
+              ? 'bg-amber-50/95 border-amber-200 text-amber-800'
+              : theme === 'red'
+              ? 'bg-[#250404] border-[#6B1111] text-[#FCA5A5]'
+              : 'bg-amber-950/45 border-amber-500/35 text-amber-200'
+            : theme === 'white'
+            ? 'bg-sky-50/90 border-sky-200 text-sky-900'
+            : theme === 'red'
+            ? 'bg-[#1C0303] border-[#5A1212] text-[#FCA5A5]'
+            : 'bg-cyan-950/40 border-cyan-500/30 text-cyan-200';
+          const trackCls =
+            theme === 'white'
+              ? 'bg-sky-200/80'
+              : theme === 'red'
+              ? 'bg-[#3A0707]'
+              : 'bg-slate-800/90';
+          const barCls =
+            theme === 'white'
+              ? 'bg-sky-600'
+              : theme === 'red'
+              ? 'bg-[#EF4444]'
+              : 'bg-cyan-400';
+
+          return (
+            <div
+              role="status"
+              aria-live="polite"
+              className={`px-2.5 py-1.5 border-b shrink-0 space-y-1 text-[10px] tracking-[-0.04em] ${stripCls}`}
+            >
+              <div className="flex items-center justify-between gap-1.5">
+                <span className="flex items-center gap-1.5 min-w-0 font-medium truncate">
+                  {isError ? (
+                    <CloudAlert className="w-3 h-3 shrink-0" />
+                  ) : (
+                    <Loader2 className="w-3 h-3 shrink-0 animate-spin" />
+                  )}
+                  <span className="truncate">
+                    {isError
+                      ? 'Gaia DR3 응답 지연'
+                      : isTileProgress
+                      ? `Gaia DR3 타일 로딩 (${gp.loadedTiles}/${gp.totalTiles})`
+                      : 'Gaia DR3 심층 별 로딩 중...'}
+                  </span>
+                </span>
+                {isError ? (
+                  <button
+                    type="button"
+                    onClick={() => retryGaiaLiveFetch()}
+                    className={`px-1.5 py-0.5 border text-[9.5px] font-semibold flex items-center gap-1 shrink-0 cursor-pointer transition-colors ${ui.buttonIdle}`}
+                    style={{ borderRadius: '4px' }}
+                  >
+                    <RefreshCw className="w-2.5 h-2.5" />
+                    <span>재시도</span>
+                  </button>
+                ) : (
+                  <span className="font-mono text-[9.5px] tabular-nums shrink-0 opacity-85">
+                    {gp.loadedStars > 0
+                      ? `${gp.loadedStars.toLocaleString()}개`
+                      : `≤${gp.targetMag.toFixed(1)}m`}
+                  </span>
+                )}
+              </div>
+              {!isError && (
+                <div className={`w-full h-1 rounded-full overflow-hidden ${trackCls}`}>
+                  {isTileProgress ? (
+                    <div
+                      className={`h-full rounded-full transition-[width] duration-200 ease-out ${barCls}`}
+                      style={{ width: `${pct}%` }}
+                    />
+                  ) : (
+                    <div className={`h-full rounded-full gaia-progress-indeterminate ${barCls}`} />
+                  )}
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
       {/* Explore Tab: 7-Category Segmented Bar + Search + Sort + Full-Height Card List */}
       {tab === 'explore' ? (
@@ -3010,7 +3170,7 @@ export function ControlSidebar({
                                   below ? belowHorizonTextCls : ui.textPrimary
                                 }`}
                               >
-                                {body.koName}
+                                {formatObjectDisplayName(body.koName, body.name, body.id, nameLang)}
                               </span>
                             </div>
                             <span
@@ -3026,7 +3186,7 @@ export function ControlSidebar({
                               below ? belowHorizonSubCls : ui.textMuted
                             }`}
                           >
-                            {body.name} · 고도 {hz.altDeg.toFixed(1)}° · {formatCompactRaDec(body.ra, body.dec)}
+                            {body.category} · 고도 {hz.altDeg.toFixed(1)}° · {formatCompactRaDec(body.ra, body.dec)}
                           </div>
                         </button>
                       );
@@ -3037,6 +3197,7 @@ export function ControlSidebar({
                       const isActive = activeConAbbr === con.abbr;
                       const hz = equatorialToHorizontal(con.ra, con.dec, lstDeg, observer.lat);
                       const below = hz.altDeg < 0;
+                      const conTitle = formatObjectDisplayName(con.koName, con.name, con.abbr, nameLang);
                       return wrapWithCat(
                         <button
                           type="button"
@@ -3062,20 +3223,14 @@ export function ControlSidebar({
                                 {con.abbr}
                               </span>
                               <span
+                                title={conTitle}
                                 className={`font-semibold truncate tracking-[-0.04em] ${
                                   below ? belowHorizonTextCls : ui.textPrimary
                                 }`}
                               >
-                                {con.koName}
+                                {conTitle}
                               </span>
                             </div>
-                            <span
-                              className={`font-mono text-[10px] tracking-[-0.04em] shrink-0 ${
-                                below ? belowHorizonSubCls : ui.textMuted
-                              }`}
-                            >
-                              {con.name}
-                            </span>
                           </div>
                           <div
                             className={`mt-0.5 font-mono text-[10px] tracking-[-0.05em] tabular-nums truncate ${
@@ -3096,7 +3251,8 @@ export function ControlSidebar({
                       const primaryTitle = formatObjectDisplayName(
                         star.koName,
                         star.name,
-                        star.bayer || star.id
+                        star.bayer || star.id,
+                        nameLang
                       );
                       const subInfo = [
                         item.detail,
@@ -3160,7 +3316,8 @@ export function ControlSidebar({
                       const title = formatObjectDisplayName(
                         sys.koName,
                         sys.name,
-                        sys.bayer || sys.disc
+                        sys.bayer || sys.disc,
+                        nameLang
                       );
                       return wrapWithCat(
                         <button
@@ -3216,7 +3373,8 @@ export function ControlSidebar({
                     const dsoTitle = formatObjectDisplayName(
                       dso.koName,
                       dso.name,
-                      secondaryId || dso.id
+                      secondaryId || dso.id,
+                      nameLang
                     );
                     return wrapWithCat(
                       <button
@@ -3315,7 +3473,8 @@ export function ControlSidebar({
                     const primaryTitle = formatObjectDisplayName(
                       star.koName,
                       star.name,
-                      star.bayer || star.id
+                      star.bayer || star.id,
+                      nameLang
                     );
                     const subInfo = [
                       entry.detail,
@@ -3424,7 +3583,7 @@ export function ControlSidebar({
                   const hz = equatorialToHorizontal(dso.ra, dso.dec, lstDeg, observer.lat);
                   const below = hz.altDeg < 0;
                   const secDesignations = getSecondaryDesignations(dso.id, dso.altId);
-                  const dsoTitle = formatObjectDisplayName(dso.koName, dso.name, dso.id);
+                  const dsoTitle = formatObjectDisplayName(dso.koName, dso.name, dso.id, nameLang);
                   return (
                     <button
                       key={dso.id}
@@ -3489,7 +3648,8 @@ export function ControlSidebar({
                   const entryTitle = formatObjectDisplayName(
                     entry.koName,
                     entry.name,
-                    formatCatalogCode(entry.id)
+                    formatCatalogCode(entry.id),
+                    nameLang
                   );
                   return (
                     <button
@@ -3574,7 +3734,8 @@ export function ControlSidebar({
                     const ngcTitle = formatObjectDisplayName(
                       dso.koName,
                       dso.name,
-                      crossId || dso.type
+                      crossId || dso.type,
+                      nameLang
                     );
                     return (
                       <button
@@ -3733,18 +3894,12 @@ export function ControlSidebar({
                                 {body.symbol}
                               </span>
                               <span
+                                title={formatObjectDisplayName(body.koName, body.name, body.id, nameLang)}
                                 className={`font-semibold truncate tracking-[-0.04em] ${
                                   below ? belowHorizonTextCls : ui.textPrimary
                                 }`}
                               >
-                                {body.koName}
-                              </span>
-                              <span
-                                className={`text-[10px] truncate tracking-[-0.04em] ${
-                                  below ? belowHorizonSubCls : ui.textMuted
-                                }`}
-                              >
-                                {body.name}
+                                {formatObjectDisplayName(body.koName, body.name, body.id, nameLang)}
                               </span>
                             </div>
                             <div className="flex items-center gap-1 shrink-0">
@@ -3824,20 +3979,14 @@ export function ControlSidebar({
                             {con.abbr}
                           </span>
                           <span
+                            title={formatObjectDisplayName(con.koName, con.name, con.abbr, nameLang)}
                             className={`font-semibold truncate tracking-[-0.04em] ${
                               below ? belowHorizonTextCls : ui.textPrimary
                             }`}
                           >
-                            {con.koName}
+                            {formatObjectDisplayName(con.koName, con.name, con.abbr, nameLang)}
                           </span>
                         </div>
-                        <span
-                          className={`font-mono text-[10px] tracking-[-0.04em] shrink-0 ${
-                            below ? belowHorizonSubCls : ui.textMuted
-                          }`}
-                        >
-                          {con.name}
-                        </span>
                       </div>
                       <div
                         className={`mt-0.5 font-mono text-[10px] tracking-[-0.05em] tabular-nums truncate ${
@@ -4136,19 +4285,31 @@ export function ControlSidebar({
                 />
               </label>
 
-              <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
-                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-                  별자리 이름 라벨
-                </span>
-                <input
-                  type="checkbox"
-                  checked={layers.showConstellationNames}
-                  onChange={(e) =>
-                    onChangeLayers((p) => ({ ...p, showConstellationNames: e.target.checked }))
-                  }
-                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
-                />
-              </label>
+              <div className="flex items-center justify-between gap-1.5 py-0.5">
+                <label className="flex items-center gap-1.5 cursor-pointer min-w-0">
+                  <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                    별자리 이름 라벨
+                  </span>
+                </label>
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setTab('settings')}
+                    title="설정 탭의 성도 표기 설정에서 표기법(전통·약어·이름) 변경"
+                    className={`px-1.5 py-0.5 border rounded text-[9.5px] tracking-[-0.04em] cursor-pointer ${ui.buttonIdle}`}
+                  >
+                    표기 설정
+                  </button>
+                  <input
+                    type="checkbox"
+                    checked={layers.showConstellationNames}
+                    onChange={(e) =>
+                      onChangeLayers((p) => ({ ...p, showConstellationNames: e.target.checked }))
+                    }
+                    className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
+                  />
+                </div>
+              </div>
 
               {(() => {
                 const anyConstellationActive =
@@ -4187,6 +4348,80 @@ export function ControlSidebar({
                         anyConstellationActive ? 'cursor-pointer' : 'cursor-not-allowed'
                       }`}
                     />
+                  </div>
+                );
+              })()}
+
+              {/* Independent Rendering Layer: Classical Constellation Art (IAU Boundary Clipped) */}
+              {(() => {
+                const artVisible =
+                  layers.showConstellationArt ?? layers.constellationProjectionMode === 'classical';
+                const artOpacity = layers.constellationArtOpacity ?? 0.28;
+                return (
+                  <div className={`pt-1.5 mt-1 border-t space-y-1 ${ui.divider}`}>
+                    <div className="flex items-center justify-between gap-1.5 py-0.5">
+                      <label className="flex items-center gap-1.5 cursor-pointer min-w-0">
+                        <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                          고전 별자리 도안 (경계 내 투영)
+                        </span>
+                      </label>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => setTab('settings')}
+                          title="설정 탭의 성도 표기 설정 > 별자리 투영 모드 열기"
+                          className={`px-1.5 py-0.5 border rounded text-[9.5px] tracking-[-0.04em] cursor-pointer ${ui.buttonIdle}`}
+                        >
+                          투영 모드
+                        </button>
+                        <input
+                          type="checkbox"
+                          checked={artVisible}
+                          onChange={(e) => {
+                            const checked = e.target.checked;
+                            onChangeLayers((p) => ({
+                              ...p,
+                              showConstellationArt: checked,
+                              ...(checked ? { constellationProjectionMode: 'classical' as ConstellationProjectionMode } : {}),
+                            }));
+                          }}
+                          className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
+                        />
+                      </div>
+                    </div>
+
+                    <div
+                      className={`pl-2 pb-0.5 space-y-0.5 transition-opacity ${
+                        artVisible ? '' : 'opacity-45 cursor-not-allowed'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                          고전 도안 투영 진하기
+                        </span>
+                        <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                          {Math.round(artOpacity * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.05}
+                        max={0.85}
+                        step={0.05}
+                        disabled={!artVisible}
+                        value={artOpacity}
+                        onChange={(e) =>
+                          onChangeLayers((p) => ({
+                            ...p,
+                            constellationArtOpacity: Number(e.target.value),
+                          }))
+                        }
+                        aria-label="고전 별자리 도안 투영 진하기"
+                        className={`w-full h-1.5 accent-cyan-500 ${
+                          artVisible ? 'cursor-pointer' : 'cursor-not-allowed'
+                        }`}
+                      />
+                    </div>
                   </div>
                 );
               })()}
@@ -4317,6 +4552,63 @@ export function ControlSidebar({
                   );
                 })}
               </div>
+
+              <label
+                className={`flex items-center justify-between gap-1.5 py-0.5 ${
+                  layers.showSolarSystem ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'
+                }`}
+              >
+                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                  행성 위성의 표면
+                </span>
+                <input
+                  type="checkbox"
+                  checked={layers.showPlanetSurface}
+                  disabled={!layers.showSolarSystem}
+                  onChange={(e) =>
+                    onChangeLayers((p) => ({ ...p, showPlanetSurface: e.target.checked }))
+                  }
+                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                />
+              </label>
+
+              <label
+                className={`flex items-center justify-between gap-1.5 py-0.5 ${
+                  layers.showSolarSystem ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'
+                }`}
+              >
+                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                  태양·달·행성 궤도
+                </span>
+                <input
+                  type="checkbox"
+                  checked={layers.showSolarSystemOrbits}
+                  disabled={!layers.showSolarSystem}
+                  onChange={(e) =>
+                    onChangeLayers((p) => ({ ...p, showSolarSystemOrbits: e.target.checked }))
+                  }
+                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                />
+              </label>
+
+              <label
+                className={`flex items-center justify-between gap-1.5 py-0.5 ${
+                  layers.showSolarSystem ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'
+                }`}
+              >
+                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
+                  태양계 라벨
+                </span>
+                <input
+                  type="checkbox"
+                  checked={layers.showSolarSystemLabels}
+                  disabled={!layers.showSolarSystem}
+                  onChange={(e) =>
+                    onChangeLayers((p) => ({ ...p, showSolarSystemLabels: e.target.checked }))
+                  }
+                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                />
+              </label>
 
               {(() => {
                 const cometsActive = layers.showSolarSystem && (layers.showSolarComets ?? true);
@@ -4482,63 +4774,6 @@ export function ControlSidebar({
                   </div>
                 );
               })()}
-
-              <label
-                className={`flex items-center justify-between gap-1.5 py-0.5 ${
-                  layers.showSolarSystem ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'
-                }`}
-              >
-                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-                  행성 위성의 표면
-                </span>
-                <input
-                  type="checkbox"
-                  checked={layers.showPlanetSurface}
-                  disabled={!layers.showSolarSystem}
-                  onChange={(e) =>
-                    onChangeLayers((p) => ({ ...p, showPlanetSurface: e.target.checked }))
-                  }
-                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
-                />
-              </label>
-
-              <label
-                className={`flex items-center justify-between gap-1.5 py-0.5 ${
-                  layers.showSolarSystem ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'
-                }`}
-              >
-                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-                  태양·달·행성 궤도
-                </span>
-                <input
-                  type="checkbox"
-                  checked={layers.showSolarSystemOrbits}
-                  disabled={!layers.showSolarSystem}
-                  onChange={(e) =>
-                    onChangeLayers((p) => ({ ...p, showSolarSystemOrbits: e.target.checked }))
-                  }
-                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
-                />
-              </label>
-
-              <label
-                className={`flex items-center justify-between gap-1.5 py-0.5 ${
-                  layers.showSolarSystem ? 'cursor-pointer' : 'opacity-45 cursor-not-allowed'
-                }`}
-              >
-                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-                  태양계 라벨
-                </span>
-                <input
-                  type="checkbox"
-                  checked={layers.showSolarSystemLabels}
-                  disabled={!layers.showSolarSystem}
-                  onChange={(e) =>
-                    onChangeLayers((p) => ({ ...p, showSolarSystemLabels: e.target.checked }))
-                  }
-                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
-                />
-              </label>
               </div>
                 );
               })()}
@@ -4562,8 +4797,29 @@ export function ControlSidebar({
                   />
                   <span>항성 (Stars)</span>
                 </span>
-                <span className={`font-mono text-[9.5px] tracking-[-0.04em] tabular-nums whitespace-nowrap shrink-0 ${ui.textMuted}`}>
-                  LoD {layers.magOffset >= 0 ? `+${layers.magOffset.toFixed(1)}` : layers.magOffset.toFixed(1)}m
+                <span className={`font-mono text-[9.5px] tracking-[-0.04em] tabular-nums whitespace-nowrap shrink-0 flex items-center gap-1 ${ui.textMuted}`}>
+                  {layers.enableGaiaLive && catalogs.gaiaLoading ? (
+                    <span className={`inline-flex items-center gap-1 ${ui.accentText}`}>
+                      <Loader2 className="w-2.5 h-2.5 animate-spin" />
+                      <span>Gaia</span>
+                    </span>
+                  ) : catalogs.gaiaProgress.status === 'local' ? (
+                    <span className={ui.accentText}>
+                      로컬 ≤{catalogs.localContinuousMaxMag.toFixed(1)}m
+                    </span>
+                  ) : layers.enableGaiaLive && catalogs.gaiaStars.length > 0 && view.fsz <= GAIA_LIVE_MAX_FSZ ? (
+                    <span className={ui.accentText}>
+                      {catalogs.localStarCount > 0 ? '로컬+Gaia' : 'Gaia'} {catalogs.gaiaStars.length.toLocaleString()}
+                    </span>
+                  ) : catalogs.localStarCount > 0 ? (
+                    <span className={ui.accentText}>
+                      로컬 ≤{catalogs.localContinuousMaxMag.toFixed(1)}m
+                    </span>
+                  ) : (
+                    <span>
+                      LoD {layers.magOffset >= 0 ? `+${layers.magOffset.toFixed(1)}` : layers.magOffset.toFixed(1)}m
+                    </span>
+                  )}
                 </span>
               </button>
 
@@ -4626,46 +4882,28 @@ export function ControlSidebar({
                 />
               </label>
 
-              <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
+              <div className="flex items-center justify-between gap-1.5 py-0.5">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
                   항성 이름 표시
                 </span>
-                <input
-                  type="checkbox"
-                  checked={layers.showStarLabels}
-                  onChange={(e) =>
-                    onChangeLayers((p) => ({ ...p, showStarLabels: e.target.checked }))
-                  }
-                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
-                />
-              </label>
-
-              <div className="pl-2 pb-0.5 grid grid-cols-3 gap-1">
-                {(
-                  [
-                    { id: 'ko', label: '한글' },
-                    { id: 'en', label: '영어' },
-                    { id: 'ko_en', label: '한글(영어)' },
-                  ] as const
-                ).map((opt) => {
-                  const active = (layers.starLabelLanguage ?? 'ko') === opt.id;
-                  return (
-                    <button
-                      key={opt.id}
-                      type="button"
-                      onClick={() =>
-                        onChangeLayers((p) => ({ ...p, starLabelLanguage: opt.id }))
-                      }
-                      aria-pressed={active}
-                      className={`py-1 px-1 border text-[9.5px] font-medium whitespace-nowrap transition-colors cursor-pointer ${
-                        active ? ui.buttonActive : ui.buttonIdle
-                      }`}
-                      style={{ borderRadius: '4px' }}
-                    >
-                      <span>{opt.label}</span>
-                    </button>
-                  );
-                })}
+                <div className="flex items-center gap-1.5 shrink-0">
+                  <button
+                    type="button"
+                    onClick={() => setTab('settings')}
+                    title="설정 탭의 성도 표기 설정에서 항성 표기법 변경"
+                    className={`px-1.5 py-0.5 border rounded text-[9.5px] tracking-[-0.04em] cursor-pointer ${ui.buttonIdle}`}
+                  >
+                    표기 설정
+                  </button>
+                  <input
+                    type="checkbox"
+                    checked={layers.showStarLabels}
+                    onChange={(e) =>
+                      onChangeLayers((p) => ({ ...p, showStarLabels: e.target.checked }))
+                    }
+                    className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
+                  />
+                </div>
               </div>
 
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
@@ -4751,6 +4989,154 @@ export function ControlSidebar({
                 />
               </label>
 
+              {layers.enableGaiaLive && (() => {
+                const gp = catalogs.gaiaProgress;
+                const isTileProgress = gp.mode === 'tile' && gp.totalTiles > 0;
+                const isLocalCovered = gp.status === 'local';
+                const isSupplemental = Boolean(gp.minMag && gp.minMag > 8.35);
+                const pct = isTileProgress
+                  ? Math.max(
+                      catalogs.gaiaLoading ? 8 : 0,
+                      Math.min(100, Math.round((gp.loadedTiles / gp.totalTiles) * 100))
+                    )
+                  : gp.status === 'loaded' || isLocalCovered
+                  ? 100
+                  : 0;
+                const cardCls =
+                  theme === 'white'
+                    ? 'bg-white/80 border-slate-200/90'
+                    : theme === 'red'
+                    ? 'bg-[#180303] border-[#4A0D0D]'
+                    : 'bg-[#0B1220]/90 border-slate-700/70';
+                const trackCls =
+                  theme === 'white'
+                    ? 'bg-slate-200'
+                    : theme === 'red'
+                    ? 'bg-[#360707]'
+                    : 'bg-slate-800';
+                const barCls =
+                  gp.status === 'error'
+                    ? 'bg-amber-500'
+                    : gp.status === 'loaded' || isLocalCovered
+                    ? theme === 'red'
+                      ? 'bg-[#EF4444]'
+                      : theme === 'white'
+                      ? 'bg-emerald-600'
+                      : 'bg-emerald-400'
+                    : theme === 'white'
+                    ? 'bg-sky-600'
+                    : theme === 'red'
+                    ? 'bg-[#EF4444]'
+                    : 'bg-cyan-400';
+
+                return (
+                  <div
+                    role="status"
+                    aria-live="polite"
+                    className={`rounded-md border px-2 py-1.5 space-y-1 text-[10px] tracking-[-0.04em] ${cardCls}`}
+                  >
+                    <div className="flex items-center justify-between gap-1.5">
+                      <span className="flex items-center gap-1.5 min-w-0 font-medium">
+                        {catalogs.gaiaLoading ? (
+                          <Loader2 className={`w-3 h-3 shrink-0 animate-spin ${ui.accentText}`} />
+                        ) : gp.status === 'loaded' || isLocalCovered ? (
+                          <span
+                            className={`w-2 h-2 rounded-full shrink-0 ${
+                              theme === 'red'
+                                ? 'bg-[#EF4444]'
+                                : theme === 'white'
+                                ? 'bg-emerald-500'
+                                : 'bg-emerald-400'
+                            }`}
+                          />
+                        ) : gp.status === 'error' ? (
+                          <CloudAlert className="w-3 h-3 shrink-0 text-amber-400" />
+                        ) : (
+                          <span
+                            className={`w-2 h-2 rounded-full shrink-0 ${
+                              theme === 'white'
+                                ? 'bg-slate-400'
+                                : theme === 'red'
+                                ? 'bg-[#7F1D1D]'
+                                : 'bg-slate-500'
+                            }`}
+                          />
+                        )}
+                        <span className={`truncate ${ui.textPrimary}`}>
+                          {catalogs.gaiaLoading
+                            ? isTileProgress
+                              ? `Gaia DR3 ${isSupplemental ? '보완 ' : ''}로딩 (${gp.loadedTiles}/${gp.totalTiles})`
+                              : `Gaia DR3 ${isSupplemental ? '심층 보완' : '심층 별'} 로딩 중...`
+                            : isLocalCovered
+                            ? `로컬 별목록 적용 중 (≤${catalogs.localContinuousMaxMag.toFixed(2)}m)`
+                            : gp.status === 'loaded'
+                            ? `Gaia DR3 ${isSupplemental ? '보완 완료' : '적용 완료'} (${catalogs.gaiaStars.length.toLocaleString()}개)`
+                            : gp.status === 'error'
+                            ? 'Gaia DR3 응답 지연'
+                            : 'Gaia DR3 대기 중'}
+                        </span>
+                      </span>
+
+                      {(gp.status === 'error' || gp.status === 'loaded') && !catalogs.gaiaLoading ? (
+                        <button
+                          type="button"
+                          onClick={() => retryGaiaLiveFetch()}
+                          title="현재 시야의 Gaia DR3 데이터 다시 불러오기"
+                          className={`px-1.5 py-0.5 border text-[9px] font-medium flex items-center gap-0.5 shrink-0 cursor-pointer transition-colors ${ui.buttonIdle}`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          <RefreshCw className="w-2.5 h-2.5" />
+                          <span>{gp.status === 'error' ? '재시도' : '새로고침'}</span>
+                        </button>
+                      ) : (
+                        <span className={`font-mono text-[9.5px] tabular-nums shrink-0 ${ui.textMuted}`}>
+                          {catalogs.gaiaLoading
+                            ? isSupplemental && gp.minMag
+                              ? `${gp.minMag.toFixed(1)}~${gp.targetMag.toFixed(1)}m`
+                              : `≤${gp.targetMag.toFixed(1)}m`
+                            : isLocalCovered
+                            ? `${catalogs.localStarCount.toLocaleString()}개`
+                            : `시야 ${view.fsz.toFixed(1)}°`}
+                        </span>
+                      )}
+                    </div>
+
+                    {(catalogs.gaiaLoading || gp.status === 'loaded') && (
+                      <div className={`w-full h-1.5 rounded-full overflow-hidden ${trackCls}`}>
+                        {catalogs.gaiaLoading && !isTileProgress ? (
+                          <div className={`h-full rounded-full gaia-progress-indeterminate ${barCls}`} />
+                        ) : (
+                          <div
+                            className={`h-full rounded-full transition-[width] duration-200 ease-out ${barCls}`}
+                            style={{ width: `${pct}%` }}
+                          />
+                        )}
+                      </div>
+                    )}
+
+                    <div className={`text-[9.5px] leading-snug ${ui.textMuted}`}>
+                      {catalogs.gaiaLoading
+                        ? gp.loadedStars > 0
+                          ? `현재 ${gp.loadedStars.toLocaleString()}개 수신됨 · 완료된 영역부터 성도에 표시됩니다.`
+                          : isSupplemental && gp.minMag
+                          ? `로컬 별목록(${gp.minMag.toFixed(2)}m)을 초과한 ~${gp.targetMag.toFixed(1)}m 별만 Gaia DR3에서 조회 중입니다.`
+                          : `최대 ${gp.targetMag.toFixed(1)}등급 심층 별을 비동기 조회하고 있습니다.`
+                        : isLocalCovered
+                        ? gp.reason || `다운로드된 별목록을 내장별처럼 즉시 표시하며, 범위 초과 시 Gaia DR3로 자동 보완합니다.`
+                        : gp.status === 'loaded'
+                        ? gp.errorMessage
+                          ? `${gp.errorMessage} · 성도에서 별을 클릭해 세부 정보를 확인하세요.`
+                          : isSupplemental && gp.minMag
+                          ? `로컬(≤${gp.minMag.toFixed(2)}m) + Gaia 보완(~${gp.targetMag.toFixed(1)}m) 반영됨`
+                          : `≤${gp.targetMag.toFixed(1)}m 반영됨 · 성도의 별을 클릭하면 Gaia DR3 세부 정보가 열립니다.`
+                        : gp.status === 'error'
+                        ? gp.errorMessage || '서버 응답이 지연되어 로컬·Hipparcos 성표를 유지 중입니다.'
+                        : gp.reason || `시야각 ${GAIA_LIVE_MAX_FSZ}° 이하로 확대 시 자동 로딩됩니다.`}
+                    </div>
+                  </div>
+                );
+              })()}
+
               <label className="flex items-center justify-between gap-1.5 py-0.5 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
                   오프라인 배경 성야 보강
@@ -4765,9 +5151,11 @@ export function ControlSidebar({
                 />
               </label>
 
-              <p className={`pt-0.5 text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
-                시야각 10° 이하에서 파인더 타일 캐싱 및 고배율 Gaia DR3 심층 별(최대 20.0m)이 자동 로딩됩니다.
-              </p>
+              {!layers.enableGaiaLive && (
+                <p className={`pt-0.5 text-[10px] tracking-[-0.04em] leading-snug ${ui.textMuted}`}>
+                  시야각 10° 이하에서 파인더 타일 캐싱 및 고배율 Gaia DR3 심층 별(최대 20.0m)이 자동 로딩됩니다.
+                </p>
+              )}
               </div>
               )}
             </div>
@@ -5549,6 +5937,7 @@ export function ControlSidebar({
                 [
                   ['showHorizon', '관측지 지평선 및 방위'],
                   ['showEcliptic', '황도선 (Ecliptic)'],
+                  ['showCelestialPoles', '천구의 북극·남극 십자 (NCP/SCP)'],
                 ] as [keyof LayerSettings, string][]
               ).map(([key, label]) => (
                 <label
@@ -8746,6 +9135,453 @@ export function ControlSidebar({
                   </div>
                 )}
               </div>
+
+              {/* Dedicated Independent Section: 성도 표기 설정 (Constellations · Stars · DSOs · Cardinals) */}
+              {(() => {
+                const conStyle: ConstellationNameStyle = layers.constellationNameStyle ?? 'name_abbr';
+                const conProjMode: ConstellationProjectionMode =
+                  layers.constellationProjectionMode ??
+                  (layers.showConstellationArt ? 'classical' : 'modern');
+                const conArtLayerEnabled =
+                  layers.showConstellationArt ?? conProjMode === 'classical';
+                const conArtOpacity = layers.constellationArtOpacity ?? 0.28;
+                const starStyle: StarNameStyle = layers.starNameStyle ?? 'traditional';
+                const dsoStyle: DsoNameStyle = layers.dsoNameStyle ?? 'code_name';
+
+                const batchPresets: Array<{
+                  id: 'traditional' | 'abbr' | 'catalog' | 'name';
+                  label: string;
+                  title: string;
+                  con: ConstellationNameStyle;
+                  star: StarNameStyle;
+                  dso: DsoNameStyle;
+                }> = [
+                  {
+                    id: 'traditional',
+                    label: '전통',
+                    title: '별자리 전통 라틴명 · 항성 고유명 · 성운/은하 고유명 중심',
+                    con: 'traditional',
+                    star: 'traditional',
+                    dso: 'name',
+                  },
+                  {
+                    id: 'abbr',
+                    label: '약어',
+                    title: '별자리 IAU 3자 약어 · 항성 바이어 기호 · 심우주 분류 약어 중심',
+                    con: 'abbr',
+                    star: 'bayer',
+                    dso: 'abbr',
+                  },
+                  {
+                    id: 'catalog',
+                    label: '번호',
+                    title: '별자리 약어 · 항성 HIP/Gaia 번호 · 심우주 M/NGC/IC 번호 중심',
+                    con: 'abbr',
+                    star: 'catalog',
+                    dso: 'code',
+                  },
+                  {
+                    id: 'name',
+                    label: '이름',
+                    title: '별자리 이름+약어 · 항성 이름+바이어 · 심우주 번호+이름 병기',
+                    con: 'name_abbr',
+                    star: 'full',
+                    dso: 'code_name',
+                  },
+                ];
+
+                const previewCon = formatConstellationDisplayName(
+                  { koName: '오리온자리', name: 'Orion', abbr: 'Ori' },
+                  nameLang,
+                  conStyle === 'name_abbr',
+                  conStyle
+                );
+                const previewStar =
+                  formatStarLabelByStyle(
+                    {
+                      id: 'Betelgeuse',
+                      hip: 27989,
+                      koName: '베텔게우스',
+                      name: 'Betelgeuse',
+                      bayer: 'α Ori',
+                    },
+                    nameLang,
+                    starStyle,
+                    30
+                  ) ?? '베텔게우스';
+                const previewDso = formatDsoChartLabel(
+                  'M42',
+                  '오리온 대성운',
+                  'Orion Nebula',
+                  nameLang,
+                  true,
+                  dsoStyle,
+                  'DN'
+                );
+                const previewDir = `${formatCardinalLabel(0, nameLang)}/${formatCardinalLabel(90, nameLang)}`;
+
+                return (
+                  <div className={`border rounded-md p-2.5 space-y-2.5 ${cardIdleCls}`}>
+                    <div className="flex items-center justify-between gap-1">
+                      <div
+                        className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}
+                      >
+                        <Type className="w-3.5 h-3.5 shrink-0" />
+                        <span>성도 표기 설정</span>
+                      </div>
+                      <span className={`text-[9.5px] tracking-[-0.04em] ${ui.textMuted}`}>
+                        별자리 · 항성 · 성운
+                      </span>
+                    </div>
+
+                    {/* Quick Visibility Toggles (별자리 이름 / 항성 이름 / 성운·DSO 이름) */}
+                    <div className="grid grid-cols-3 gap-1">
+                      {(
+                        [
+                          { key: 'showConstellationNames', label: '별자리 이름' },
+                          { key: 'showStarLabels', label: '항성 이름' },
+                          { key: 'showDsoLabels', label: '성운·DSO' },
+                        ] as const
+                      ).map((item) => {
+                        const checked = Boolean(layers[item.key]);
+                        return (
+                          <button
+                            key={item.key}
+                            type="button"
+                            onClick={() =>
+                              onChangeLayers((p) => ({ ...p, [item.key]: !p[item.key] }))
+                            }
+                            aria-pressed={checked}
+                            className={`py-1 px-1 border rounded text-[9.5px] font-medium whitespace-nowrap tracking-[-0.04em] transition-colors cursor-pointer ${
+                              checked ? ui.buttonActive : ui.buttonIdle
+                            }`}
+                          >
+                            {item.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    {/* Batch Presets (전통 / 약어 / 번호 / 이름) */}
+                    <div className={`pt-2 border-t space-y-1 ${ui.divider}`}>
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className={`font-medium ${ui.textSecondary}`}>일괄 표기법</span>
+                        <span className={`text-[9px] ${ui.textMuted}`}>전체 천체 한번에 적용</span>
+                      </div>
+                      <div className="grid grid-cols-4 gap-1">
+                        {batchPresets.map((preset) => {
+                          const isMatch =
+                            conStyle === preset.con &&
+                            starStyle === preset.star &&
+                            dsoStyle === preset.dso;
+                          return (
+                            <button
+                              key={preset.id}
+                              type="button"
+                              title={preset.title}
+                              onClick={() =>
+                                onChangeLayers((p) => ({
+                                  ...p,
+                                  constellationNameStyle: preset.con,
+                                  starNameStyle: preset.star,
+                                  dsoNameStyle: preset.dso,
+                                }))
+                              }
+                              aria-pressed={isMatch}
+                              className={`py-1.5 px-1 border rounded text-[10px] font-semibold whitespace-nowrap transition-colors cursor-pointer ${
+                                isMatch ? ui.buttonActive : ui.buttonIdle
+                              }`}
+                            >
+                              {preset.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Global Language Notation (한글 / 영어 / 한글(영어)) */}
+                    <div className={`pt-2 border-t space-y-1 ${ui.divider}`}>
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className={`font-medium ${ui.textSecondary}`}>표기 언어</span>
+                        <span className={`text-[9px] ${ui.textMuted}`}>천체 · 동서남북 방위</span>
+                      </div>
+                      <div className="grid grid-cols-3 gap-1">
+                        {(
+                          [
+                            { id: 'ko', label: '한글' },
+                            { id: 'en', label: '영어' },
+                            { id: 'ko_en', label: '한글(영어)' },
+                          ] as const
+                        ).map((opt) => {
+                          const active = nameLang === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() =>
+                                onChangeLayers((p) => ({ ...p, starLabelLanguage: opt.id }))
+                              }
+                              aria-pressed={active}
+                              className={`py-1 px-1 border rounded text-[10px] font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                                active ? ui.buttonActive : ui.buttonIdle
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Per-Category Detailed Notation Controls */}
+                    <div className={`pt-2 border-t space-y-2 ${ui.divider}`}>
+                      {/* 1. 별자리 섹션 (이름 표기 + 투영 모드 현대/고전 도안 + 독립 렌더링 레이어) */}
+                      <div className="space-y-2">
+                        <div className="space-y-1">
+                          <div className={`text-[10px] font-medium ${ui.textSecondary}`}>
+                            별자리 이름 표기
+                          </div>
+                          <div className="grid grid-cols-4 gap-1">
+                            {(
+                              [
+                                { id: 'traditional', label: '전통' },
+                                { id: 'abbr', label: '약어' },
+                                { id: 'name', label: '이름' },
+                                { id: 'name_abbr', label: '이름+약어' },
+                              ] as const
+                            ).map((opt) => (
+                              <button
+                                key={opt.id}
+                                type="button"
+                                onClick={() =>
+                                  onChangeLayers((p) => ({
+                                    ...p,
+                                    constellationNameStyle: opt.id,
+                                  }))
+                                }
+                                aria-pressed={conStyle === opt.id}
+                                className={`py-1 px-0.5 border rounded text-[9.5px] font-medium whitespace-nowrap tracking-[-0.05em] transition-colors cursor-pointer ${
+                                  conStyle === opt.id ? ui.buttonActive : ui.buttonIdle
+                                }`}
+                              >
+                                {opt.label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+
+                        {/* 투영 모드 (현대 / 고전 도안) */}
+                        <div className="space-y-1">
+                          <div className="flex items-center justify-between gap-1 text-[10px]">
+                            <span className={`font-medium ${ui.textSecondary}`}>
+                              별자리 투영 모드
+                            </span>
+                            <span className={`text-[9px] tracking-[-0.03em] ${ui.textMuted}`}>
+                              IAU 경계선 내부 투영
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-2 gap-1">
+                            {(
+                              [
+                                {
+                                  id: 'modern' as ConstellationProjectionMode,
+                                  label: '현대',
+                                  title: '현대 기하학 성도 (별자리선 및 경계선 중심)',
+                                },
+                                {
+                                  id: 'classical' as ConstellationProjectionMode,
+                                  label: '고전 도안',
+                                  title: 'IAU 별자리 경계선 내부에 고전 성도 도안을 연하게 투영',
+                                },
+                              ] as const
+                            ).map((opt) => {
+                              const active = conProjMode === opt.id;
+                              return (
+                                <button
+                                  key={opt.id}
+                                  type="button"
+                                  title={opt.title}
+                                  onClick={() =>
+                                    onChangeLayers((p) => ({
+                                      ...p,
+                                      constellationProjectionMode: opt.id,
+                                      showConstellationArt: opt.id === 'classical',
+                                    }))
+                                  }
+                                  aria-pressed={active}
+                                  className={`py-1 px-1.5 border rounded text-[10px] font-medium whitespace-nowrap transition-colors cursor-pointer ${
+                                    active ? ui.buttonActive : ui.buttonIdle
+                                  }`}
+                                >
+                                  {opt.label}
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+
+                        {/* 독립 렌더링 레이어: 고전 도안 레이어 ON/OFF + 투영 진하기 */}
+                        <div className={`rounded border px-2 py-1.5 space-y-1.5 ${ui.panelMuted} ${ui.border}`}>
+                          <div className="flex items-center justify-between gap-1.5">
+                            <label className="flex items-center gap-1.5 cursor-pointer min-w-0">
+                              <input
+                                type="checkbox"
+                                checked={conArtLayerEnabled}
+                                onChange={(e) => {
+                                  const checked = e.target.checked;
+                                  onChangeLayers((p) => ({
+                                    ...p,
+                                    showConstellationArt: checked,
+                                    ...(checked
+                                      ? {
+                                          constellationProjectionMode:
+                                            'classical' as ConstellationProjectionMode,
+                                        }
+                                      : {}),
+                                  }));
+                                }}
+                                className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
+                              />
+                              <span
+                                className={`text-[10px] font-medium whitespace-nowrap tracking-[-0.04em] ${ui.textSecondary}`}
+                              >
+                                고전 도안 렌더링 레이어
+                              </span>
+                            </label>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onChangeLayers((p) => ({
+                                  ...p,
+                                  showConstellationBoundaries: !p.showConstellationBoundaries,
+                                }))
+                              }
+                              aria-pressed={layers.showConstellationBoundaries}
+                              title="별자리 IAU 경계선 함께 표시/숨김"
+                              className={`px-1.5 py-0.5 border rounded text-[9px] font-medium whitespace-nowrap tracking-[-0.04em] transition-colors cursor-pointer ${
+                                layers.showConstellationBoundaries
+                                  ? ui.buttonActive
+                                  : ui.buttonIdle
+                              }`}
+                            >
+                              경계선 {layers.showConstellationBoundaries ? 'ON' : 'OFF'}
+                            </button>
+                          </div>
+
+                          <div
+                            className={`space-y-0.5 transition-opacity ${
+                              conArtLayerEnabled ? '' : 'opacity-45 cursor-not-allowed'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between text-[9.5px]">
+                              <span className={ui.textMuted}>도안 투영 진하기</span>
+                              <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                                {Math.round(conArtOpacity * 100)}%
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min={0.05}
+                              max={0.85}
+                              step={0.05}
+                              disabled={!conArtLayerEnabled}
+                              value={conArtOpacity}
+                              onChange={(e) =>
+                                onChangeLayers((p) => ({
+                                  ...p,
+                                  constellationArtOpacity: Number(e.target.value),
+                                }))
+                              }
+                              aria-label="고전 도안 투영 진하기"
+                              className={`w-full h-1.5 accent-cyan-500 ${
+                                conArtLayerEnabled ? 'cursor-pointer' : 'cursor-not-allowed'
+                              }`}
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* 2. 항성 이름 표기 */}
+                      <div className="space-y-1">
+                        <div className={`text-[10px] font-medium ${ui.textSecondary}`}>
+                          항성 이름 표기
+                        </div>
+                        <div className="grid grid-cols-4 gap-1">
+                          {(
+                            [
+                              { id: 'traditional', label: '전통' },
+                              { id: 'bayer', label: '약어' },
+                              { id: 'catalog', label: '번호' },
+                              { id: 'full', label: '이름+약어' },
+                            ] as const
+                          ).map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() =>
+                                onChangeLayers((p) => ({
+                                  ...p,
+                                  starNameStyle: opt.id,
+                                }))
+                              }
+                              aria-pressed={starStyle === opt.id}
+                              className={`py-1 px-0.5 border rounded text-[9.5px] font-medium whitespace-nowrap tracking-[-0.05em] transition-colors cursor-pointer ${
+                                starStyle === opt.id ? ui.buttonActive : ui.buttonIdle
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {/* 3. 성운·심우주(DSO) 표기 */}
+                      <div className="space-y-1">
+                        <div className={`text-[10px] font-medium ${ui.textSecondary}`}>
+                          성운·심우주 표기
+                        </div>
+                        <div className="grid grid-cols-4 gap-1">
+                          {(
+                            [
+                              { id: 'name', label: '전통·이름' },
+                              { id: 'abbr', label: '약어' },
+                              { id: 'code', label: '번호' },
+                              { id: 'code_name', label: '번호+이름' },
+                            ] as const
+                          ).map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() =>
+                                onChangeLayers((p) => ({
+                                  ...p,
+                                  dsoNameStyle: opt.id,
+                                }))
+                              }
+                              aria-pressed={dsoStyle === opt.id}
+                              className={`py-1 px-0.5 border rounded text-[9.5px] font-medium whitespace-nowrap tracking-[-0.05em] transition-colors cursor-pointer ${
+                                dsoStyle === opt.id ? ui.buttonActive : ui.buttonIdle
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Live Preview */}
+                    <div
+                      className={`px-2 py-1.5 rounded border text-[9.5px] space-y-0.5 tracking-[-0.03em] ${ui.panelMuted} ${ui.border} ${ui.textSecondary}`}
+                    >
+                      <div className={`text-[9px] font-medium ${ui.textMuted}`}>성도 표기 미리보기</div>
+                      <div className="truncate font-mono text-[9.5px]">
+                        {previewCon} · {previewStar} · {previewDso} · {previewDir}
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Font Family & Font Size +/- with Auto Single-Line Condensation */}
               {(() => {

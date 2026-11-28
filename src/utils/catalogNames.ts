@@ -1,4 +1,12 @@
-import { DeepSkyObject } from '../types/astronomy';
+import {
+  ConstellationNameStyle,
+  DeepSkyObject,
+  DsoNameStyle,
+  DsoType,
+  ObjectNameLanguage,
+  Star,
+  StarNameStyle,
+} from '../types/astronomy';
 
 /**
  * Additional NGC/IC, Arp, UGC, PGC, Sharpless, Melotte, Collinder, PK, and ESO
@@ -393,16 +401,27 @@ export function getSecondaryDesignations(
 }
 
 /**
- * Formats a celestial object's display name as "한국어명 (English Name)" whenever
- * both exist and are distinct; falls back cleanly to whichever name or ID is available.
+ * Formats a celestial object's display name according to the user's global naming notation:
+ * - 'ko': Korean name (falling back to English / catalog fallback)
+ * - 'en': English name (falling back to Korean / catalog fallback)
+ * - 'ko_en': "한국어명 (English Name)" when both exist and differ
  */
 export function formatObjectDisplayName(
   koName?: string,
   name?: string,
-  fallback?: string
+  fallback?: string,
+  lang: ObjectNameLanguage = 'ko_en'
 ): string {
   const ko = koName?.trim() || '';
   const en = name?.trim() || '';
+  const fb = fallback?.trim() || '';
+
+  if (lang === 'ko') {
+    return ko || en || fb;
+  }
+  if (lang === 'en') {
+    return en || ko || fb;
+  }
 
   if (ko && en) {
     const koLower = ko.toLowerCase();
@@ -414,7 +433,141 @@ export function formatObjectDisplayName(
   }
   if (ko) return ko;
   if (en) return en;
-  return fallback?.trim() || '';
+  return fb;
+}
+
+/**
+ * Formats a star's proper name for canvas labels according to the global naming notation.
+ */
+export function formatStarChartLabel(
+  koName?: string,
+  enName?: string,
+  lang: ObjectNameLanguage = 'ko'
+): string | null {
+  const res = formatObjectDisplayName(koName, enName, '', lang);
+  return res || null;
+}
+
+/**
+ * Formats a star's chart label according to the chosen StarNameStyle and global language.
+ */
+export function formatStarLabelByStyle(
+  star: Pick<Star, 'id' | 'hip' | 'gaiaId' | 'koName' | 'name' | 'bayer'>,
+  lang: ObjectNameLanguage = 'ko',
+  style: StarNameStyle = 'traditional',
+  viewFsz = 30
+): string | null {
+  const proper = formatStarChartLabel(star.koName, star.name, lang);
+  const bayer = star.bayer?.trim() || '';
+  const catalogCode = star.hip
+    ? `HIP ${star.hip}`
+    : star.gaiaId
+    ? `Gaia ${star.gaiaId.slice(-6)}`
+    : star.id && !star.id.startsWith('field_')
+    ? star.id
+    : '';
+
+  if (style === 'bayer') {
+    return bayer || proper || catalogCode || null;
+  }
+  if (style === 'catalog') {
+    return catalogCode || bayer || proper || null;
+  }
+  if (style === 'full') {
+    if (proper && bayer && proper.toLowerCase() !== bayer.toLowerCase()) {
+      return `${proper} (${bayer})`;
+    }
+    return proper || bayer || catalogCode || null;
+  }
+  // 'traditional'
+  if (proper && (viewFsz < 95 || !bayer)) return proper;
+  return bayer || proper || catalogCode || null;
+}
+
+/**
+ * Formats a DSO chart label combining its catalog code (e.g. M42), type abbreviation,
+ * and common/traditional name according to the global naming notation and DsoNameStyle.
+ */
+export function formatDsoChartLabel(
+  primaryCode: string,
+  koName?: string,
+  enName?: string,
+  lang: ObjectNameLanguage = 'ko',
+  showCommon = true,
+  style: DsoNameStyle = 'code_name',
+  dsoType?: DsoType
+): string {
+  const common = formatObjectDisplayName(koName, enName, '', lang);
+  if (style === 'code') {
+    return primaryCode;
+  }
+  if (style === 'abbr') {
+    return dsoType ? `${dsoType} ${primaryCode}` : primaryCode;
+  }
+  if (style === 'name') {
+    return common || primaryCode;
+  }
+  // 'code_name'
+  if (!showCommon || !common) return primaryCode;
+  const codeNorm = primaryCode.replace(/\s+/g, '').toLowerCase();
+  const commonNorm = common.replace(/\s+/g, '').toLowerCase();
+  if (commonNorm === codeNorm) return primaryCode;
+  return `${primaryCode} ${common}`;
+}
+
+/**
+ * Formats a constellation display name according to the global naming notation
+ * and ConstellationNameStyle ('traditional' | 'name' | 'name_abbr' | 'abbr').
+ */
+export function formatConstellationDisplayName(
+  con: { koName: string; name: string; abbr: string },
+  lang: ObjectNameLanguage = 'ko',
+  includeAbbr = true,
+  style?: ConstellationNameStyle
+): string {
+  const ko = con.koName?.trim() || '';
+  const en = con.name?.trim() || '';
+  const abbr = con.abbr?.trim() || '';
+  const effectiveStyle: ConstellationNameStyle =
+    style ?? (includeAbbr ? 'name_abbr' : 'name');
+
+  if (effectiveStyle === 'abbr') {
+    return (abbr || en || ko).toUpperCase();
+  }
+  if (effectiveStyle === 'traditional') {
+    // Classical Latin / traditional IAU constellation name
+    if (lang === 'ko_en' && ko && en && ko.toLowerCase() !== en.toLowerCase()) {
+      return `${en} (${ko})`;
+    }
+    return en || ko || abbr;
+  }
+  if (effectiveStyle === 'name') {
+    if (lang === 'en') return en || ko || abbr;
+    if (lang === 'ko_en') {
+      if (ko && en && ko.toLowerCase() !== en.toLowerCase()) return `${ko} (${en})`;
+      return ko || en || abbr;
+    }
+    return ko || en || abbr;
+  }
+
+  // 'name_abbr'
+  if (lang === 'en') {
+    const base = en || ko || abbr;
+    return includeAbbr && abbr && base.toLowerCase() !== abbr.toLowerCase()
+      ? `${base} (${abbr})`
+      : base;
+  }
+  if (lang === 'ko_en') {
+    if (ko && en && ko.toLowerCase() !== en.toLowerCase()) {
+      return includeAbbr && abbr ? `${ko} (${en}, ${abbr})` : `${ko} (${en})`;
+    }
+    const base = ko || en || abbr;
+    return includeAbbr && abbr ? `${base} (${abbr})` : base;
+  }
+  const base = ko || en || abbr;
+  return includeAbbr && abbr && base.toLowerCase() !== abbr.toLowerCase()
+    ? `${base} (${abbr})`
+    : base;
 }
 
 /**

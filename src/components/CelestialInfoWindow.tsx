@@ -14,6 +14,7 @@ import {
   Pencil,
   Plus,
   Route,
+  Share2,
   Star,
   Target,
   Trash2,
@@ -21,12 +22,15 @@ import {
   X,
 } from 'lucide-react';
 import { CatalogSnapshot } from '../data/catalogLoader';
+import { isMagCoveredByLocalCatalog } from '../utils/localStarCatalogs';
 import {
   ChartViewState,
+  ConstellationLineStyle,
   EquipmentLockerState,
   ObservationLogEntry,
   ObservationLogStoreState,
   ObservationSeeingGrade,
+  ObjectNameLanguage,
   ObserverConfig,
   ObservingListGroup,
   ObservingSessionEntry,
@@ -50,6 +54,7 @@ import {
 } from '../utils/astronomy';
 import {
   formatCatalogCode,
+  formatConstellationDisplayName,
   formatObjectDisplayName,
   getBayerExpandedNames,
   getCatalogDesignationPriority,
@@ -70,6 +75,7 @@ import {
 import { computePlanetOrientation } from '../utils/planetRenderer';
 import { getSolarSystemBodies } from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
+import { TargetShareModal } from './TargetShareModal';
 
 const IAU_CONSTELLATION_NAMES: Record<string, string> = {
   and: 'Andromeda',
@@ -167,6 +173,8 @@ export interface CelestialInfoWindowProps {
   centerLocked: boolean;
   solarTrails: Record<string, number>;
   theme: ThemeMode;
+  nameLanguage?: ObjectNameLanguage;
+  constellationLineStyle?: ConstellationLineStyle;
   observer: ObserverConfig;
   optics: OpticsSettings;
   equipmentLocker: EquipmentLockerState;
@@ -209,6 +217,8 @@ export function CelestialInfoWindow({
   centerLocked,
   solarTrails,
   theme,
+  nameLanguage = 'ko',
+  constellationLineStyle = 'traditional',
   observer,
   optics,
   equipmentLocker,
@@ -237,6 +247,7 @@ export function CelestialInfoWindow({
 }: CelestialInfoWindowProps) {
   const ui = getUiTheme(theme);
   const [detailTargetListId, setDetailTargetListId] = useState<string>('__tonight__');
+  const [shareOpen, setShareOpen] = useState(false);
   const [detailLogDraft, setDetailLogDraft] = useState<{
     id: string | null;
     observedAtLocal: string;
@@ -249,6 +260,7 @@ export function CelestialInfoWindow({
 
   useEffect(() => {
     setDetailLogDraft(null);
+    setShareOpen(false);
   }, [selected.data.id]);
 
   useEffect(() => {
@@ -313,9 +325,11 @@ export function CelestialInfoWindow({
       label,
       catalogs.brightStars,
       selected.kind === 'star' ? selected.data.id : undefined,
-      selected.kind === 'star' ? selected.data.hip : undefined
+      selected.kind === 'star' ? selected.data.hip : undefined,
+      catalogs.constellations,
+      constellationLineStyle
     );
-  }, [selected, catalogs.brightStars]);
+  }, [selected, catalogs.brightStars, catalogs.constellations, constellationLineStyle]);
 
   const focusHopRoute = (
     fromRa: number,
@@ -339,7 +353,17 @@ export function CelestialInfoWindow({
       ...p,
       ra: ((midRaDeg / 15) % 24 + 24) % 24,
       dec: midDecDeg,
-      fsz: Math.max(12, Math.min(95, distDeg * 1.65)),
+      fsz: Math.max(10, Math.min(95, distDeg * 1.95)),
+    }));
+  };
+
+  const focusAnchorStar = (fromRa: number, fromDec: number, distDeg: number) => {
+    onChangeOptics((p) => ({ ...p, showStarHop: true }));
+    onChangeView((p) => ({
+      ...p,
+      ra: ((fromRa / 15) % 24 + 24) % 24,
+      dec: fromDec,
+      fsz: Math.max(12, Math.min(60, Math.max(18, distDeg * 2.4))),
     }));
   };
 
@@ -639,7 +663,15 @@ export function CelestialInfoWindow({
       ? IAU_CONSTELLATION_NAMES[constellation.abbr.toLowerCase()] || constellation.name
       : '';
     const conLabel = constellation
-      ? `${constellation.koName}(${iauConstellationName}, ${constellation.abbr})`
+      ? formatConstellationDisplayName(
+          {
+            koName: constellation.koName,
+            name: iauConstellationName || constellation.name,
+            abbr: constellation.abbr,
+          },
+          nameLanguage,
+          true
+        )
       : resolvedConAbbr;
 
     const topFallbackCode =
@@ -655,7 +687,8 @@ export function CelestialInfoWindow({
     const primaryTitle = formatObjectDisplayName(
       names[0] && /[가-힣]/.test(names[0]) ? names[0] : selected.data.koName,
       names.find((n) => !/[가-힣]/.test(n)) || selected.data.name,
-      topFallbackCode
+      topFallbackCode,
+      nameLanguage
     );
 
     // Header designation summary: Messier / Caldwell always first, alongside secondary NGC/IC/HD/HIP numbers
@@ -703,6 +736,7 @@ export function CelestialInfoWindow({
     catalogs.gaiaStars,
     catalogs.doubleStars,
     catalogs.constellations,
+    nameLanguage,
   ]);
 
   // Compact SVG polyline for 24h altitude curve + solar day/twilight/night bar
@@ -885,6 +919,8 @@ export function CelestialInfoWindow({
               ? selected.data.isMultiple
                 ? `다중성 (Multiple Star · ${selected.data.compCount}구성성)`
                 : '이중성 (Double Star · 2구성성)'
+              : selected.data.gaiaId
+              ? 'Gaia DR3 항성 (ESA Gaia DR3)'
               : '항성 (Fixed Star)'}
           </div>
           {objectNamesSummary.allLabels.length > 0 && (
@@ -910,8 +946,8 @@ export function CelestialInfoWindow({
           )}
         </div>
 
-        {/* Action Row: 시야중심 | 선택마크 | 목록추가 */}
-        <div className="grid grid-cols-3 gap-1">
+        {/* Action Row: 시야중심 | 선택마크 | 목록추가 | 공유 */}
+        <div className="grid grid-cols-4 gap-1">
           <button
             type="button"
             onClick={onToggleCenterLock}
@@ -920,7 +956,7 @@ export function CelestialInfoWindow({
                 ? '시야 중심 추적 중 (클릭 또는 하늘 배경 클릭 시 해제)'
                 : '시야 중심 고정 (시간 가속 시 자동 추적)'
             }
-            className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${
+            className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 cursor-pointer ${
               centerLocked ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '5px' }}
@@ -934,7 +970,7 @@ export function CelestialInfoWindow({
               onChangeOptics((p) => ({ ...p, showSelectionMark: !p.showSelectionMark }))
             }
             title={optics.showSelectionMark ? '선택 마크 숨기기' : '선택 마크 표시'}
-            className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${
+            className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 cursor-pointer ${
               optics.showSelectionMark ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '5px' }}
@@ -958,7 +994,7 @@ export function CelestialInfoWindow({
                       : detailTargetList?.name ?? '관측 목록'
                   }’에 추가`
             }
-            className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 ${
+            className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 cursor-pointer ${
               sessionEntry ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '5px' }}
@@ -974,6 +1010,19 @@ export function CelestialInfoWindow({
                 <span>목록 추가</span>
               </>
             )}
+          </button>
+          <button
+            type="button"
+            onClick={() => setShareOpen(true)}
+            title="천체 정보를 텍스트 카드 또는 PNG 이미지로 공유·저장"
+            aria-label="천체 정보 공유"
+            className={`py-1.5 px-1 border text-[10px] tracking-[-0.06em] font-medium flex flex-col items-center justify-center gap-0.5 whitespace-nowrap shrink-0 cursor-pointer ${
+              shareOpen ? ui.buttonActive : ui.buttonIdle
+            }`}
+            style={{ borderRadius: '5px' }}
+          >
+            <Share2 className="w-3 h-3 shrink-0" />
+            <span>공유</span>
           </button>
         </div>
 
@@ -1084,12 +1133,14 @@ export function CelestialInfoWindow({
             </span>
             <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
               {selectedAltAz.altDeg.toFixed(1)}° / {selectedAltAz.azDeg.toFixed(0)}°(
-              {getCompassDirection(selectedAltAz.azDeg)})
+              {getCompassDirection(selectedAltAz.azDeg, nameLanguage)})
             </span>
           </div>
           <div className="flex items-center justify-between gap-1 px-2 py-1.5">
             <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-              겉보기 등급
+              {selected.kind === 'star' && selected.data.gaiaId
+                ? 'Gaia G 등급'
+                : '겉보기 등급'}
             </span>
             <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right">
               {selected.data.mag.toFixed(2)}m
@@ -1220,14 +1271,65 @@ export function CelestialInfoWindow({
               )}
             </>
           ) : (
-            <div className="flex items-center justify-between gap-1 px-2 py-1.5">
-              <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
-                색지수 B-V
-              </span>
-              <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right">
-                {selected.data.bv.toFixed(2)}
-              </span>
-            </div>
+            <>
+              <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+                <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
+                  색지수 B-V / 분광
+                </span>
+                <span className="font-mono text-[10px] tracking-[-0.04em] tabular-nums text-right truncate">
+                  {(() => {
+                    const bv = selected.data.bv;
+                    const spec =
+                      bv < -0.25
+                        ? 'O형'
+                        : bv < 0.0
+                        ? 'B형'
+                        : bv < 0.3
+                        ? 'A형'
+                        : bv < 0.58
+                        ? 'F형'
+                        : bv < 0.82
+                        ? 'G형'
+                        : bv < 1.4
+                        ? 'K형'
+                        : 'M형';
+                    const teffK = Math.round(
+                      4600 * (1 / (0.92 * Math.max(-0.4, bv) + 1.7) + 1 / (0.92 * Math.max(-0.4, bv) + 0.62))
+                    );
+                    const bvStr = `${bv >= 0 ? '+' : ''}${bv.toFixed(2)}`;
+                    return `${bvStr} · ${spec} (~${teffK.toLocaleString()} K)`;
+                  })()}
+                </span>
+              </div>
+              {selected.data.gaiaId && (
+                <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+                  <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
+                    Gaia Source ID
+                  </span>
+                  <span className="font-mono text-[9.5px] tracking-[-0.04em] tabular-nums text-right select-all truncate">
+                    {selected.data.gaiaId}
+                  </span>
+                </div>
+              )}
+              <div className="flex items-center justify-between gap-1 px-2 py-1.5">
+                <span className={`whitespace-nowrap tracking-[-0.06em] shrink-0 ${ui.textMuted}`}>
+                  카탈로그 출처
+                </span>
+                <span className="font-mono text-[10px] tracking-[-0.04em] text-right truncate">
+                  {selected.data.gaiaId
+                    ? catalogs.localStarCount > 0 && isMagCoveredByLocalCatalog(selected.data.mag)
+                      ? '로컬 별목록 · Gaia DR3'
+                      : 'ESA Gaia DR3 (실시간)'
+                    : selected.data.hip
+                    ? catalogs.localStarCount > 0 &&
+                      selected.data.mag > 8.0 &&
+                      isMagCoveredByLocalCatalog(selected.data.mag)
+                      ? `로컬 별목록 · HIP ${selected.data.hip}`
+                      : `Hipparcos (HIP ${selected.data.hip})`
+                    : selected.data.id}
+                </span>
+              </div>
+            </>
           )}
         </div>
 
@@ -1495,30 +1597,51 @@ export function CelestialInfoWindow({
                       className={`font-mono text-[10px] tracking-[-0.04em] tabular-nums truncate ${ui.textSecondary}`}
                     >
                       {hopGuides.length > 1 ? `${idx + 1}. ` : ''}
+                      {guide.fromConstellationKo && (
+                        <span className={`${ui.accentText} mr-1`}>{guide.fromConstellationKo}</span>
+                      )}
                       <span className="font-semibold">
-                        {guide.fromStar.koName || guide.fromStar.name || guide.fromStar.bayer}
+                        {guide.fromStar.koName || guide.fromStar.name || guide.fromStar.bayer || guide.fromStar.id}
                       </span>{' '}
                       ({guide.fromStar.mag.toFixed(1)}m)
                     </div>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        focusHopRoute(
-                          guide.fromStar.ra,
-                          guide.fromStar.dec,
-                          guide.toRa,
-                          guide.toDec,
-                          guide.distanceDeg
-                        )
-                      }
-                      className={`px-1.5 py-0.5 border text-[9.5px] tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 ${ui.buttonIdle}`}
-                      style={{ borderRadius: '4px' }}
-                    >
-                      보기
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          focusAnchorStar(
+                            guide.fromStar.ra,
+                            guide.fromStar.dec,
+                            guide.distanceDeg
+                          )
+                        }
+                        title="출발 별자리 항성을 중심으로 이동"
+                        className={`px-1.5 py-0.5 border text-[9.5px] tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 cursor-pointer ${ui.buttonIdle}`}
+                        style={{ borderRadius: '4px' }}
+                      >
+                        기준별
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          focusHopRoute(
+                            guide.fromStar.ra,
+                            guide.fromStar.dec,
+                            guide.toRa,
+                            guide.toDec,
+                            guide.distanceDeg
+                          )
+                        }
+                        title="출발 별자리 항성과 대상 천체 경로를 한눈에 보기"
+                        className={`px-1.5 py-0.5 border text-[9.5px] tracking-[-0.05em] font-medium whitespace-nowrap shrink-0 cursor-pointer ${ui.buttonIdle}`}
+                        style={{ borderRadius: '4px' }}
+                      >
+                        보기
+                      </button>
+                    </div>
                   </div>
                   <div className={`font-mono text-[10px] tracking-[-0.04em] tabular-nums ${ui.textMuted}`}>
-                    이격 {guide.distanceDeg.toFixed(2)}° · PA {guide.paDeg.toFixed(0)}°
+                    이격 {guide.distanceDeg.toFixed(2)}° · 방위 {guide.paDeg.toFixed(0)}° ({getCompassDirection(guide.paDeg, nameLanguage)})
                   </div>
                   {guide.note && (
                     <div className={`text-[10px] tracking-[-0.03em] leading-snug break-keep ${ui.textMuted}`}>
@@ -1889,6 +2012,26 @@ export function CelestialInfoWindow({
           </button>
         </div>
       </div>
+
+      <TargetShareModal
+        open={shareOpen}
+        theme={theme}
+        onClose={() => setShareOpen(false)}
+        data={{
+          selected,
+          primaryTitle: objectNamesSummary.primaryTitle,
+          conLabel: objectNamesSummary.conLabel,
+          designations: objectNamesSummary.designations,
+          altDeg: selectedAltAz.altDeg,
+          azDeg: selectedAltAz.azDeg,
+          altProfile,
+          hopGuides,
+          observer,
+          obsTimeMs,
+          nameLanguage,
+          activeEquipSummary,
+        }}
+      />
     </section>
   );
 }

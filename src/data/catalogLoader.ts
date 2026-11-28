@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   CaldwellEntry,
   Constellation,
@@ -10,9 +10,15 @@ import {
   NebulaContour,
   Star,
 } from '../types/astronomy';
-import { DEG2RAD, getDsoLimitingMagnitude, getLimitingMagnitude } from '../utils/astronomy';
+import {
+  angularDistanceDeg,
+  DEG2RAD,
+  getDsoLimitingMagnitude,
+  getLimitingMagnitude,
+} from '../utils/astronomy';
 import { formatCatalogCode, normalizeCatalogToken } from '../utils/catalogNames';
 import {
+  getLocalContinuousMaxMag,
   getLocalStarCatalogState,
   getLocalStarSpatialIndex,
   initLocalStarCatalogs,
@@ -108,6 +114,29 @@ export interface GaiaPatchMeta {
   tiles?: GaiaTileCoverage[];
 }
 
+export type GaiaLoadStatus = 'off' | 'standby' | 'local' | 'loading' | 'loaded' | 'error';
+
+export interface GaiaLoadProgress {
+  status: GaiaLoadStatus;
+  mode: 'idle' | 'tile' | 'cone';
+  loadedTiles: number;
+  totalTiles: number;
+  loadedStars: number;
+  minMag?: number;
+  targetMag: number;
+  reason?: string;
+  errorMessage?: string;
+}
+
+const DEFAULT_GAIA_PROGRESS: GaiaLoadProgress = {
+  status: 'standby',
+  mode: 'idle',
+  loadedTiles: 0,
+  totalTiles: 0,
+  loadedStars: 0,
+  targetMag: 0,
+};
+
 export interface CatalogSnapshot {
   brightStars: Star[];
   deepStars: Star[];
@@ -115,10 +144,13 @@ export interface CatalogSnapshot {
   localStarTiles: LocalStarSpatialIndex;
   localStarCount: number;
   localStarMaxMag: number;
+  localContinuousMaxMag: number;
   localStarRevision: number;
   gaiaStars: Star[];
   gaiaPatch: GaiaPatchMeta | null;
   gaiaLoading: boolean;
+  gaiaStatus: GaiaLoadStatus;
+  gaiaProgress: GaiaLoadProgress;
   doubleStars: DoubleStarSystem[];
   dsosBright: DeepSkyObject[];
   dsosDeep: DeepSkyObject[];
@@ -141,10 +173,13 @@ const cache: CatalogSnapshot = {
   localStarTiles: new Map<string, LocalStarCellData>(),
   localStarCount: 0,
   localStarMaxMag: 8.0,
+  localContinuousMaxMag: 8.0,
   localStarRevision: 0,
   gaiaStars: [],
   gaiaPatch: null,
   gaiaLoading: false,
+  gaiaStatus: 'standby',
+  gaiaProgress: DEFAULT_GAIA_PROGRESS,
   doubleStars: [],
   dsosBright: [],
   dsosDeep: [],
@@ -179,11 +214,24 @@ const gaiaTileCache = new Map<string, GaiaTileCacheEntry>();
 const hipSearchCache = new Map<string, Star[]>();
 const gaiaSearchCache = new Map<string, Star[]>();
 const catalogListeners = new Set<() => void>();
+const gaiaRetryListeners = new Set<() => void>();
+
+export function retryGaiaLiveFetch(): void {
+  for (const fn of gaiaRetryListeners) {
+    fn();
+  }
+}
 
 function notifyCatalogListeners(): void {
   for (const fn of catalogListeners) {
     fn();
   }
+}
+
+// Pre-warm IndexedDB zero-copy local star spatial cache immediately at module load time
+// so downloaded stars are already in RAM before React finishes mounting
+if (typeof window !== 'undefined') {
+  void initLocalStarCatalogs();
 }
 
 function mapBrightStar(t: BrightStarTuple): Star {
@@ -785,6 +833,7 @@ export function getCatalogSnapshot(): CatalogSnapshot {
     localStarTiles: getLocalStarSpatialIndex(),
     localStarCount: localState.totalStars,
     localStarMaxMag: localState.maxMag,
+    localContinuousMaxMag: getLocalContinuousMaxMag(),
     localStarRevision: localState.revision,
   };
 }
@@ -809,7 +858,7 @@ function getVisibleGaiaFinderTiles(
   fsz: number
 ): FinderTileSpec[] {
   const raCenter = ((raHours * 15) % 360 + 360) % 360;
-  const halfDec = Math.min(8.5, fsz * 0.68);
+  const halfDec = Math.min(9.5, fsz * 0.82);
   const minDec = Math.max(-90, decDeg - halfDec);
   const maxDec = Math.min(90, decDeg + halfDec);
 
@@ -839,7 +888,7 @@ function getVisibleGaiaFinderTiles(
     const cosBand = Math.max(0.08, Math.cos(Math.max(Math.abs(dMin), Math.abs(dMax)) * DEG2RAD));
     const idealRaStep = decStep / cosBand;
     const raStep = GAIA_RA_STEPS.find((s) => s >= idealRaStep) ?? 360;
-    const raHalf = Math.min(180, halfDec / Math.max(0.12, Math.cos(dMid * DEG2RAD)));
+    const raHalf = Math.min(180, (halfDec * 1.35) / Math.max(0.12, Math.cos(dMid * DEG2RAD)));
 
     const numCols = Math.round(360 / raStep);
     const seenCols = new Set<number>();
@@ -896,13 +945,22 @@ export function useCatalogData(
   const [gaiaStars, setGaiaStars] = useState<Star[]>([]);
   const [gaiaPatch, setGaiaPatch] = useState<GaiaPatchMeta | null>(null);
   const [gaiaLoading, setGaiaLoading] = useState(false);
+  const [gaiaProgress, setGaiaProgress] = useState<GaiaLoadProgress>(DEFAULT_GAIA_PROGRESS);
+  const [gaiaRetryNonce, setGaiaRetryNonce] = useState(0);
+  const lastGaiaRetryNonceRef = useRef(0);
+  const gaiaPatchRef = useRef<GaiaPatchMeta | null>(null);
+  gaiaPatchRef.current = gaiaPatch;
 
   useEffect(() => {
     let mounted = true;
     const onUpdate = () => {
       if (mounted) setTick((t) => t + 1);
     };
+    const onGaiaRetry = () => {
+      if (mounted) setGaiaRetryNonce((n) => n + 1);
+    };
     catalogListeners.add(onUpdate);
+    gaiaRetryListeners.add(onGaiaRetry);
     const unsubLocal = subscribeLocalStarCatalogs(onUpdate);
     ensureCoreCatalogs().then(() => {
       if (mounted) setTick((t) => t + 1);
@@ -913,6 +971,7 @@ export function useCatalogData(
     return () => {
       mounted = false;
       catalogListeners.delete(onUpdate);
+      gaiaRetryListeners.delete(onGaiaRetry);
       unsubLocal();
     };
   }, []);
@@ -932,11 +991,14 @@ export function useCatalogData(
     }
   }, [fsz, magOffset, searchActive, tick]);
 
-  // Lazy-load spatial Hipparcos ultra tiles (mag 8.01–13.78, 76,805 stars) with zero gap after 8.0m
+  // Lazy-load spatial Hipparcos ultra tiles (mag 8.01–13.78, 76,805 stars) only when
+  // downloaded local star catalogs do not already cover the current limiting magnitude.
   useEffect(() => {
     if (!cache.coreLoaded) return;
     const magLimit = getLimitingMagnitude(fsz, magOffset);
     if (magLimit <= 8.0 && fsz > 28) return;
+    const localContMax = getLocalContinuousMaxMag();
+    if (localContMax >= Math.min(13.78, magLimit) - 0.02) return;
 
     const neededKeys = getVisibleUltraTileKeys(raHours, decDeg, fsz).filter(
       (k) => !cache.ultraStarTiles.has(k)
@@ -990,133 +1052,71 @@ export function useCatalogData(
     }
   }, [loadDoubleStars, searchActive, tick]);
 
-  // Live ESA Gaia DR3 faint star streaming:
-  // - Finder / mid-field (3.2° < fsz <= 10.0°): 4° spatial tile caching (up to 15.5m)
-  // - Eyepiece & ultra-deep high-mag (fsz <= 3.2°, down to 0.008°): adaptive deep cone (up to 20.0m)
-  useEffect(() => {
-    const magLimit = getLimitingMagnitude(fsz, magOffset);
-    if (!enableGaiaLive || fsz > GAIA_LIVE_MAX_FSZ || magLimit <= 9.0) {
-      setGaiaLoading(false);
-      return;
-    }
+  const localState = getLocalStarCatalogState();
+  const localContinuousMaxMag = getLocalContinuousMaxMag();
 
+  // Quantize Gaia DR3 query parameters into a stable request descriptor so minor panning/zooming
+  // within the same tile set or cone NEVER cancels an in-flight Gaia DR3 TAP request.
+  // Downloaded local star catalogs act as the primary built-in star layer; Gaia DR3 only fetches
+  // stars fainter than localContinuousMaxMag (never duplicating locally installed stars).
+  const gaiaQueryPlan = useMemo(() => {
+    const magLimit = getLimitingMagnitude(fsz, magOffset);
+    if (!enableGaiaLive) {
+      return { kind: 'off' as const, key: 'off:disabled', offReason: 'disabled' as const, magLimit };
+    }
+    if (localState.totalStars > 0 && localContinuousMaxMag >= magLimit - 0.02) {
+      return {
+        kind: 'local' as const,
+        key: `local:${localContinuousMaxMag.toFixed(2)}`,
+        localMaxMag: localContinuousMaxMag,
+        magLimit,
+      };
+    }
+    if (fsz > GAIA_LIVE_MAX_FSZ) {
+      return { kind: 'off' as const, key: 'off:fov', offReason: 'fov' as const, magLimit };
+    }
+    if (magLimit <= 8.3) {
+      return { kind: 'off' as const, key: 'off:mag', offReason: 'mag' as const, magLimit };
+    }
+    const qMinMag = Math.max(8.3, Math.round(localContinuousMaxMag * 20) / 20);
     const raDeg = ((raHours * 15) % 360 + 360) % 360;
 
     // Tier 1: Finder / Mid-field spatial tile caching (3.2° < fsz <= 10.0°)
     if (fsz > GAIA_TILE_MIN_FSZ) {
       const qMag = Math.ceil(Math.min(15.5, magLimit) * 2) / 2;
-      const visibleTiles = getVisibleGaiaFinderTiles(raHours, decDeg, fsz);
-
-      const emitMergedTiles = () => {
-        const mergedStars: Star[] = [];
-        const coveredTiles: GaiaTileCoverage[] = [];
-        for (const spec of visibleTiles) {
-          const entry = gaiaTileCache.get(spec.key);
-          if (!entry) continue;
-          coveredTiles.push({
-            raMin: entry.raMin,
-            raMax: entry.raMax,
-            decMin: entry.decMin,
-            decMax: entry.decMax,
-            effectiveMaxMag: Math.min(qMag, entry.effectiveMaxMag),
-          });
-          for (let i = 0; i < entry.stars.length; i++) {
-            const st = entry.stars[i];
-            if (st.mag > qMag) break;
-            mergedStars.push(st);
-          }
-        }
-        if (coveredTiles.length > 0) {
-          mergedStars.sort((a, b) => a.mag - b.mag);
-          setGaiaStars(mergedStars);
-          setGaiaPatch({
-            centerRa: raDeg,
-            centerDec: decDeg,
-            radius: Math.max(fsz * 0.9, 4.0),
-            effectiveMaxMag: qMag,
-            tiles: coveredTiles,
-          });
-        }
-      };
-
-      const missingTiles = visibleTiles.filter((spec) => {
-        const entry = gaiaTileCache.get(spec.key);
-        return !entry || entry.requestedMag < qMag;
-      });
-
-      // Immediately render any already-cached tiles for flicker-free panning
-      emitMergedTiles();
-
-      if (missingTiles.length === 0) {
-        setGaiaLoading(false);
-        return;
+      if (qMag <= qMinMag) {
+        return {
+          kind: 'local' as const,
+          key: `local:${localContinuousMaxMag.toFixed(2)}`,
+          localMaxMag: localContinuousMaxMag,
+          magLimit,
+        };
       }
-
-      let cancelled = false;
-      const timer = window.setTimeout(async () => {
-        if (cancelled) return;
-        setGaiaLoading(true);
-        try {
-          const BATCH_SIZE = 3;
-          for (let i = 0; i < missingTiles.length; i += BATCH_SIZE) {
-            if (cancelled) break;
-            const batch = missingTiles.slice(i, i + BATCH_SIZE);
-            const results = await Promise.all(
-              batch.map(async (spec) => {
-                const params = new URLSearchParams({
-                  mode: 'tile',
-                  raMin: spec.raMin.toFixed(2),
-                  raMax: spec.raMax.toFixed(2),
-                  decMin: spec.decMin.toFixed(2),
-                  decMax: spec.decMax.toFixed(2),
-                  magLimit: qMag.toFixed(2),
-                });
-                const json = await safeFetchJson<{
-                  stars?: GaiaStarTuple[];
-                  requestedMag?: number;
-                  effectiveMaxMag?: number;
-                  degraded?: boolean;
-                }>(`/api/gaia?${params.toString()}`, 1);
-                if (!json || json.degraded) return false;
-                const parsed = (json.stars ?? []).map(mapGaiaStar);
-                if (gaiaTileCache.size >= 160) {
-                  const oldest = gaiaTileCache.keys().next().value;
-                  if (oldest) gaiaTileCache.delete(oldest);
-                }
-                gaiaTileCache.set(spec.key, {
-                  stars: parsed,
-                  raMin: spec.raMin,
-                  raMax: spec.raMax,
-                  decMin: spec.decMin,
-                  decMax: spec.decMax,
-                  requestedMag: json.requestedMag ?? qMag,
-                  effectiveMaxMag: json.effectiveMaxMag ?? qMag,
-                });
-                return true;
-              })
-            );
-            if (!cancelled && results.some(Boolean)) {
-              emitMergedTiles();
-            }
-          }
-        } catch {
-          // Silent fallback to Hipparcos tiles
-        } finally {
-          if (!cancelled) setGaiaLoading(false);
-        }
-      }, 280);
-
-      return () => {
-        cancelled = true;
-        window.clearTimeout(timer);
+      const visibleTiles = getVisibleGaiaFinderTiles(raHours, decDeg, fsz);
+      // Sort keys lexicographically so slight panning that only changes tile priority order
+      // never aborts an in-flight Gaia tile fetch batch.
+      const tileIds = visibleTiles
+        .map((t) => t.key)
+        .sort()
+        .join('|');
+      return {
+        kind: 'tile' as const,
+        key: `tile:${qMinMag.toFixed(2)}:${qMag.toFixed(1)}:${tileIds}`,
+        raDeg,
+        decDeg,
+        fsz,
+        qMinMag,
+        qMag,
+        visibleTiles,
       };
     }
 
     // Tier 2 & 3: Eyepiece & ultra-deep high-magnification cone queries (fsz <= 3.2°, up to 20.0m)
+    // Radius covers widescreen diagonal + quantization offset so edges never lack Gaia DR3 stars.
     const radius =
       fsz <= 0.45
-        ? Math.max(0.015, Math.min(0.55, fsz * 1.08))
-        : Math.max(0.35, Math.min(3.5, fsz * 0.96));
+        ? Math.max(0.02, Math.min(0.68, fsz * 1.28))
+        : Math.max(0.45, Math.min(4.2, fsz * 1.18));
     const step =
       radius <= 0.06 ? 0.01 : radius <= 0.25 ? 0.05 : radius <= 1.2 ? 0.25 : 0.5;
     const qRa = ((Math.round(raDeg / step) * step) % 360 + 360) % 360;
@@ -1128,25 +1128,334 @@ export function useCatalogData(
         ? Math.ceil(radius * 20) / 20
         : Math.ceil(radius * 4) / 4;
     const qMag = Math.ceil(Math.min(20.0, magLimit) * 2) / 2;
-    const patchKey = `${qRa.toFixed(3)}_${qDec.toFixed(3)}_${qRad.toFixed(3)}_${qMag.toFixed(1)}`;
+    const patchKey = `${qRa.toFixed(3)}_${qDec.toFixed(3)}_${qRad.toFixed(3)}_${qMinMag.toFixed(2)}_${qMag.toFixed(1)}`;
+    return {
+      kind: 'cone' as const,
+      key: `cone:${patchKey}`,
+      patchKey,
+      raDeg,
+      decDeg,
+      fsz,
+      qRa,
+      qDec,
+      qRad,
+      qMinMag,
+      qMag,
+    };
+  }, [raHours, decDeg, fsz, magOffset, enableGaiaLive, localState.totalStars, localContinuousMaxMag]);
+
+  const gaiaPlanRef = useRef(gaiaQueryPlan);
+  gaiaPlanRef.current = gaiaQueryPlan;
+
+  // Live ESA Gaia DR3 faint star streaming (supplemental fallback beyond downloaded local catalogs):
+  // - Finder / mid-field (3.2° < fsz <= 10.0°): 4° spatial tile caching (up to 15.5m)
+  // - Eyepiece & ultra-deep high-mag (fsz <= 3.2°, down to 0.008°): adaptive deep cone (up to 20.0m)
+  useEffect(() => {
+    const plan = gaiaPlanRef.current;
+    if (plan.kind === 'off' || plan.kind === 'local') {
+      setGaiaLoading(false);
+      if (gaiaPatchRef.current !== null) {
+        setGaiaStars([]);
+        setGaiaPatch(null);
+      }
+      if (plan.kind === 'local') {
+        setGaiaProgress({
+          status: 'local',
+          mode: 'idle',
+          loadedTiles: 0,
+          totalTiles: 0,
+          loadedStars: 0,
+          minMag: plan.localMaxMag,
+          targetMag: plan.localMaxMag,
+          reason: `다운로드된 로컬 별목록(≤${plan.localMaxMag.toFixed(2)}m)으로 즉시 표시 중 · 초과 확대 시 Gaia DR3 자동 보완`,
+        });
+      } else {
+        setGaiaProgress({
+          status: plan.offReason === 'disabled' ? 'off' : 'standby',
+          mode: 'idle',
+          loadedTiles: 0,
+          totalTiles: 0,
+          loadedStars: 0,
+          targetMag: plan.magLimit,
+          reason:
+            plan.offReason === 'disabled'
+              ? '비활성화됨'
+              : plan.offReason === 'fov'
+              ? '시야각 10° 이하로 확대 시 자동 로딩'
+              : '한계등급 8.3m 초과 시 자동 로딩',
+        });
+      }
+      return;
+    }
+
+    const forceRefresh = gaiaRetryNonce !== lastGaiaRetryNonceRef.current;
+    lastGaiaRetryNonceRef.current = gaiaRetryNonce;
+
+    // Tier 1: Finder / Mid-field spatial tile caching (3.2° < fsz <= 10.0°)
+    if (plan.kind === 'tile') {
+      const { visibleTiles, qMinMag, qMag, raDeg, decDeg: planDec, fsz: planFsz } = plan;
+      const tileCacheKeyOf = (baseKey: string) => `${baseKey}_${qMinMag.toFixed(2)}`;
+
+      if (forceRefresh) {
+        for (const spec of visibleTiles) {
+          gaiaTileCache.delete(tileCacheKeyOf(spec.key));
+        }
+      }
+
+      const emitMergedTiles = (): number => {
+        const mergedStars: Star[] = [];
+        const coveredTiles: GaiaTileCoverage[] = [];
+        for (const spec of visibleTiles) {
+          const entry = gaiaTileCache.get(tileCacheKeyOf(spec.key));
+          if (!entry) continue;
+          coveredTiles.push({
+            raMin: entry.raMin,
+            raMax: entry.raMax,
+            decMin: entry.decMin,
+            decMax: entry.decMax,
+            effectiveMaxMag: Math.min(qMag, entry.effectiveMaxMag),
+          });
+          for (let i = 0; i < entry.stars.length; i++) {
+            const st = entry.stars[i];
+            if (st.mag > qMag) break;
+            if (st.mag <= qMinMag) continue;
+            mergedStars.push(st);
+          }
+        }
+        if (coveredTiles.length > 0) {
+          mergedStars.sort((a, b) => a.mag - b.mag);
+          setGaiaStars(mergedStars);
+          setGaiaPatch({
+            centerRa: raDeg,
+            centerDec: planDec,
+            radius: Math.max(planFsz * 1.1, 4.0),
+            effectiveMaxMag: qMag,
+            tiles: coveredTiles,
+          });
+          return mergedStars.length;
+        }
+        if (gaiaPatchRef.current !== null) {
+          // Clear stale off-screen Gaia stars when panning/jumping to an uncached sky region
+          setGaiaStars([]);
+          setGaiaPatch(null);
+        }
+        return 0;
+      };
+
+      const missingTiles = visibleTiles.filter((spec) => {
+        const entry = gaiaTileCache.get(tileCacheKeyOf(spec.key));
+        return !entry || entry.requestedMag < qMag;
+      });
+
+      const totalTiles = visibleTiles.length;
+      const initialCachedCount = totalTiles - missingTiles.length;
+
+      // Immediately render any already-cached tiles (or clear stale off-screen stars)
+      const initialMergedCount = emitMergedTiles();
+
+      if (missingTiles.length === 0) {
+        setGaiaLoading(false);
+        setGaiaProgress({
+          status: 'loaded',
+          mode: 'tile',
+          loadedTiles: totalTiles,
+          totalTiles,
+          loadedStars: initialMergedCount,
+          minMag: qMinMag,
+          targetMag: qMag,
+        });
+        return;
+      }
+
+      let cancelled = false;
+      setGaiaLoading(true);
+      setGaiaProgress({
+        status: 'loading',
+        mode: 'tile',
+        loadedTiles: initialCachedCount,
+        totalTiles,
+        loadedStars: initialMergedCount,
+        minMag: qMinMag,
+        targetMag: qMag,
+      });
+
+      const timer = window.setTimeout(async () => {
+        if (cancelled) return;
+        let completedTiles = initialCachedCount;
+        let latestMergedCount = initialMergedCount;
+        let succeededNewTiles = 0;
+        let failedNewTiles = 0;
+
+        try {
+          const BATCH_SIZE = 3;
+          for (let i = 0; i < missingTiles.length; i += BATCH_SIZE) {
+            if (cancelled) break;
+            const batch = missingTiles.slice(i, i + BATCH_SIZE);
+            await Promise.all(
+              batch.map(async (spec) => {
+                const params = new URLSearchParams({
+                  mode: 'tile',
+                  raMin: spec.raMin.toFixed(2),
+                  raMax: spec.raMax.toFixed(2),
+                  decMin: spec.decMin.toFixed(2),
+                  decMax: spec.decMax.toFixed(2),
+                  minMag: qMinMag.toFixed(2),
+                  magLimit: qMag.toFixed(2),
+                });
+                const json = await safeFetchJson<{
+                  stars?: GaiaStarTuple[];
+                  requestedMag?: number;
+                  effectiveMaxMag?: number;
+                  degraded?: boolean;
+                }>(`/api/gaia?${params.toString()}`, 1);
+                if (!json || json.degraded) {
+                  failedNewTiles++;
+                  completedTiles++;
+                  if (!cancelled) {
+                    setGaiaProgress({
+                      status: 'loading',
+                      mode: 'tile',
+                      loadedTiles: Math.min(totalTiles, completedTiles),
+                      totalTiles,
+                      loadedStars: latestMergedCount,
+                      minMag: qMinMag,
+                      targetMag: qMag,
+                    });
+                  }
+                  return false;
+                }
+                const parsed = (json.stars ?? []).map(mapGaiaStar);
+                if (gaiaTileCache.size >= 160) {
+                  const oldest = gaiaTileCache.keys().next().value;
+                  if (oldest) gaiaTileCache.delete(oldest);
+                }
+                gaiaTileCache.set(tileCacheKeyOf(spec.key), {
+                  stars: parsed,
+                  raMin: spec.raMin,
+                  raMax: spec.raMax,
+                  decMin: spec.decMin,
+                  decMax: spec.decMax,
+                  requestedMag: json.requestedMag ?? qMag,
+                  effectiveMaxMag: json.effectiveMaxMag ?? qMag,
+                });
+                succeededNewTiles++;
+                completedTiles++;
+                if (!cancelled) {
+                  latestMergedCount = emitMergedTiles();
+                  setGaiaProgress({
+                    status: 'loading',
+                    mode: 'tile',
+                    loadedTiles: Math.min(totalTiles, completedTiles),
+                    totalTiles,
+                    loadedStars: latestMergedCount,
+                    minMag: qMinMag,
+                    targetMag: qMag,
+                  });
+                }
+                return true;
+              })
+            );
+          }
+        } catch {
+          failedNewTiles = Math.max(1, failedNewTiles);
+        } finally {
+          if (!cancelled) {
+            setGaiaLoading(false);
+            if (initialCachedCount === 0 && succeededNewTiles === 0 && failedNewTiles > 0) {
+              setGaiaProgress({
+                status: 'error',
+                mode: 'tile',
+                loadedTiles: 0,
+                totalTiles,
+                loadedStars: 0,
+                minMag: qMinMag,
+                targetMag: qMag,
+                errorMessage: 'Gaia DR3 서버 응답이 지연되었습니다.',
+              });
+            } else {
+              setGaiaProgress({
+                status: 'loaded',
+                mode: 'tile',
+                loadedTiles: initialCachedCount + succeededNewTiles,
+                totalTiles,
+                loadedStars: latestMergedCount,
+                minMag: qMinMag,
+                targetMag: qMag,
+                errorMessage:
+                  failedNewTiles > 0
+                    ? `일부 타일(${failedNewTiles}개) 응답 지연`
+                    : undefined,
+              });
+            }
+          }
+        }
+      }, 180);
+
+      return () => {
+        cancelled = true;
+        window.clearTimeout(timer);
+      };
+    }
+
+    // Tier 2 & 3: Eyepiece & ultra-deep high-magnification cone queries (fsz <= 3.2°, up to 20.0m)
+    const { patchKey, raDeg, decDeg: planDec, fsz: planFsz, qRa, qDec, qRad, qMinMag, qMag } = plan;
+
+    if (forceRefresh) {
+      gaiaPatchCache.delete(patchKey);
+    }
 
     const existing = gaiaPatchCache.get(patchKey);
     if (existing) {
       setGaiaStars(existing.stars);
       setGaiaPatch(existing.patch);
       setGaiaLoading(false);
+      setGaiaProgress({
+        status: 'loaded',
+        mode: 'cone',
+        loadedTiles: 1,
+        totalTiles: 1,
+        loadedStars: existing.stars.length,
+        minMag: qMinMag,
+        targetMag: qMag,
+      });
       return;
     }
 
+    // Clear stale off-screen Gaia patch if we jumped to a region that does not overlap the previous patch
+    const prevPatch = gaiaPatchRef.current;
+    if (prevPatch) {
+      const distFromPrev = angularDistanceDeg(
+        raDeg,
+        planDec,
+        prevPatch.centerRa,
+        prevPatch.centerDec
+      );
+      if (distFromPrev > prevPatch.radius + planFsz * 1.15) {
+        setGaiaStars([]);
+        setGaiaPatch(null);
+      }
+    }
+
     let cancelled = false;
+    setGaiaLoading(true);
+    setGaiaProgress({
+      status: 'loading',
+      mode: 'cone',
+      loadedTiles: 0,
+      totalTiles: 1,
+      loadedStars: 0,
+      minMag: qMinMag,
+      targetMag: qMag,
+    });
+
     const timer = window.setTimeout(async () => {
       if (cancelled) return;
-      setGaiaLoading(true);
       try {
         const params = new URLSearchParams({
           ra: qRa.toFixed(4),
           dec: qDec.toFixed(4),
           radius: qRad.toFixed(4),
+          minMag: qMinMag.toFixed(2),
           magLimit: qMag.toFixed(2),
         });
         const json = await safeFetchJson<{
@@ -1157,7 +1466,23 @@ export function useCatalogData(
           effectiveMaxMag?: number;
           degraded?: boolean;
         }>(`/api/gaia?${params.toString()}`, 1);
-        if (!json) return;
+
+        if (cancelled) return;
+
+        if (!json || json.degraded) {
+          setGaiaProgress({
+            status: 'error',
+            mode: 'cone',
+            loadedTiles: 0,
+            totalTiles: 1,
+            loadedStars: 0,
+            minMag: qMinMag,
+            targetMag: qMag,
+            errorMessage: 'Gaia DR3 서버 응답이 지연되었습니다.',
+          });
+          return;
+        }
+
         const parsed = (json.stars ?? []).map(mapGaiaStar);
         const patch: GaiaPatchMeta = {
           centerRa: json.centerRa ?? qRa,
@@ -1165,31 +1490,47 @@ export function useCatalogData(
           radius: json.radius ?? qRad,
           effectiveMaxMag: json.effectiveMaxMag ?? qMag,
         };
-        if (!json.degraded) {
-          if (gaiaPatchCache.size > 90) {
-            const oldest = gaiaPatchCache.keys().next().value;
-            if (oldest) gaiaPatchCache.delete(oldest);
-          }
-          gaiaPatchCache.set(patchKey, { stars: parsed, patch });
+        if (gaiaPatchCache.size > 90) {
+          const oldest = gaiaPatchCache.keys().next().value;
+          if (oldest) gaiaPatchCache.delete(oldest);
         }
-        if (!cancelled) {
-          setGaiaStars(parsed);
-          setGaiaPatch(patch);
-        }
+        gaiaPatchCache.set(patchKey, { stars: parsed, patch });
+
+        setGaiaStars(parsed);
+        setGaiaPatch(patch);
+        setGaiaProgress({
+          status: 'loaded',
+          mode: 'cone',
+          loadedTiles: 1,
+          totalTiles: 1,
+          loadedStars: parsed.length,
+          minMag: qMinMag,
+          targetMag: qMag,
+        });
       } catch {
-        // Silent fallback to Hipparcos tiles
+        if (!cancelled) {
+          setGaiaProgress({
+            status: 'error',
+            mode: 'cone',
+            loadedTiles: 0,
+            totalTiles: 1,
+            loadedStars: 0,
+            minMag: qMinMag,
+            targetMag: qMag,
+            errorMessage: 'Gaia DR3 서버 연결에 실패했습니다.',
+          });
+        }
       } finally {
         if (!cancelled) setGaiaLoading(false);
       }
-    }, 300);
+    }, 180);
 
     return () => {
       cancelled = true;
       window.clearTimeout(timer);
     };
-  }, [raHours, decDeg, fsz, magOffset, enableGaiaLive]);
+  }, [gaiaQueryPlan.key, gaiaRetryNonce]);
 
-  const localState = getLocalStarCatalogState();
   return {
     brightStars: cache.brightStars,
     deepStars: cache.deepStars,
@@ -1197,10 +1538,13 @@ export function useCatalogData(
     localStarTiles: getLocalStarSpatialIndex(),
     localStarCount: localState.totalStars,
     localStarMaxMag: localState.maxMag,
+    localContinuousMaxMag,
     localStarRevision: localState.revision,
     gaiaStars,
     gaiaPatch,
     gaiaLoading,
+    gaiaStatus: gaiaProgress.status,
+    gaiaProgress,
     doubleStars: cache.doubleStars,
     dsosBright: cache.dsosBright,
     dsosDeep: cache.dsosDeep,

@@ -31,6 +31,7 @@ import {
   EquipmentLockerState,
   ObservationLogEntry,
   ObservationLogStoreState,
+  ObjectNameLanguage,
   ObserverConfig,
   ObservingListGroup,
   ObservingSessionEntry,
@@ -61,6 +62,7 @@ interface ObjectInspectorProps {
   selected: SelectedItem | null;
   activeTab: 'session' | 'challenge' | 'asterism' | 'log';
   theme: ThemeMode;
+  nameLanguage?: ObjectNameLanguage;
   observer: ObserverConfig;
   optics: OpticsSettings;
   equipmentLocker: EquipmentLockerState;
@@ -213,6 +215,7 @@ export function ObjectInspector({
   selected,
   activeTab,
   theme,
+  nameLanguage = 'ko',
   observer,
   optics,
   equipmentLocker,
@@ -1027,7 +1030,9 @@ export function ObjectInspector({
                         ? (() => {
                             const displayName = formatObjectDisplayName(
                               item.data.koName,
-                              item.data.name
+                              item.data.name,
+                              '',
+                              nameLanguage
                             );
                             return `${formatCatalogCode(item.data.id) || item.data.id}${
                               displayName ? ` · ${displayName}` : ''
@@ -1037,12 +1042,14 @@ export function ObjectInspector({
                         ? `${formatObjectDisplayName(
                             item.data.koName,
                             item.data.name,
-                            item.data.bayer || item.data.disc
+                            item.data.bayer || item.data.disc,
+                            nameLanguage
                           )} (${item.data.sep.toFixed(1)}″)`
                         : formatObjectDisplayName(
                             item.data.koName,
                             item.data.name,
-                            item.data.id
+                            item.data.id,
+                            nameLanguage
                           );
 
                     const isSelectedRow = Boolean(
@@ -1698,7 +1705,9 @@ export function ObjectInspector({
                               ? (() => {
                                   const displayName = formatObjectDisplayName(
                                     item.data.koName,
-                                    item.data.name
+                                    item.data.name,
+                                    '',
+                                    nameLanguage
                                   );
                                   return `${formatCatalogCode(item.data.id) || item.data.id}${
                                     displayName ? ` · ${displayName}` : ''
@@ -1708,12 +1717,14 @@ export function ObjectInspector({
                               ? `${formatObjectDisplayName(
                                   item.data.koName,
                                   item.data.name,
-                                  item.data.bayer || item.data.disc
+                                  item.data.bayer || item.data.disc,
+                                  nameLanguage
                                 )} (${item.data.sep.toFixed(1)}″)`
                               : formatObjectDisplayName(
                                   item.data.koName,
                                   item.data.name,
-                                  item.data.id
+                                  item.data.id,
+                                  nameLanguage
                                 );
                           const rowBgClass = isSelectedRow
                             ? theme === 'white'

@@ -4,7 +4,13 @@ import {
   getVisibleUltraTileKeys,
 } from '../data/catalogLoader';
 import { getFieldStarsInBounds } from './fieldStars';
-import { buildLocalStarObject, getVisibleLocalStarCellKeys } from './localStarCatalogs';
+import {
+  buildLocalStarObject,
+  findLocalStarById,
+  getVisibleLocalStarCells,
+  isMagCoveredByLocalCatalog,
+  parseStarNumericId,
+} from './localStarCatalogs';
 import {
   clampBortleClass,
   computeBortleDsoAttenuation,
@@ -26,6 +32,7 @@ import {
   LayerSettings,
   MilkyWayLayer,
   NebulaContour,
+  ObjectNameLanguage,
   ObserverConfig,
   ObservingSessionEntry,
   OpticsSettings,
@@ -47,6 +54,8 @@ import {
   equatorialToHorizontal,
   findStarHopGuides,
   formatAngularDistanceDMS,
+  formatCardinalLabel,
+  getCompassDirection,
   getDsoLimitingMagnitude,
   getHorizonSensorScreenAngleDeg,
   getLimitingMagnitude,
@@ -55,6 +64,7 @@ import {
   getStarRadiusPogson,
   getStereographicRadiusPx,
   horizontalToEquatorial,
+  positionAngleDeg,
   projectHorizontalRaw,
   projectStereographic,
   projectStereographicRaw,
@@ -67,6 +77,14 @@ import {
   getOpticsDirectionVector,
   renderAsterismsPass,
 } from './asterismRenderer';
+import {
+  formatConstellationDisplayName,
+  formatDsoChartLabel,
+  formatObjectDisplayName,
+  formatStarChartLabel,
+  formatStarLabelByStyle,
+} from './catalogNames';
+import { renderClassicalConstellationArtLayer } from './constellationArtRenderer';
 import { LabelPlacer } from './labelPlacer';
 import { getPlanetRenderer } from './planetRenderer';
 import {
@@ -157,7 +175,7 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       gridAltAzText: 'rgba(29, 78, 216, 0.88)',
       horizonStroke: '#DC2626',
       horizonText: '#B91C1C',
-      eclipticStroke: 'rgba(180, 83, 9, 0.48)',
+      eclipticStroke: 'rgba(180, 83, 9, 0.85)',
       constellationLine: 'rgb(30, 58, 138)',
       constellationBoundary: 'rgb(71, 85, 105)',
       constellationName: 'rgb(15, 23, 42)',
@@ -211,7 +229,7 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
       gridAltAzText: 'rgba(255, 138, 138, 0.88)',
       horizonStroke: 'rgba(239, 68, 68, 0.72)',
       horizonText: '#F87171',
-      eclipticStroke: 'rgba(185, 28, 28, 0.40)',
+      eclipticStroke: 'rgba(248, 113, 113, 0.78)',
       constellationLine: 'rgb(220, 38, 38)',
       constellationBoundary: 'rgb(185, 28, 28)',
       constellationName: 'rgb(255, 107, 107)',
@@ -265,7 +283,7 @@ export function getThemePalette(theme: ThemeMode): ThemePalette {
     gridAltAzText: 'rgba(103, 232, 249, 0.88)',
     horizonStroke: 'rgba(245, 158, 11, 0.65)',
     horizonText: '#F59E0B',
-    eclipticStroke: 'rgba(245, 158, 11, 0.32)',
+    eclipticStroke: 'rgba(251, 191, 36, 0.78)',
     constellationLine: 'rgb(100, 149, 237)',
     constellationBoundary: 'rgb(148, 163, 184)',
     constellationName: 'rgb(226, 232, 240)',
@@ -1240,7 +1258,10 @@ export interface RenderResult {
   magLimit: number;
   dsoMagLimit: number;
   visibleStarCount: number;
+  visibleGaiaCount: number;
   visibleDsoCount: number;
+  visibleDoubleCount: number;
+  visibleSolarCount: number;
   activeStarHop: StarHopGuide | null;
   northAngleDeg: number;
 }
@@ -1254,6 +1275,24 @@ interface DrawableStar {
   isSelected: boolean;
   dimmed: boolean;
   extMag: number;
+  localIdHi?: number;
+  localIdLo?: number;
+}
+
+function materializeDrawableStar(item: DrawableStar): Star {
+  if (item.localIdHi !== undefined) {
+    item.star = buildLocalStarObject(
+      item.star.ra,
+      item.star.dec,
+      item.star.mag,
+      item.star.bv,
+      item.localIdHi,
+      item.localIdLo ?? 0
+    );
+    item.localIdHi = undefined;
+    item.localIdLo = undefined;
+  }
+  return item.star;
 }
 
 function getOpticalFlipTag(flipH: boolean, flipV: boolean): string {
@@ -1609,6 +1648,7 @@ function renderStarChartPass(
   asterismCtx?: AsterismRenderContext
 ): RenderResult {
   const palette = getThemePalette(theme);
+  const nameLang = layers.starLabelLanguage ?? 'ko';
   const obsTimeMs = observer.timestampMs;
   const lstDeg = getLSTDeg(obsTimeMs, observer.lon);
   const proj = createProjectionParams(
@@ -1905,11 +1945,11 @@ function renderStarChartPass(
   if (layers.showEcliptic) {
     ctx.save();
     ctx.strokeStyle = palette.eclipticStroke;
-    ctx.lineWidth = 1.1;
-    ctx.setLineDash([5, 5]);
+    ctx.lineWidth = 1.5;
+    ctx.setLineDash([7, 4]);
     const eps = 23.4393 * DEG2RAD;
     const pts: { raDeg: number; decDeg: number }[] = [];
-    for (let lam = 0; lam <= 360; lam += 5) {
+    for (let lam = 0; lam <= 360; lam += 2) {
       const lRad = lam * DEG2RAD;
       const sinDec = Math.sin(eps) * Math.sin(lRad);
       const decDeg = Math.asin(sinDec) * RAD2DEG;
@@ -2120,6 +2160,23 @@ function renderStarChartPass(
     ctx.restore();
   }
 
+  // 5.4. Independent Rendering Layer: Classical Constellation Art Projection (clipped inside IAU boundaries)
+  const artLayerActive =
+    layers.showConstellationArt ?? layers.constellationProjectionMode === 'classical';
+  if (artLayerActive && catalogs.constellations.length > 0) {
+    renderClassicalConstellationArtLayer(
+      ctx,
+      width,
+      height,
+      view.fsz,
+      theme,
+      Math.max(0.05, Math.min(0.85, layers.constellationArtOpacity ?? 0.28)),
+      catalogs.constellations,
+      catalogs.constellationBoundaries,
+      proj
+    );
+  }
+
   // 5.5. IAU Constellation Boundaries (782 polylines)
   if (layers.showConstellationBoundaries && catalogs.constellationBoundaries.length > 0) {
     ctx.save();
@@ -2166,6 +2223,7 @@ function renderStarChartPass(
   }
 
   if (layers.showConstellationNames) {
+    const conNameStyle = layers.constellationNameStyle ?? 'name_abbr';
     ctx.save();
     ctx.globalAlpha = Math.max(0.05, Math.min(1, layers.constellationLineOpacity ?? 0.35));
     ctx.fillStyle = palette.constellationName;
@@ -2177,7 +2235,10 @@ function renderStarChartPass(
     for (const con of catalogs.constellations) {
       const pt = projectStereographic(con.ra, con.dec, proj, 0);
       if (!pt) continue;
-      const text = view.fsz > 105 ? con.abbr.toUpperCase() : `${con.koName} (${con.abbr})`;
+      const text =
+        conNameStyle === 'abbr' || view.fsz > 125
+          ? con.abbr.toUpperCase()
+          : formatConstellationDisplayName(con, nameLang, conNameStyle === 'name_abbr', conNameStyle);
       ctx.fillText(text, Math.round(pt.x), Math.round(pt.y));
     }
     ctx.restore();
@@ -2417,7 +2478,7 @@ function renderStarChartPass(
         dsoLabelOpacity * (0.82 + 0.18 * dsoExtScale)
       );
 
-      visibleDsoCount++;
+      if (isOnScreen) visibleDsoCount++;
       const hideDsoSymbol = Boolean(layers.hideDsoSymbols) || isSensorPhoto;
       const hideSelectedOverlay =
         !isSensorPhoto && !layers.hideDsoSymbols && isSelected && !optics.showSelectionMark;
@@ -2458,9 +2519,20 @@ function renderStarChartPass(
         isOnScreen &&
         (!hideSelectedOverlay || Boolean(layers.hideDsoSymbols))
       ) {
-        const showCommon = view.fsz < 42 && dso.koName;
+        const dsoNameStyle = layers.dsoNameStyle ?? 'code_name';
+        const showCommon =
+          dsoNameStyle === 'name' ||
+          (view.fsz < 52 && Boolean(dso.koName || dso.name));
         const primaryCode = labelPrefix && labelPrefix !== dso.id ? labelPrefix : dso.id;
-        const text = showCommon ? `${primaryCode} ${dso.koName}` : primaryCode;
+        const text = formatDsoChartLabel(
+          primaryCode,
+          dso.koName,
+          dso.name,
+          nameLang,
+          showCommon,
+          dsoNameStyle,
+          dso.type
+        );
         onScreenDsoItems.push({
           mag: dso.mag + extMag,
           isSelected,
@@ -2520,7 +2592,7 @@ function renderStarChartPass(
   const gaiaActive =
     layers.enableGaiaLive &&
     view.fsz <= GAIA_LIVE_MAX_FSZ &&
-    magLimit > 9.0 &&
+    magLimit > 8.3 &&
     catalogs.gaiaStars.length > 0 &&
     gaiaPatch !== null;
 
@@ -2577,7 +2649,8 @@ function renderStarChartPass(
   };
 
   const hasLocalStarPacks = catalogs.localStarCount > 0 && catalogs.localStarTiles.size > 0;
-  const localCoversMag = hasLocalStarPacks && catalogs.localStarMaxMag >= magLimit - 0.1;
+  const localCoversMag =
+    hasLocalStarPacks && catalogs.localContinuousMaxMag >= magLimit - 0.05;
 
   // 8a. Optional procedural ultra-faint fill ONLY when neither Gaia live nor local downloaded packs cover the region
   if (layers.showFieldStars && !gaiaActive && !localCoversMag && view.fsz <= 12 && magLimit > 10.2) {
@@ -2598,6 +2671,7 @@ function renderStarChartPass(
     for (let i = 0; i < fieldStars.length; i++) {
       const star = fieldStars[i];
       if (star.mag <= 10.2) continue;
+      if (hasLocalStarPacks && isMagCoveredByLocalCatalog(star.mag)) continue;
       const pt = projectStereographic(star.ra, star.dec, proj, 10);
       if (!pt) continue;
       const altCheck = evalStarAltitude(star.ra, star.dec, false, star.mag);
@@ -2615,19 +2689,19 @@ function renderStarChartPass(
     }
   }
 
-  // 8b. Live ESA Gaia DR3 faint stars (8.3m - 20.0m) across finder tiles (<= 10°) & deep cones (<= 3.2°)
+  // 8b. Live ESA Gaia DR3 faint stars (supplemental layer: renders only stars NOT already in downloaded local catalogs)
   if (gaiaActive) {
     const gList = catalogs.gaiaStars;
-    let gaiaClickableCount = 0;
     for (let i = 0; i < gList.length; i++) {
       const star = gList[i];
       if (star.mag > magLimit) continue;
+      if (hasLocalStarPacks && isMagCoveredByLocalCatalog(star.mag)) continue;
       const pt = projectStereographic(star.ra, star.dec, proj, 10);
       if (!pt) continue;
       const isSelected = selected?.kind === 'star' && selected.data.id === star.id;
       const altCheck = evalStarAltitude(star.ra, star.dec, isSelected, star.mag);
       if (altCheck.skip) continue;
-      const r = getStarRadiusPogson(star.mag + altCheck.extMag, magLimit, view.fsz);
+      const r = Math.max(0.78, getStarRadiusPogson(star.mag + altCheck.extMag, magLimit, view.fsz));
       drawableStars.push({
         star,
         x: pt.x,
@@ -2638,62 +2712,51 @@ function renderStarChartPass(
         dimmed: altCheck.dimmed,
         extMag: altCheck.extMag,
       });
-      if (isSelected || gaiaClickableCount < 8000) {
-        gaiaClickableCount++;
-        targets.push({
-          kind: 'star',
-          id: star.id,
-          x: pt.x,
-          y: pt.y,
-          radius: Math.max(6, r + 2.5),
-          mag: star.mag,
-          item: { kind: 'star', data: star },
-        });
-      }
     }
   }
 
-  // 8b-local. Locally Downloaded Tiered Star Catalog Packs (문서/noxchart & IndexedDB)
-  // Spatially tiled (10°×10° cells, sorted by mag) for instant offline rendering at 60fps
+  // 8b-local. Locally Downloaded Tiered Star Catalog Packs (treated as primary built-in stars)
+  // Dense 648-cell spatial array + integer selection check + lazy Star/BigInt materialization for 60fps
   if (magLimit > 8.0 && hasLocalStarPacks) {
-    const localCellKeys = getVisibleLocalStarCellKeys(view.ra, view.dec, view.fsz);
-    const maxLocalDrawable = view.fsz > 30 ? 18000 : 28000;
+    const localCells = getVisibleLocalStarCells(view.ra, view.dec, view.fsz);
+    const maxLocalDrawable = view.fsz > 30 ? 22000 : 32000;
+    const [selLocalHi, selLocalLo] =
+      selected?.kind === 'star' ? parseStarNumericId(selected.data) : [-1, -1];
     let localDrawnCount = 0;
-    let localClickableCount = 0;
-    const allowLocalClick = view.fsz <= 18;
 
-    for (let c = 0; c < localCellKeys.length && localDrawnCount < maxLocalDrawable; c++) {
-      const cell = catalogs.localStarTiles.get(localCellKeys[c]);
-      if (!cell || cell.coords.length < 4) continue;
+    for (let c = 0; c < localCells.length && localDrawnCount < maxLocalDrawable; c++) {
+      const cell = localCells[c];
       const flat = cell.coords;
+      if (flat.length < 4) continue;
       const ids = cell.ids;
       for (let i = 0; i < flat.length && localDrawnCount < maxLocalDrawable; i += 4) {
         const sMag = flat[i + 2];
         if (sMag > magLimit) break; // Sorted ascending by magnitude
-        if (sMag <= 8.0) continue; // Covered by Hipparcos bright + deep
+        if (sMag <= 8.0) continue; // Covered by built-in Hipparcos bright + deep
         const sRa = flat[i];
         const sDec = flat[i + 1];
-        if (gaiaActive && sMag > 8.3 && isInsideGaiaPatch(sRa, sDec, sMag)) continue;
         const pt = projectStereographic(sRa, sDec, proj, 10);
         if (!pt) continue;
 
         const idIdx = (i >> 2) * 2;
-        const starObj = buildLocalStarObject(
-          sRa,
-          sDec,
-          sMag,
-          flat[i + 3],
-          ids[idIdx] ?? 0,
-          ids[idIdx + 1] ?? 0
-        );
-        const starId = starObj.id;
-        const isSelected = selected?.kind === 'star' && selected.data.id === starId;
+        const idHi = ids[idIdx] ?? 0;
+        const idLo = ids[idIdx + 1] ?? 0;
+        const isSelected = selLocalHi !== -1 && idHi === selLocalHi && idLo === selLocalLo;
         const altCheck = evalStarAltitude(sRa, sDec, isSelected, sMag);
         if (altCheck.skip) continue;
 
-        const r = getStarRadiusPogson(sMag + altCheck.extMag, magLimit, view.fsz);
+        const r = Math.max(0.76, getStarRadiusPogson(sMag + altCheck.extMag, magLimit, view.fsz));
         drawableStars.push({
-          star: starObj,
+          star: {
+            id: '',
+            ra: sRa,
+            dec: sDec,
+            mag: sMag,
+            bv: flat[i + 3],
+            con: '',
+          },
+          localIdHi: idHi,
+          localIdLo: idLo,
           x: pt.x,
           y: pt.y,
           radius: r,
@@ -2703,27 +2766,13 @@ function renderStarChartPass(
           extMag: altCheck.extMag,
         });
         localDrawnCount++;
-
-        if (isSelected || (allowLocalClick && localClickableCount < 6000 && sMag <= magLimit)) {
-          localClickableCount++;
-          targets.push({
-            kind: 'star',
-            id: starId,
-            x: pt.x,
-            y: pt.y,
-            radius: Math.max(6, r + 2.5),
-            mag: sMag,
-            item: { kind: 'star', data: starObj },
-          });
-        }
       }
     }
   }
 
   // 8c. Spatially-Tiled Hipparcos Ultra Stars (mag 8.01 - 13.78)
-  // Always fills areas outside an active Gaia patch/tiles AND when local star packs don't already cover them
-  const skipUltraCoveredByLocal = hasLocalStarPacks && catalogs.localStarCount >= 70000;
-  if (magLimit > 8.0 && catalogs.ultraStarTiles.size > 0 && !skipUltraCoveredByLocal) {
+  // Fills only magnitude ranges not already covered by downloaded local star catalogs or active Gaia patch
+  if (magLimit > 8.0 && catalogs.ultraStarTiles.size > 0 && !localCoversMag) {
     const tileKeys = getVisibleUltraTileKeys(view.ra, view.dec, view.fsz);
     for (const key of tileKeys) {
       const tileStars = catalogs.ultraStarTiles.get(key);
@@ -2731,6 +2780,7 @@ function renderStarChartPass(
       for (let i = 0; i < tileStars.length; i++) {
         const star = tileStars[i];
         if (star.mag > magLimit) break;
+        if (hasLocalStarPacks && isMagCoveredByLocalCatalog(star.mag)) continue;
         if (gaiaActive && star.mag > 8.3 && isInsideGaiaPatch(star.ra, star.dec, star.mag)) continue;
         const pt = projectStereographic(star.ra, star.dec, proj, 10);
         if (!pt) continue;
@@ -2748,17 +2798,6 @@ function renderStarChartPass(
           dimmed: altCheck.dimmed,
           extMag: altCheck.extMag,
         });
-        if (view.fsz <= 12 && star.mag <= Math.min(13.8, magLimit)) {
-          targets.push({
-            kind: 'star',
-            id: star.id,
-            x: pt.x,
-            y: pt.y,
-            radius: Math.max(6, r + 3),
-            mag: star.mag,
-            item: { kind: 'star', data: star },
-          });
-        }
       }
     }
   }
@@ -2786,17 +2825,6 @@ function renderStarChartPass(
         dimmed: altCheck.dimmed,
         extMag: altCheck.extMag,
       });
-      if (view.fsz <= 25 && star.mag <= 8.0) {
-        targets.push({
-          kind: 'star',
-          id: star.id,
-          x: pt.x,
-          y: pt.y,
-          radius: 7,
-          mag: star.mag,
-          item: { kind: 'star', data: star },
-        });
-      }
     }
   }
 
@@ -2829,20 +2857,10 @@ function renderStarChartPass(
     if (star.mag < 3.4 && !altCheck.dimmed) {
       placer.registerObstacle(pt.x, pt.y, r + 1.2);
     }
-
-    targets.push({
-      kind: 'star',
-      id: star.id,
-      x: pt.x,
-      y: pt.y,
-      radius: Math.max(8, r + 4),
-      mag: star.mag,
-      item: { kind: 'star', data: star },
-    });
   }
 
-  // Ensure a newly searched/selected faint Hipparcos star is always visible & clickable
-  // even while its ultra tile is still streaming or if current magLimit is brighter than the star
+  // Ensure a newly searched/selected faint Hipparcos or Gaia star is always visible & clickable
+  // even while its tile is still streaming or if current magLimit is brighter than the star
   if (selected?.kind === 'star' && !drawableStars.some((d) => d.isSelected)) {
     const selStar = selected.data;
     const pt = projectStereographic(selStar.ra, selStar.dec, proj, 20);
@@ -2861,15 +2879,6 @@ function renderStarChartPass(
         dimmed: false,
         extMag: 0,
       });
-      targets.push({
-        kind: 'star',
-        id: selStar.id,
-        x: pt.x,
-        y: pt.y,
-        radius: Math.max(8, r + 4),
-        mag: selStar.mag,
-        item: { kind: 'star', data: selStar },
-      });
     }
   }
 
@@ -2882,21 +2891,7 @@ function renderStarChartPass(
       onScreenStars.sort((a, b) => a.star.mag - b.star.mag);
       const starPct = Math.max(0, Math.min(100, layers.starLabelDensityPct ?? 10));
       const starLabelOpacity = Math.max(0.05, Math.min(1, layers.starLabelOpacity ?? 1));
-      const starLabelLang = layers.starLabelLanguage ?? 'ko';
-      const formatStarLabelByLang = (koName?: string, enName?: string): string | null => {
-        const ko = koName?.trim() || '';
-        const en = enName?.trim() || '';
-        if (starLabelLang === 'en') {
-          return en || ko || null;
-        }
-        if (starLabelLang === 'ko_en') {
-          if (ko && en && ko.toLowerCase() !== en.toLowerCase()) {
-            return `${ko}(${en})`;
-          }
-          return ko || en || null;
-        }
-        return ko || en || null;
-      };
+      const starNameStyle = layers.starNameStyle ?? 'traditional';
       const labeledStarIds = new Set<string>();
 
       // Known proper star names (works even when general showStarLabels is off, still respects top-N% brightness)
@@ -2911,7 +2906,10 @@ function renderStarChartPass(
           const item = onScreenProperStars[i];
           if (i >= maxProperCandidates && !item.isSelected) continue;
           const { star, x, y, radius, isSelected } = item;
-          const properText = formatStarLabelByLang(star.koName, star.name);
+          const properText =
+            starNameStyle === 'traditional'
+              ? formatStarChartLabel(star.koName, star.name, nameLang)
+              : formatStarLabelByStyle(star, nameLang, starNameStyle, view.fsz);
           if (!properText) continue;
 
           labeledStarIds.add(star.id);
@@ -2937,16 +2935,10 @@ function renderStarChartPass(
         for (let i = 0; i < onScreenStars.length; i++) {
           const item = onScreenStars[i];
           if (i >= maxStarCandidates && !item.isSelected) continue;
-          const { star, x, y, radius, isSelected } = item;
+          const star = materializeDrawableStar(item);
+          const { x, y, radius, isSelected } = item;
           if (labeledStarIds.has(star.id)) continue;
-          const namedLabel = formatStarLabelByLang(star.koName, star.name);
-          let text: string | null = null;
-          if (namedLabel && view.fsz < 95) text = namedLabel;
-          else if (star.bayer) text = star.bayer;
-          else if (namedLabel) text = namedLabel;
-          else if (star.hip) text = `HIP ${star.hip}`;
-          else if (star.gaiaId) text = `Gaia ${star.gaiaId.slice(-6)}`;
-          else if (star.id && !star.id.startsWith('field_')) text = star.id;
+          const text = formatStarLabelByStyle(star, nameLang, starNameStyle, view.fsz);
           if (!text) continue;
 
           labeledStarIds.add(star.id);
@@ -3009,10 +3001,58 @@ function renderStarChartPass(
 
   // Sort stars faintest -> brightest so bright stars + halo strokes cleanly separate binaries & clusters
   renderStars.sort((a, b) => b.star.mag - a.star.mag);
-  const visibleStarCount = renderStars.length;
+
+  // Sync clickable targets & exact on-screen star/Gaia counts directly with the final rendered stars
+  let visibleStarCount = 0;
+  let visibleGaiaCount = 0;
+  let clickableStarCount = 0;
+  const maxClickableStars = 10000;
+  const skyCenterX = width / 2;
+  const skyCenterY = height / 2;
+  const skyRadiusSq = halfSkyRadius * halfSkyRadius;
+  // Iterate brightest -> faintest so bright, selected, and on-screen Gaia DR3 stars are always clickable
+  for (let i = renderStars.length - 1; i >= 0; i--) {
+    const item = renderStars[i];
+    const star = materializeDrawableStar(item);
+    const onScreen =
+      item.x >= 0 &&
+      item.x <= width &&
+      item.y >= 0 &&
+      item.y <= height &&
+      (!applySkyCircleClip ||
+        (item.x - skyCenterX) * (item.x - skyCenterX) +
+          (item.y - skyCenterY) * (item.y - skyCenterY) <=
+          skyRadiusSq);
+    if (onScreen) {
+      visibleStarCount++;
+      if (star.gaiaId) visibleGaiaCount++;
+    }
+    const isFieldFiller = star.id.startsWith('field_');
+    if (
+      !isFieldFiller &&
+      (item.isSelected ||
+        item.isBright ||
+        (onScreen && clickableStarCount < maxClickableStars))
+    ) {
+      clickableStarCount++;
+      targets.push({
+        kind: 'star',
+        id: star.id,
+        x: item.x,
+        y: item.y,
+        radius:
+          item.isBright || star.gaiaId
+            ? Math.max(8.5, item.radius + 4)
+            : Math.max(7.5, item.radius + 3.5),
+        mag: star.mag,
+        item: { kind: 'star', data: star },
+      });
+    }
+  }
+
   const drawHalo = !hipsVisible || hips.opacity < 0.45;
   const deepAlphaActive = magLimit > 13.0;
-  const faintMinAlpha = theme === 'white' ? 0.48 : 0.42;
+  const faintMinAlpha = theme === 'white' ? 0.68 : 0.65;
 
   if (!(isSensorPhoto && hipsVisible)) {
     ctx.save();
@@ -3103,6 +3143,7 @@ function renderStarChartPass(
   }
 
   // 8f. WDS Double & Multiple Star Markers (─●─ for Double, ─(●)─ for Multiple) + Resolved Companions
+  let visibleDoubleCount = 0;
   if (
     layers.showDoubleStars &&
     (layers.showDoublePairs || layers.showMultipleStars) &&
@@ -3273,6 +3314,7 @@ function renderStarChartPass(
         item: { kind: 'double', data: sys },
       });
 
+      if (entry.isOnScreen) visibleDoubleCount++;
       if (entry.isOnScreen && !dimmed) {
         renderedOnScreenDoubles.push({
           entry,
@@ -3294,7 +3336,12 @@ function renderStarChartPass(
         const { entry, markerR } = renderedOnScreenDoubles[i];
         if (i >= maxLbl && !entry.isSelected) continue;
         const { sys, pt, isSelected } = entry;
-        const baseName = sys.koName || sys.bayer || sys.name || sys.disc;
+        const baseName = formatObjectDisplayName(
+          sys.koName,
+          sys.name,
+          sys.bayer || sys.disc,
+          nameLang
+        );
         const sepTxt = sys.sep >= 10 ? `${sys.sep.toFixed(0)}″` : `${sys.sep.toFixed(1)}″`;
         const tag = sys.isMultiple ? `(${sys.compCount}성)` : sepTxt;
         const text = `${baseName} ${tag}`;
@@ -3323,6 +3370,7 @@ function renderStarChartPass(
     if (group === 'comet') return layers.showSolarComets ?? true;
     return true;
   };
+  let visibleSolarCount = 0;
   if (layers.showSolarSystem) {
     // 8b-0. Optional apparent geocentric orbital paths for Sun, Moon, Planets, and Moons
     if (layers.showSolarSystemOrbits) {
@@ -3579,7 +3627,7 @@ function renderStarChartPass(
             trailColor,
             textColor,
             haloColor,
-            bodyKoName: trail.koName,
+            bodyKoName: formatObjectDisplayName(trail.koName, bodyId, bodyId, nameLang),
             pts: labelPts,
           });
         }
@@ -4188,6 +4236,7 @@ function renderStarChartPass(
       });
 
       const isOnScreenSolar = pt.x >= 0 && pt.x <= width && pt.y >= 0 && pt.y <= height;
+      if (isOnScreenSolar) visibleSolarCount++;
       if (layers.showSolarSystemLabels && !dimmed && isOnScreenSolar) {
         const labelColor =
           theme === 'red'
@@ -4205,9 +4254,10 @@ function renderStarChartPass(
             : isPlanetaryMoon
             ? '#E2E8F0'
             : '#FDE68A';
+        const solarDisplayName = formatObjectDisplayName(body.koName, body.name, body.id, nameLang);
         labelCandidates.push({
           priority: isSelected ? -100 : body.mag - 5,
-          text: isPlanetaryMoon ? body.koName : `${body.symbol} ${body.koName}`,
+          text: isPlanetaryMoon ? solarDisplayName : `${body.symbol} ${solarDisplayName}`,
           x: pt.x,
           y: pt.y,
           radius: baseR + 3,
@@ -4351,7 +4401,9 @@ function renderStarChartPass(
       targetLabel,
       catalogs.brightStars,
       selected.kind === 'star' ? selected.data.id : undefined,
-      selected.kind === 'star' ? selected.data.hip : undefined
+      selected.kind === 'star' ? selected.data.hip : undefined,
+      catalogs.constellations,
+      layers.constellationLineStyle
     );
     activeStarHop = hopGuides[0] ?? null;
 
@@ -4361,12 +4413,220 @@ function renderStarChartPass(
         const d = decDeg * DEG2RAD;
         return [Math.cos(d) * Math.cos(a), Math.cos(d) * Math.sin(a), Math.sin(d)];
       };
+      const hopHalo =
+        theme === 'white'
+          ? 'rgba(255,255,255,0.88)'
+          : theme === 'red'
+          ? 'rgba(10,0,0,0.88)'
+          : 'rgba(6,10,18,0.88)';
+      const hopPillBg =
+        theme === 'white'
+          ? 'rgba(255,255,255,0.93)'
+          : theme === 'red'
+          ? 'rgba(20,2,2,0.92)'
+          : 'rgba(7,12,24,0.92)';
+
+      type HopBox = { x1: number; y1: number; x2: number; y2: number };
+      type HopSeg = { x1: number; y1: number; x2: number; y2: number };
+      type HopCircle = { cx: number; cy: number; r: number };
+
+      const hopBoxesOverlap = (a: HopBox, b: HopBox, pad = 0): boolean =>
+        !(
+          a.x2 + pad < b.x1 ||
+          b.x2 + pad < a.x1 ||
+          a.y2 + pad < b.y1 ||
+          b.y2 + pad < a.y1
+        );
+
+      const hopBoxIntersectsCircle = (box: HopBox, c: HopCircle): boolean => {
+        const closestX = Math.max(box.x1, Math.min(c.cx, box.x2));
+        const closestY = Math.max(box.y1, Math.min(c.cy, box.y2));
+        const dx = c.cx - closestX;
+        const dy = c.cy - closestY;
+        return dx * dx + dy * dy < c.r * c.r;
+      };
+
+      const hopBoxIntersectsSegment = (box: HopBox, seg: HopSeg, pad = 7): boolean => {
+        const rx1 = box.x1 - pad;
+        const ry1 = box.y1 - pad;
+        const rx2 = box.x2 + pad;
+        const ry2 = box.y2 + pad;
+        if (
+          Math.max(seg.x1, seg.x2) < rx1 ||
+          Math.min(seg.x1, seg.x2) > rx2 ||
+          Math.max(seg.y1, seg.y2) < ry1 ||
+          Math.min(seg.y1, seg.y2) > ry2
+        ) {
+          return false;
+        }
+        const dx = seg.x2 - seg.x1;
+        const dy = seg.y2 - seg.y1;
+        let t0 = 0;
+        let t1 = 1;
+        const clip = (p: number, q: number): boolean => {
+          if (Math.abs(p) < 1e-9) return q >= 0;
+          const r = q / p;
+          if (p < 0) {
+            if (r > t1) return false;
+            if (r > t0) t0 = r;
+          } else {
+            if (r < t0) return false;
+            if (r < t1) t1 = r;
+          }
+          return true;
+        };
+        return (
+          clip(-dx, seg.x1 - rx1) &&
+          clip(dx, rx2 - seg.x1) &&
+          clip(-dy, seg.y1 - ry1) &&
+          clip(dy, ry2 - seg.y1)
+        );
+      };
+
+      const pointToBoxDistance = (box: HopBox, px: number, py: number): number => {
+        const closestX = Math.max(box.x1, Math.min(px, box.x2));
+        const closestY = Math.max(box.y1, Math.min(py, box.y2));
+        return Math.hypot(px - closestX, py - closestY);
+      };
+
+      const clampHopBox = (cxPill: number, cyPill: number, w: number, h: number): HopBox => {
+        const bx = Math.max(8, Math.min(width - w - 8, cxPill - w / 2));
+        const by = Math.max(8, Math.min(height - h - 8, cyPill - h / 2));
+        return { x1: bx, y1: by, x2: bx + w, y2: by + h };
+      };
+
+      const measureHopPill = (text: string, font: string, h: number): { w: number; h: number } => {
+        ctx.save();
+        ctx.font = font;
+        const tw = ctx.measureText(text).width;
+        ctx.restore();
+        return { w: tw + 12, h };
+      };
+
+      const drawHopPillBox = (
+        box: HopBox,
+        text: string,
+        font = '600 10.5px "IBM Plex Mono", monospace'
+      ) => {
+        const bx = box.x1;
+        const by = box.y1;
+        const w = box.x2 - box.x1;
+        const h = box.y2 - box.y1;
+        ctx.save();
+        ctx.font = font;
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        const r = 4;
+        ctx.beginPath();
+        ctx.moveTo(bx + r, by);
+        ctx.lineTo(bx + w - r, by);
+        ctx.quadraticCurveTo(bx + w, by, bx + w, by + r);
+        ctx.lineTo(bx + w, by + h - r);
+        ctx.quadraticCurveTo(bx + w, by + h, bx + w - r, by + h);
+        ctx.lineTo(bx + r, by + h);
+        ctx.quadraticCurveTo(bx, by + h, bx, by + h - r);
+        ctx.lineTo(bx, by + r);
+        ctx.quadraticCurveTo(bx, by, bx + r, by);
+        ctx.closePath();
+        ctx.fillStyle = hopPillBg;
+        ctx.fill();
+        ctx.strokeStyle = palette.starHop;
+        ctx.globalAlpha = 0.78;
+        ctx.lineWidth = 1;
+        ctx.stroke();
+        ctx.globalAlpha = 1;
+        ctx.fillStyle = palette.starHop;
+        ctx.fillText(text, bx + w / 2, by + h / 2 + 0.5);
+        ctx.restore();
+      };
+
+      // Optional soft-avoid box for active optical FOV label so hop pills prefer open space
+      const softAvoidBoxes: HopBox[] = [];
+      if (
+        !passOptions?.skipReticles &&
+        optics.showSensorBox &&
+        optics.sensorWidthDeg > 0 &&
+        optics.sensorHeightDeg > 0
+      ) {
+        const mosaicSupported = Boolean(optics.sensorMosaicSupported);
+        const mosaicMax = Math.max(1.2, Math.min(4.0, optics.sensorMosaicMaxScale ?? 2.0));
+        const scaleW = mosaicSupported
+          ? Math.max(1.0, Math.min(mosaicMax, optics.sensorMosaicScaleW ?? 1.0))
+          : 1.0;
+        const scaleH = mosaicSupported
+          ? Math.max(1.0, Math.min(mosaicMax, optics.sensorMosaicScaleH ?? 1.0))
+          : 1.0;
+        const wPx = 4 * proj.scale * Math.tan((optics.sensorWidthDeg * scaleW * DEG2RAD) / 4);
+        const hPx = 4 * proj.scale * Math.tan((optics.sensorHeightDeg * scaleH * DEG2RAD) / 4);
+        if (wPx >= 20 && hPx >= 20) {
+          const left = width / 2 - wPx / 2;
+          const top = height / 2 - hPx / 2;
+          softAvoidBoxes.push({ x1: left - 4, y1: top - 20, x2: left + 165, y2: top + 4 });
+        }
+      }
+
+      const allPathSegments: HopSeg[] = [];
+      const allHighlightSegments: HopSeg[] = [];
+      const allCircleObstacles: HopCircle[] = [];
+      const circledNums = ['①', '②', '③', '④', '⑤'];
+      const isMultiGuide = hopGuides.length > 1;
+
+      interface PendingAnchorPill {
+        guideIndex: number;
+        isPrimary: boolean;
+        text: string;
+        font: string;
+        h: number;
+        pStart: { x: number; y: number };
+        pNext: { x: number; y: number };
+      }
+      interface PendingRoutePill {
+        guideIndex: number;
+        isPrimary: boolean;
+        text: string;
+        font: string;
+        h: number;
+        pts: { x: number; y: number }[];
+        pStart: { x: number; y: number };
+        pEnd: { x: number; y: number };
+      }
+
+      const pendingAnchors: PendingAnchorPill[] = [];
+      const pendingRoutes: PendingRoutePill[] = [];
+      const allStartPoints: { x: number; y: number }[] = [];
 
       ctx.save();
       ctx.strokeStyle = palette.starHop;
       ctx.font = '600 10.5px "IBM Plex Mono", monospace';
 
-      for (const guide of hopGuides) {
+      // Pass 1: Render all constellation traces, dashed paths, reticles, arrowheads & gather obstacles
+      for (let guideIdx = 0; guideIdx < hopGuides.length; guideIdx++) {
+        const guide = hopGuides[guideIdx];
+        const isPrimary = guide.isPrimary ?? guideIdx === 0;
+        const badgePrefix = isMultiGuide ? `${circledNums[guideIdx] ?? `${guideIdx + 1}.`} ` : '';
+
+        // 9a. Subtle luminous trace on the constellation stick-figure segments touching the starting anchor star
+        if (guide.anchorSegments && guide.anchorSegments.length > 0) {
+          ctx.save();
+          ctx.setLineDash([]);
+          ctx.strokeStyle = palette.starHop;
+          ctx.globalAlpha = (theme === 'white' ? 0.34 : 0.32) * (isPrimary ? 1 : 0.62);
+          ctx.lineWidth = isPrimary ? 2.1 : 1.5;
+          ctx.lineCap = 'round';
+          for (const seg of guide.anchorSegments) {
+            const sp1 = projectStereographicRaw(seg[0], seg[1], proj);
+            const sp2 = projectStereographicRaw(seg[2], seg[3], proj);
+            if (!sp1 || !sp2) continue;
+            if (Math.hypot(sp2.x - sp1.x, sp2.y - sp1.y) > Math.max(width, height) * 1.4) continue;
+            ctx.beginPath();
+            ctx.moveTo(sp1.x, sp1.y);
+            ctx.lineTo(sp2.x, sp2.y);
+            ctx.stroke();
+            allHighlightSegments.push({ x1: sp1.x, y1: sp1.y, x2: sp2.x, y2: sp2.y });
+          }
+          ctx.restore();
+        }
+
         const v1 = toVec(guide.fromStar.ra, guide.fromStar.dec);
         const v2 = toVec(guide.toRa, guide.toDec);
         const steps = guide.distanceDeg > 10 ? 24 : 8;
@@ -4385,80 +4645,499 @@ function renderStarChartPass(
         }
 
         if (pts.length >= 2) {
-          ctx.lineWidth = 1.6;
-          ctx.setLineDash([6, 4]);
+          // 9b. Geodesic dashed path (halo + crisp foreground, differentiated for primary vs secondary guides)
+          const maxJump = Math.max(width, height);
+          ctx.save();
+          ctx.lineCap = 'round';
+          ctx.setLineDash(isPrimary ? [6, 4] : [4.5, 4.5]);
           ctx.beginPath();
           ctx.moveTo(pts[0].x, pts[0].y);
           for (let i = 1; i < pts.length; i++) {
-            if (Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) < Math.max(width, height)) {
+            if (Math.hypot(pts[i].x - pts[i - 1].x, pts[i].y - pts[i - 1].y) < maxJump) {
               ctx.lineTo(pts[i].x, pts[i].y);
+              allPathSegments.push({
+                x1: pts[i - 1].x,
+                y1: pts[i - 1].y,
+                x2: pts[i].x,
+                y2: pts[i].y,
+              });
             } else {
               ctx.moveTo(pts[i].x, pts[i].y);
             }
           }
+          ctx.globalAlpha = isPrimary ? 1 : 0.82;
+          ctx.strokeStyle = hopHalo;
+          ctx.lineWidth = isPrimary ? 3.4 : 2.8;
           ctx.stroke();
+          ctx.strokeStyle = palette.starHop;
+          ctx.lineWidth = isPrimary ? 1.7 : 1.3;
+          ctx.stroke();
+          ctx.restore();
 
-          // Guide star ring marker if on screen
+          const fromStarName =
+            nameLang === 'en'
+              ? guide.fromStar.name || guide.fromStar.bayer || guide.fromStar.id
+              : guide.fromStar.koName || guide.fromStar.name || guide.fromStar.bayer || guide.fromStar.id;
+          const fromConLabel =
+            nameLang === 'en'
+              ? guide.fromConstellationAbbr || guide.fromConstellationName || ''
+              : guide.fromConstellationKo || guide.fromConstellationAbbr || '';
+          const fromConPrefix = fromConLabel ? `${fromConLabel} ` : '';
+          const anchorBadgeText = isMultiGuide
+            ? `${badgePrefix}${fromConPrefix}${fromStarName} (${guide.fromStar.mag.toFixed(1)}m)`
+            : `★ ${fromConPrefix}${fromStarName} (${guide.fromStar.mag.toFixed(1)}m)`;
+
+          // 9c. Starting landmark star reticle
           const pStart = pts[0];
-          if (
-            pStart.x >= -20 &&
-            pStart.x <= width + 20 &&
-            pStart.y >= -20 &&
-            pStart.y <= height + 20
-          ) {
+          const startOnScreen =
+            pStart.x >= -10 &&
+            pStart.x <= width + 10 &&
+            pStart.y >= -10 &&
+            pStart.y <= height + 10;
+
+          if (startOnScreen) {
+            allStartPoints.push(pStart);
+            ctx.save();
             ctx.setLineDash([]);
+            ctx.globalAlpha = isPrimary ? 1 : 0.85;
+            // Outer landmark ring
             ctx.beginPath();
-            ctx.arc(pStart.x, pStart.y, 9, 0, Math.PI * 2);
+            ctx.arc(pStart.x, pStart.y, isPrimary ? 11.5 : 9.8, 0, Math.PI * 2);
+            ctx.strokeStyle = hopHalo;
+            ctx.lineWidth = isPrimary ? 3.2 : 2.6;
             ctx.stroke();
+            ctx.strokeStyle = palette.starHop;
+            ctx.lineWidth = isPrimary ? 1.45 : 1.2;
+            ctx.stroke();
+
+            if (isPrimary) {
+              // Inner precision ring on primary landmark
+              ctx.beginPath();
+              ctx.arc(pStart.x, pStart.y, 6.2, 0, Math.PI * 2);
+              ctx.strokeStyle = palette.starHop;
+              ctx.globalAlpha = 0.72;
+              ctx.lineWidth = 1;
+              ctx.stroke();
+            }
+
+            // 4 short reticle ticks pointing to the landmark star
+            ctx.globalAlpha = isPrimary ? 0.92 : 0.78;
+            ctx.lineWidth = isPrimary ? 1.25 : 1.05;
+            const rIn = isPrimary ? 12 : 10.2;
+            const rOut = isPrimary ? 16.5 : 14.2;
+            for (const [dx, dy] of [
+              [1, 0],
+              [-1, 0],
+              [0, 1],
+              [0, -1],
+            ]) {
+              ctx.beginPath();
+              ctx.moveTo(pStart.x + dx * rIn, pStart.y + dy * rIn);
+              ctx.lineTo(pStart.x + dx * rOut, pStart.y + dy * rOut);
+              ctx.stroke();
+            }
+            ctx.restore();
+
+            allCircleObstacles.push({ cx: pStart.x, cy: pStart.y, r: isPrimary ? 21 : 19 });
+            // Soft-avoid the star's own upper-right chart label zone
+            softAvoidBoxes.push({
+              x1: pStart.x + 6,
+              y1: pStart.y - 20,
+              x2: pStart.x + 68,
+              y2: pStart.y + 4,
+            });
+            pendingAnchors.push({
+              guideIndex: guideIdx,
+              isPrimary,
+              text: anchorBadgeText,
+              font: '600 10px "IBM Plex Mono", monospace',
+              h: 18,
+              pStart,
+              pNext: pts[1],
+            });
           }
 
-          // Directional arrowhead approaching target
+          // 9d. Directional arrowhead approaching target
           const pEnd = pts[pts.length - 1];
           const pPrev = pts[pts.length - 2];
           const ang = Math.atan2(pEnd.y - pPrev.y, pEnd.x - pPrev.x);
           const arrowTipX = pEnd.x - Math.cos(ang) * 14;
           const arrowTipY = pEnd.y - Math.sin(ang) * 14;
+          if (guideIdx === 0) {
+            allCircleObstacles.push({ cx: pEnd.x, cy: pEnd.y, r: 20 });
+            softAvoidBoxes.push({
+              x1: pEnd.x + 6,
+              y1: pEnd.y - 22,
+              x2: pEnd.x + 76,
+              y2: pEnd.y + 4,
+            });
+          }
           if (
             arrowTipX >= 0 &&
             arrowTipX <= width &&
             arrowTipY >= 0 &&
             arrowTipY <= height
           ) {
+            const headLen = isPrimary ? 8.8 : 7.6;
+            ctx.save();
             ctx.setLineDash([]);
+            ctx.globalAlpha = isPrimary ? 1 : 0.85;
             ctx.fillStyle = palette.starHop;
             ctx.beginPath();
             ctx.moveTo(arrowTipX, arrowTipY);
             ctx.lineTo(
-              arrowTipX - Math.cos(ang - 0.42) * 8,
-              arrowTipY - Math.sin(ang - 0.42) * 8
+              arrowTipX - Math.cos(ang - 0.42) * headLen,
+              arrowTipY - Math.sin(ang - 0.42) * headLen
             );
             ctx.lineTo(
-              arrowTipX - Math.cos(ang + 0.42) * 8,
-              arrowTipY - Math.sin(ang + 0.42) * 8
+              arrowTipX - Math.cos(ang + 0.42) * headLen,
+              arrowTipY - Math.sin(ang + 0.42) * headLen
             );
             ctx.closePath();
             ctx.fill();
+            ctx.restore();
+            allCircleObstacles.push({
+              cx: arrowTipX - Math.cos(ang) * 4,
+              cy: arrowTipY - Math.sin(ang) * 4,
+              r: 13,
+            });
           }
 
-          // Place label at midpoint of visible points along the geodesic
-          const visiblePts = pts.filter(
-            (pt) => pt.x >= 40 && pt.x <= width - 40 && pt.y >= 40 && pt.y <= height - 40
+          const compass = getCompassDirection(guide.paDeg, nameLang);
+          const hopTxt = !startOnScreen
+            ? `${badgePrefix}${fromStarName} → ${guide.distanceDeg.toFixed(1)}° (${compass})`
+            : isMultiGuide
+            ? `${badgePrefix}${guide.distanceDeg.toFixed(1)}° · ${guide.paDeg.toFixed(0)}° (${compass})`
+            : `${guide.distanceDeg.toFixed(1)}° · 방위 ${guide.paDeg.toFixed(0)}° (${compass}) → ${guide.toLabel}`;
+
+          pendingRoutes.push({
+            guideIndex: guideIdx,
+            isPrimary,
+            text: hopTxt,
+            font: isPrimary
+              ? '600 10.5px "IBM Plex Mono", monospace'
+              : '600 10px "IBM Plex Mono", monospace',
+            h: 18,
+            pts,
+            pStart,
+            pEnd,
+          });
+        }
+      }
+
+      // Compute cluster centroid of all anchor stars + target so multi-guide labels naturally push outward
+      const clusterPts = [...allStartPoints];
+      if (pendingRoutes.length > 0) {
+        clusterPts.push(pendingRoutes[0].pEnd);
+      }
+      const clusterCx =
+        clusterPts.length > 0
+          ? clusterPts.reduce((acc, p) => acc + p.x, 0) / clusterPts.length
+          : width / 2;
+      const clusterCy =
+        clusterPts.length > 0
+          ? clusterPts.reduce((acc, p) => acc + p.y, 0) / clusterPts.length
+          : height / 2;
+
+      // Pass 2: Place all anchor & route pills with exact zero-overlap against arrows, arrowheads, reticles & each other
+      const placedHopPills: HopBox[] = [];
+
+      const scoreCandidate = (
+        box: HopBox,
+        idealX: number,
+        idealY: number,
+        extraPenalty = 0
+      ): number => {
+        let penalty = extraPenalty;
+        for (const seg of allPathSegments) {
+          if (hopBoxIntersectsSegment(box, seg, 7)) {
+            penalty += 10000;
+            if (hopBoxIntersectsSegment(box, seg, 2)) {
+              penalty += 25000;
+            }
+          }
+        }
+        for (const circle of allCircleObstacles) {
+          if (hopBoxIntersectsCircle(box, circle)) {
+            penalty += 14000;
+          }
+        }
+        for (const other of placedHopPills) {
+          if (hopBoxesOverlap(box, other, 6)) {
+            penalty += 18000;
+          }
+        }
+        for (const hSeg of allHighlightSegments) {
+          if (hopBoxIntersectsSegment(box, hSeg, 3)) {
+            penalty += 140;
+          }
+        }
+        for (const soft of softAvoidBoxes) {
+          if (hopBoxesOverlap(box, soft, 4)) {
+            penalty += 240;
+          }
+        }
+        const cxBox = (box.x1 + box.x2) / 2;
+        const cyBox = (box.y1 + box.y2) / 2;
+        penalty += Math.hypot(cxBox - idealX, cyBox - idealY) * 0.85;
+        return penalty;
+      };
+
+      const drawLeaderTickIfClear = (
+        box: HopBox,
+        anchorX: number,
+        anchorY: number,
+        minDist: number,
+        stopBeforeAnchor: number,
+        alpha = 0.45
+      ) => {
+        const edgeDist = pointToBoxDistance(box, anchorX, anchorY);
+        if (edgeDist <= minDist || edgeDist >= 175) return;
+        const bx = Math.max(box.x1, Math.min(anchorX, box.x2));
+        const by = Math.max(box.y1, Math.min(anchorY, box.y2));
+        const lx = anchorX - bx;
+        const ly = anchorY - by;
+        const llen = Math.hypot(lx, ly) || 1;
+        const endX = anchorX - (lx / llen) * stopBeforeAnchor;
+        const endY = anchorY - (ly / llen) * stopBeforeAnchor;
+        const leaderSeg: HopSeg = { x1: bx, y1: by, x2: endX, y2: endY };
+        // Skip leader tick if it would slice through another placed pill
+        for (const other of placedHopPills) {
+          if (other === box) continue;
+          if (hopBoxIntersectsSegment(other, leaderSeg, 1)) return;
+        }
+        ctx.save();
+        ctx.strokeStyle = palette.starHop;
+        ctx.globalAlpha = alpha;
+        ctx.lineWidth = 0.9;
+        ctx.setLineDash([2, 3]);
+        ctx.beginPath();
+        ctx.moveTo(bx, by);
+        ctx.lineTo(endX, endY);
+        ctx.stroke();
+        ctx.restore();
+      };
+
+      // 9e-1. Place starting landmark star pills cleanly around each start reticle (outward from arrow cluster)
+      for (const anchorSpec of pendingAnchors) {
+        const { w, h } = measureHopPill(anchorSpec.text, anchorSpec.font, anchorSpec.h);
+        const hw = w / 2;
+        const hh = h / 2;
+        const { pStart, pNext } = anchorSpec;
+        const rayLen = Math.hypot(pNext.x - pStart.x, pNext.y - pStart.y) || 1;
+        const ux = (pNext.x - pStart.x) / rayLen;
+        const uy = (pNext.y - pStart.y) / rayLen;
+        const oppAng = Math.atan2(-uy, -ux);
+        const prefVertSign = uy >= 0 ? -1 : 1;
+
+        // Outward vector away from the multi-guide cluster centroid
+        const outDx = pStart.x - clusterCx;
+        const outDy = pStart.y - clusterCy;
+        const outLen = Math.hypot(outDx, outDy);
+        const outUx = outLen > 4 ? outDx / outLen : -ux;
+        const outUy = outLen > 4 ? outDy / outLen : -uy;
+
+        const dirList: Array<{ dx: number; dy: number; bias: number }> = [
+          { dx: 0, dy: prefVertSign, bias: 0 },
+          { dx: -ux, dy: -uy, bias: 3 },
+          { dx: outUx, dy: outUy, bias: 4 },
+        ];
+        for (const degOff of [30, -30, 60, -60, 95, -95, 130, -130, 160, -160, 180]) {
+          const a = oppAng + degOff * DEG2RAD;
+          dirList.push({ dx: Math.cos(a), dy: Math.sin(a), bias: Math.abs(degOff) * 0.11 });
+        }
+        dirList.push(
+          { dx: 1, dy: 0, bias: 14 },
+          { dx: -1, dy: 0, bias: 14 },
+          { dx: 0, dy: -prefVertSign, bias: 18 }
+        );
+
+        const baseRadius = anchorSpec.isPrimary ? 21 : 19;
+        let bestBox: HopBox | null = null;
+        let bestScore = Infinity;
+        for (const gap of [5, 11, 20, 32, 48]) {
+          for (const dir of dirList) {
+            const dLen = Math.hypot(dir.dx, dir.dy) || 1;
+            const dx = dir.dx / dLen;
+            const dy = dir.dy / dLen;
+            const radial = baseRadius + Math.abs(dx) * hw + Math.abs(dy) * hh + gap;
+            const candCx = pStart.x + dx * radial;
+            const candCy = pStart.y + dy * radial;
+            const box = clampHopBox(candCx, candCy, w, h);
+            // Slight outward preference so multi-guide pills fan cleanly around the outside
+            const cOutDot = ((candCx - pStart.x) * outUx + (candCy - pStart.y) * outUy) / (radial || 1);
+            const outwardBonus = isMultiGuide ? -cOutDot * 10 : 0;
+            const sc = scoreCandidate(
+              box,
+              pStart.x,
+              pStart.y + prefVertSign * 34,
+              dir.bias + gap * 0.6 + outwardBonus
+            );
+            if (sc < bestScore) {
+              bestScore = sc;
+              bestBox = box;
+            }
+          }
+          if (bestScore < 1000) break;
+        }
+
+        if (bestBox && (anchorSpec.isPrimary || bestScore < 10000)) {
+          placedHopPills.push(bestBox);
+          drawLeaderTickIfClear(bestBox, pStart.x, pStart.y, 28, baseRadius - 2, 0.42);
+          drawHopPillBox(bestBox, anchorSpec.text, anchorSpec.font);
+        }
+      }
+
+      // 9e-2. Place route pills strictly clear of ALL dashed path arrows, arrowheads, reticles & pills
+      for (const routeSpec of pendingRoutes) {
+        const { w, h } = measureHopPill(routeSpec.text, routeSpec.font, routeSpec.h);
+        const hw = w / 2;
+        const hh = h / 2;
+        const { pts, pStart, pEnd } = routeSpec;
+
+        // Build visible clipped segments along this route polyline so midpoint & tangent work even when zoomed in
+        const visSegs: Array<{ x1: number; y1: number; x2: number; y2: number; len: number }> = [];
+        const maxJump = Math.max(width, height);
+        for (let i = 1; i < pts.length; i++) {
+          const a = pts[i - 1];
+          const b = pts[i];
+          if (Math.hypot(b.x - a.x, b.y - a.y) >= maxJump) continue;
+          const clipped = clipSegmentToRect(
+            a.x,
+            a.y,
+            b.x,
+            b.y,
+            18,
+            18,
+            Math.max(20, width - 18),
+            Math.max(20, height - 18)
           );
-          const anchor =
-            visiblePts.length > 0
-              ? visiblePts[Math.floor(visiblePts.length / 2)]
-              : pts[Math.floor(pts.length / 2)];
-          const fromName =
-            guide.fromStar.koName || guide.fromStar.name || guide.fromStar.bayer || guide.fromStar.id;
-          const hopTxt =
-            hopGuides.length > 1
-              ? `${fromName} ${guide.distanceDeg.toFixed(1)}° → ${guide.toLabel}`
-              : `${guide.distanceDeg.toFixed(1)}° → ${guide.toLabel}`;
-          const tw = ctx.measureText(hopTxt).width;
-          ctx.fillStyle = theme === 'white' ? 'rgba(255,255,255,0.9)' : 'rgba(7,10,18,0.88)';
-          ctx.fillRect(anchor.x - tw / 2 - 5, anchor.y - 8, tw + 10, 16);
-          ctx.fillStyle = palette.starHop;
-          ctx.fillText(hopTxt, anchor.x - tw / 2, anchor.y + 3);
+          if (clipped) {
+            const len = Math.hypot(clipped.x2 - clipped.x1, clipped.y2 - clipped.y1);
+            if (len > 0.5) {
+              visSegs.push({ ...clipped, len });
+            }
+          }
+        }
+
+        const totalVisLen = visSegs.reduce((acc, s) => acc + s.len, 0);
+        const sampleAlongRoute = (
+          frac: number
+        ): { x: number; y: number; ux: number; uy: number } => {
+          if (totalVisLen > 1) {
+            const targetDist = Math.max(0, Math.min(1, frac)) * totalVisLen;
+            let acc = 0;
+            for (const s of visSegs) {
+              if (acc + s.len >= targetDist || s === visSegs[visSegs.length - 1]) {
+                const localT =
+                  s.len > 1e-6 ? Math.max(0, Math.min(1, (targetDist - acc) / s.len)) : 0.5;
+                return {
+                  x: s.x1 + (s.x2 - s.x1) * localT,
+                  y: s.y1 + (s.y2 - s.y1) * localT,
+                  ux: (s.x2 - s.x1) / s.len,
+                  uy: (s.y2 - s.y1) / s.len,
+                };
+              }
+              acc += s.len;
+            }
+          }
+          const midPt = pts[Math.floor(pts.length / 2)] ?? pStart;
+          const len = Math.hypot(pEnd.x - pStart.x, pEnd.y - pStart.y) || 1;
+          return {
+            x: midPt.x,
+            y: midPt.y,
+            ux: (pEnd.x - pStart.x) / len,
+            uy: (pEnd.y - pStart.y) / len,
+          };
+        };
+
+        const midSample = sampleAlongRoute(0.5);
+        let bestBox: HopBox | null = null;
+        let bestAnchorPt = { x: midSample.x, y: midSample.y };
+        let bestScore = Infinity;
+
+        const fracs = [0.5, 0.4, 0.6, 0.3, 0.7, 0.22, 0.78];
+        for (const frac of fracs) {
+          const smp = sampleAlongRoute(frac);
+          const nx = -smp.uy;
+          const ny = smp.ux;
+          // Exact half-extent of the pill box projected along the line normal guarantees zero line overlap
+          const normalClearance = Math.abs(nx) * hw + Math.abs(ny) * hh;
+          const fracBias = Math.abs(frac - 0.5) * 42;
+
+          // Prefer the outward normal facing away from the cluster center when multiple arrows converge
+          const outDot = (smp.x - clusterCx) * nx + (smp.y - clusterCy) * ny;
+          const prefSide = outDot >= 0 ? 1 : -1;
+
+          const normalDists = [
+            Math.max(hh + 10, normalClearance * 0.55 + 8),
+            normalClearance + 9,
+            normalClearance + 16,
+            normalClearance + 26,
+            normalClearance + 40,
+            normalClearance + 56,
+          ];
+
+          for (const dist of normalDists) {
+            for (const side of [prefSide, -prefSide]) {
+              const candCx = smp.x + nx * side * dist;
+              const candCy = smp.y + ny * side * dist;
+              const box = clampHopBox(candCx, candCy, w, h);
+              const sideBias = isMultiGuide && side !== prefSide ? 14 : 0;
+              const sc = scoreCandidate(box, midSample.x, midSample.y, fracBias + sideBias);
+              if (sc < bestScore) {
+                bestScore = sc;
+                bestBox = box;
+                bestAnchorPt = { x: smp.x, y: smp.y };
+              }
+            }
+          }
+
+          // Also evaluate clean vertical/horizontal cardinal offsets (ideal on short or steep segments)
+          for (const [ox, oy] of [
+            [0, -(hh + 14)],
+            [0, hh + 14],
+            [0, -(hh + 26)],
+            [0, hh + 26],
+            [-(hw + 14), 0],
+            [hw + 14, 0],
+          ]) {
+            const box = clampHopBox(smp.x + ox, smp.y + oy, w, h);
+            const sc = scoreCandidate(box, midSample.x, midSample.y, fracBias + 4);
+            if (sc < bestScore) {
+              bestScore = sc;
+              bestBox = box;
+              bestAnchorPt = { x: smp.x, y: smp.y };
+            }
+          }
+        }
+
+        // Orbital escape fallback when tight converging arrows block all near-midpoint candidates
+        if (bestScore >= 10000) {
+          for (const radius of [52, 76, 104]) {
+            for (let k = 0; k < 16; k++) {
+              const a = (k / 16) * Math.PI * 2;
+              const dx = Math.cos(a);
+              const dy = Math.sin(a);
+              const candCx = midSample.x + dx * (radius + Math.abs(dx) * hw * 0.45);
+              const candCy = midSample.y + dy * (radius + Math.abs(dy) * hh * 0.45);
+              const box = clampHopBox(candCx, candCy, w, h);
+              const sc = scoreCandidate(box, midSample.x, midSample.y, 24);
+              if (sc < bestScore) {
+                bestScore = sc;
+                bestBox = box;
+                bestAnchorPt = { x: midSample.x, y: midSample.y };
+              }
+            }
+            if (bestScore < 10000) break;
+          }
+        }
+
+        // Never render an overlapping secondary pill on an ultra-tight zoomed-out canvas
+        if (bestBox && (routeSpec.isPrimary || bestScore < 10000)) {
+          placedHopPills.push(bestBox);
+          drawLeaderTickIfClear(bestBox, bestAnchorPt.x, bestAnchorPt.y, 24, 6, 0.48);
+          drawHopPillBox(bestBox, routeSpec.text, routeSpec.font);
         }
       }
       ctx.restore();
@@ -4535,7 +5214,8 @@ function renderStarChartPass(
           ringRadius = 9.5;
         }
       } else {
-        const found = allStars.find((s) => s.id === entry.id);
+        const found =
+          allStars.find((s) => s.id === entry.id) ?? findLocalStarById(entry.id);
         if (found) {
           item = { kind: 'star', data: found };
           ringRadius = 9.0;
@@ -5108,6 +5788,76 @@ function renderStarChartPass(
     );
   }
 
+  // 11.9. Celestial Poles (NCP / SCP small cross markers)
+  if (layers.showCelestialPoles && !isSensorPhoto) {
+    const poles = [
+      {
+        raDeg: 0,
+        decDeg: 90,
+        label:
+          nameLang === 'en'
+            ? 'NCP'
+            : nameLang === 'ko_en'
+            ? '천구 북극 (NCP)'
+            : '천구 북극',
+      },
+      {
+        raDeg: 0,
+        decDeg: -90,
+        label:
+          nameLang === 'en'
+            ? 'SCP'
+            : nameLang === 'ko_en'
+            ? '천구 남극 (SCP)'
+            : '천구 남극',
+      },
+    ];
+    const poleColor =
+      theme === 'white' ? '#0284C7' : theme === 'red' ? '#FF5252' : '#38BDF8';
+    const poleHalo =
+      theme === 'white'
+        ? 'rgba(255,255,255,0.88)'
+        : theme === 'red'
+        ? 'rgba(10,0,0,0.88)'
+        : 'rgba(6,10,18,0.85)';
+
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (const pole of poles) {
+      const pt = projectStereographic(pole.raDeg, pole.decDeg, proj, 24);
+      if (!pt) continue;
+      const px = Math.round(pt.x) + 0.5;
+      const py = Math.round(pt.y) + 0.5;
+      const arm = 5.5;
+
+      ctx.beginPath();
+      ctx.moveTo(px - arm, py);
+      ctx.lineTo(px + arm, py);
+      ctx.moveTo(px, py - arm);
+      ctx.lineTo(px, py + arm);
+
+      ctx.strokeStyle = poleHalo;
+      ctx.lineWidth = 2.8;
+      ctx.stroke();
+
+      ctx.strokeStyle = poleColor;
+      ctx.lineWidth = 1.25;
+      ctx.stroke();
+
+      labelCandidates.push({
+        priority: 0.4,
+        x: pt.x,
+        y: pt.y,
+        radius: arm + 2,
+        text: pole.label,
+        color: poleColor,
+        font: '600 9.5px "IBM Plex Mono", monospace',
+        alpha: 0.92,
+      });
+    }
+    ctx.restore();
+  }
+
   // 12. Collision-Free Label Pass (integer-snapped coordinates + crisp halo for high legibility)
   labelCandidates.sort((a, b) => a.priority - b.priority);
   ctx.save();
@@ -5174,30 +5924,16 @@ function renderStarChartPass(
     ctx.font = '600 11px "IBM Plex Mono", monospace';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const cardinals =
+    const cardinalAzList =
       view.coordSystem === 'horizontal'
-        ? [
-            { az: 0, label: 'N 북' },
-            { az: 45, label: 'NE' },
-            { az: 90, label: 'E 동' },
-            { az: 135, label: 'SE' },
-            { az: 180, label: 'S 남' },
-            { az: 225, label: 'SW' },
-            { az: 270, label: 'W 서' },
-            { az: 315, label: 'NW' },
-          ]
-        : [
-            { az: 0, label: 'N 북' },
-            { az: 90, label: 'E 동' },
-            { az: 180, label: 'S 남' },
-            { az: 270, label: 'W 서' },
-          ];
+        ? [0, 45, 90, 135, 180, 225, 270, 315]
+        : [0, 90, 180, 270];
     const labelAltDeg = Math.min(1.4, Math.max(0.15, view.fsz * 0.015));
-    for (const c of cardinals) {
-      const eq = horizontalToEquatorial(labelAltDeg, c.az, lstDeg, observer.lat);
+    for (const az of cardinalAzList) {
+      const eq = horizontalToEquatorial(labelAltDeg, az, lstDeg, observer.lat);
       const pt = projectStereographic(eq.raDeg, eq.decDeg, proj, 10);
       if (pt) {
-        ctx.fillText(c.label, pt.x, pt.y);
+        ctx.fillText(formatCardinalLabel(az, nameLang), pt.x, pt.y);
       }
     }
     ctx.restore();
@@ -5228,7 +5964,10 @@ function renderStarChartPass(
     magLimit,
     dsoMagLimit: dsoMagCutoff,
     visibleStarCount,
+    visibleGaiaCount,
     visibleDsoCount,
+    visibleDoubleCount,
+    visibleSolarCount,
     activeStarHop,
     northAngleDeg: proj.northAngleDeg,
   };
@@ -5284,21 +6023,25 @@ function drawRulerOverlay(
   proj: ProjectionParams,
   rulerCtx: RulerRenderContext,
   innerProj?: ProjectionParams,
-  clipR?: number
+  clipR?: number,
+  nameLang: ObjectNameLanguage = 'ko'
 ): void {
   const { active, measurement, hoverPoint } = rulerCtx;
   if (!active && !measurement) return;
 
   const cx = width / 2;
   const cy = height / 2;
-  const projectPoint = (pt: RulerPoint): { x: number; y: number } | null => {
+  const projectPointWithZone = (
+    pt: RulerPoint
+  ): { x: number; y: number; activeProj: ProjectionParams } | null => {
     if (innerProj && clipR !== undefined) {
       const innerP = projectStereographic(pt.raDeg, pt.decDeg, innerProj, 4000);
       if (innerP && Math.hypot(innerP.x - cx, innerP.y - cy) <= clipR) {
-        return innerP;
+        return { x: innerP.x, y: innerP.y, activeProj: innerProj };
       }
     }
-    return projectStereographic(pt.raDeg, pt.decDeg, proj, 4000);
+    const p = projectStereographic(pt.raDeg, pt.decDeg, proj, 4000);
+    return p ? { x: p.x, y: p.y, activeProj: proj } : null;
   };
 
   const strokeColor =
@@ -5309,12 +6052,56 @@ function drawRulerOverlay(
       : theme === 'red'
       ? 'rgba(255, 82, 82, 0.85)'
       : 'rgba(251, 191, 36, 0.88)';
+  const northAccent =
+    theme === 'white' ? '#DC2626' : theme === 'red' ? '#FF7A7A' : '#38BDF8';
+  const dialFill =
+    theme === 'white'
+      ? 'rgba(255, 251, 235, 0.28)'
+      : theme === 'red'
+      ? 'rgba(30, 3, 3, 0.26)'
+      : 'rgba(8, 15, 29, 0.28)';
+  const dialRingColor =
+    theme === 'white'
+      ? 'rgba(180, 83, 9, 0.62)'
+      : theme === 'red'
+      ? 'rgba(255, 92, 92, 0.56)'
+      : 'rgba(251, 191, 36, 0.55)';
+  const dialSubRingColor =
+    theme === 'white'
+      ? 'rgba(180, 83, 9, 0.25)'
+      : theme === 'red'
+      ? 'rgba(255, 92, 92, 0.24)'
+      : 'rgba(251, 191, 36, 0.22)';
+  const dialTickMinor =
+    theme === 'white'
+      ? 'rgba(146, 64, 14, 0.42)'
+      : theme === 'red'
+      ? 'rgba(255, 110, 110, 0.38)'
+      : 'rgba(253, 230, 138, 0.36)';
+  const dialTickMajor =
+    theme === 'white'
+      ? 'rgba(180, 83, 9, 0.85)'
+      : theme === 'red'
+      ? 'rgba(255, 118, 118, 0.82)'
+      : 'rgba(253, 224, 71, 0.82)';
+  const dialTextColor =
+    theme === 'white'
+      ? 'rgba(120, 53, 15, 0.92)'
+      : theme === 'red'
+      ? 'rgba(255, 150, 150, 0.88)'
+      : 'rgba(254, 243, 199, 0.86)';
+  const sweepFill =
+    theme === 'white'
+      ? 'rgba(217, 119, 6, 0.16)'
+      : theme === 'red'
+      ? 'rgba(255, 82, 82, 0.17)'
+      : 'rgba(251, 191, 36, 0.16)';
   const haloColor =
     theme === 'white'
-      ? 'rgba(255, 255, 255, 0.82)'
+      ? 'rgba(255, 255, 255, 0.86)'
       : theme === 'red'
-      ? 'rgba(10, 0, 0, 0.85)'
-      : 'rgba(6, 10, 18, 0.82)';
+      ? 'rgba(10, 0, 0, 0.88)'
+      : 'rgba(6, 10, 18, 0.86)';
   const badgeBg =
     theme === 'white'
       ? 'rgba(255, 255, 255, 0.94)'
@@ -5329,6 +6116,51 @@ function drawRulerOverlay(
       : 'rgba(251, 191, 36, 0.85)';
   const badgeText =
     theme === 'white' ? '#92400E' : theme === 'red' ? '#FF8080' : '#FDE68A';
+
+  const drawRoundedBadge = (
+    centerX: number,
+    centerY: number,
+    text: string,
+    dashedBorder: boolean,
+    font = '600 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+    boxH = 22
+  ): { x: number; y: number; w: number; h: number } => {
+    ctx.save();
+    ctx.font = font;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    const textW = ctx.measureText(text).width;
+    const padX = 7;
+    const boxW = textW + padX * 2;
+    const bx = Math.max(8, Math.min(width - boxW - 8, centerX - boxW / 2));
+    const by = Math.max(8, Math.min(height - boxH - 8, centerY - boxH / 2));
+    const r = 4;
+
+    ctx.beginPath();
+    ctx.moveTo(bx + r, by);
+    ctx.lineTo(bx + boxW - r, by);
+    ctx.quadraticCurveTo(bx + boxW, by, bx + boxW, by + r);
+    ctx.lineTo(bx + boxW, by + boxH - r);
+    ctx.quadraticCurveTo(bx + boxW, by + boxH, bx + boxW - r, by + boxH);
+    ctx.lineTo(bx + r, by + boxH);
+    ctx.quadraticCurveTo(bx, by + boxH, bx, by + boxH - r);
+    ctx.lineTo(bx, by + r);
+    ctx.quadraticCurveTo(bx, by, bx + r, by);
+    ctx.closePath();
+
+    ctx.fillStyle = badgeBg;
+    ctx.fill();
+    ctx.strokeStyle = badgeBorder;
+    ctx.lineWidth = dashedBorder ? 1.1 : 1.35;
+    if (dashedBorder) ctx.setLineDash([3, 2]);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    ctx.fillStyle = badgeText;
+    ctx.fillText(text, bx + boxW / 2, by + boxH / 2 + 0.5);
+    ctx.restore();
+    return { x: bx, y: by, w: boxW, h: boxH };
+  };
 
   const drawEndpoint = (
     x: number,
@@ -5367,12 +6199,353 @@ function drawRulerOverlay(
     ctx.restore();
   };
 
+  /**
+   * Compute the local orthonormal celestial bearing basis (North = 0°, East = 90°)
+   * in screen pixel space at a given sky coordinate. Because stereographic projection
+   * is conformal, this automatically aligns with Equatorial, Alt-Az, Flip H/V, and
+   * rotated eyepiece views everywhere on the celestial sphere.
+   */
+  const computeLocalBearingBasis = (
+    pt: RulerPoint,
+    originX: number,
+    originY: number,
+    activeProj: ProjectionParams
+  ): {
+    vNx: number;
+    vNy: number;
+    vEx: number;
+    vEy: number;
+    angleN: number;
+    anticlockwise: boolean;
+  } => {
+    const epsDeg = Math.min(0.05, Math.max(0.0005, activeProj.fovDeg * 0.002));
+    const decSafe = Math.max(-89.9, Math.min(89.9, pt.decDeg));
+    const northStep = decSafe > 89.7 ? -epsDeg : epsDeg;
+    const pN = projectStereographicRaw(pt.raDeg, decSafe + northStep, activeProj, -0.95);
+
+    let vNx = 0;
+    let vNy = -1;
+    if (pN) {
+      const sign = northStep > 0 ? 1 : -1;
+      const dx = (pN.x - originX) * sign;
+      const dy = (pN.y - originY) * sign;
+      const len = Math.hypot(dx, dy);
+      if (len > 1e-6) {
+        vNx = dx / len;
+        vNy = dy / len;
+      }
+    }
+
+    const cosD = Math.max(0.01, Math.cos(decSafe * DEG2RAD));
+    const dRa = epsDeg / cosD;
+    const pE = projectStereographicRaw(pt.raDeg + dRa, decSafe, activeProj, -0.95);
+
+    let vEx = -vNy;
+    let vEy = vNx;
+    if (pE) {
+      let dx = pE.x - originX;
+      let dy = pE.y - originY;
+      // Gram-Schmidt orthogonalize against vN
+      const dot = dx * vNx + dy * vNy;
+      dx -= dot * vNx;
+      dy -= dot * vNy;
+      const len = Math.hypot(dx, dy);
+      if (len > 1e-6) {
+        vEx = dx / len;
+        vEy = dy / len;
+      }
+    }
+
+    const cross = vNx * vEy - vNy * vEx;
+    return {
+      vNx,
+      vNy,
+      vEx,
+      vEy,
+      angleN: Math.atan2(vNy, vNx),
+      anticlockwise: cross < 0,
+    };
+  };
+
+  /**
+   * Render a 360° astronomical bearing protractor centered on the first ruler point.
+   */
+  const drawBearingProtractor = (
+    sx: number,
+    sy: number,
+    dialR: number,
+    basis: {
+      vNx: number;
+      vNy: number;
+      vEx: number;
+      vEy: number;
+      angleN: number;
+      anticlockwise: boolean;
+    },
+    activePaDeg: number | null,
+    isPreview: boolean,
+    segLenPx: number
+  ) => {
+    const dirVec = (deg: number) => {
+      const rad = deg * DEG2RAD;
+      const c = Math.cos(rad);
+      const s = Math.sin(rad);
+      return {
+        x: c * basis.vNx + s * basis.vEx,
+        y: c * basis.vNy + s * basis.vEy,
+      };
+    };
+
+    ctx.save();
+
+    // 1. Subtle translucent dial backdrop so degree marks remain legible on any starfield
+    ctx.beginPath();
+    ctx.arc(sx, sy, dialR, 0, Math.PI * 2);
+    ctx.fillStyle = dialFill;
+    ctx.fill();
+
+    // 2. Active swept bearing sector (0° N -> activePaDeg)
+    if (activePaDeg !== null && Number.isFinite(activePaDeg)) {
+      const paRad = activePaDeg * DEG2RAD;
+      const endAngle = basis.angleN + (basis.anticlockwise ? -paRad : paRad);
+      const sectorR = Math.min(dialR - 11, Math.max(26, dialR * 0.48));
+
+      if (activePaDeg > 0.05) {
+        ctx.beginPath();
+        ctx.moveTo(sx, sy);
+        ctx.arc(sx, sy, sectorR, basis.angleN, endAngle, basis.anticlockwise);
+        ctx.closePath();
+        ctx.fillStyle = sweepFill;
+        ctx.fill();
+
+        // Crisp inner angle sweep arc
+        ctx.beginPath();
+        ctx.arc(sx, sy, sectorR, basis.angleN, endAngle, basis.anticlockwise);
+        ctx.strokeStyle = isPreview ? strokePreviewColor : strokeColor;
+        ctx.lineWidth = 1.35;
+        ctx.stroke();
+
+        // Highlighted outer bearing arc along the 360° protractor ring
+        ctx.beginPath();
+        ctx.arc(sx, sy, dialR, basis.angleN, endAngle, basis.anticlockwise);
+        ctx.strokeStyle = haloColor;
+        ctx.lineWidth = 4;
+        ctx.stroke();
+        ctx.strokeStyle = isPreview ? strokePreviewColor : strokeColor;
+        ctx.lineWidth = 2.1;
+        ctx.stroke();
+      }
+    }
+
+    // 3. Outer & inner calibration rings
+    ctx.beginPath();
+    ctx.arc(sx, sy, dialR, 0, Math.PI * 2);
+    ctx.strokeStyle = haloColor;
+    ctx.lineWidth = 2.6;
+    ctx.stroke();
+    ctx.strokeStyle = dialRingColor;
+    ctx.lineWidth = 1.15;
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(sx, sy, dialR - 11, 0, Math.PI * 2);
+    ctx.strokeStyle = dialSubRingColor;
+    ctx.lineWidth = 0.85;
+    ctx.stroke();
+
+    // 4. Faint cardinal reference crosshairs (N-S, E-W) + highlighted North 0° ray
+    const innerCrossR = dialR - 11;
+    ctx.save();
+    ctx.setLineDash([3, 3]);
+    ctx.strokeStyle = dialSubRingColor;
+    ctx.lineWidth = 0.9;
+    ctx.beginPath();
+    ctx.moveTo(sx - basis.vNx * innerCrossR, sy - basis.vNy * innerCrossR);
+    ctx.lineTo(sx + basis.vNx * innerCrossR, sy + basis.vNy * innerCrossR);
+    ctx.moveTo(sx - basis.vEx * innerCrossR, sy - basis.vEy * innerCrossR);
+    ctx.lineTo(sx + basis.vEx * innerCrossR, sy + basis.vEy * innerCrossR);
+    ctx.stroke();
+
+    // Highlighted 0° North baseline from center to N rim
+    ctx.strokeStyle = northAccent;
+    ctx.globalAlpha = activePaDeg !== null ? 0.72 : 0.5;
+    ctx.lineWidth = 1.15;
+    ctx.beginPath();
+    ctx.moveTo(sx, sy);
+    ctx.lineTo(sx + basis.vNx * dialR, sy + basis.vNy * dialR);
+    ctx.stroke();
+    ctx.restore();
+
+    // 5. 360° graduation ticks (every 5°, emphasized at 10°, 30°, 90°)
+    for (let deg = 0; deg < 360; deg += 5) {
+      const u = dirVec(deg);
+      const isCardinal = deg % 90 === 0;
+      const isMajor = deg % 30 === 0;
+      const isTen = deg % 10 === 0;
+      const tickLen = isCardinal ? 11.5 : isMajor ? 8.5 : isTen ? 5.8 : 3.4;
+
+      const xOuter = sx + u.x * dialR;
+      const yOuter = sy + u.y * dialR;
+      const xInner = sx + u.x * (dialR - tickLen);
+      const yInner = sy + u.y * (dialR - tickLen);
+
+      ctx.beginPath();
+      ctx.moveTo(xOuter, yOuter);
+      ctx.lineTo(xInner, yInner);
+      ctx.strokeStyle =
+        deg === 0
+          ? northAccent
+          : isCardinal || isMajor
+          ? dialTickMajor
+          : dialTickMinor;
+      ctx.lineWidth = isCardinal ? 1.7 : isMajor ? 1.25 : isTen ? 0.95 : 0.7;
+      ctx.stroke();
+    }
+
+    // 6. North (0°) outward pointer triangle on the rim
+    {
+      const tipX = sx + basis.vNx * (dialR + 6.5);
+      const tipY = sy + basis.vNy * (dialR + 6.5);
+      const baseX = sx + basis.vNx * (dialR + 0.5);
+      const baseY = sy + basis.vNy * (dialR + 0.5);
+      const halfW = 3.4;
+      ctx.beginPath();
+      ctx.moveTo(tipX, tipY);
+      ctx.lineTo(baseX + basis.vEx * halfW, baseY + basis.vEy * halfW);
+      ctx.lineTo(baseX - basis.vEx * halfW, baseY - basis.vEy * halfW);
+      ctx.closePath();
+      ctx.fillStyle = northAccent;
+      ctx.fill();
+    }
+
+    // 7. Degree & Cardinal labels around the 360° rim (every 30°)
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.lineJoin = 'round';
+    const cardinalMap: Record<number, string> = {
+      0: `${formatCardinalLabel(0, nameLang)} 0°`,
+      90: `${formatCardinalLabel(90, nameLang)} 90°`,
+      180: `${formatCardinalLabel(180, nameLang)} 180°`,
+      270: `${formatCardinalLabel(270, nameLang)} 270°`,
+    };
+    for (let deg = 0; deg < 360; deg += 30) {
+      const u = dirVec(deg);
+      const isCardinal = deg % 90 === 0;
+      const labelDist = deg === 0 ? dialR + 18.5 : isCardinal ? dialR + 17.5 : dialR + 13.5;
+      const lx = sx + u.x * labelDist;
+      const ly = sy + u.y * labelDist;
+      const text = cardinalMap[deg] ?? `${deg}°`;
+
+      ctx.font = isCardinal
+        ? '700 10.5px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace'
+        : '500 9.5px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
+      ctx.strokeStyle = haloColor;
+      ctx.lineWidth = 3;
+      ctx.strokeText(text, lx, ly);
+      ctx.fillStyle =
+        deg === 0 ? northAccent : isCardinal ? badgeText : dialTextColor;
+      ctx.fillText(text, lx, ly);
+    }
+
+    // 8. Active bearing index marker on the 360° rim (+ dashed extension ray if endpoint is inside dial)
+    if (activePaDeg !== null && Number.isFinite(activePaDeg)) {
+      const uRay = dirVec(activePaDeg);
+      const rimX = sx + uRay.x * dialR;
+      const rimY = sy + uRay.y * dialR;
+
+      if (segLenPx < dialR - 4) {
+        ctx.save();
+        ctx.setLineDash([3, 3]);
+        ctx.strokeStyle = isPreview ? strokePreviewColor : strokeColor;
+        ctx.globalAlpha = 0.55;
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(sx + uRay.x * segLenPx, sy + uRay.y * segLenPx);
+        ctx.lineTo(rimX, rimY);
+        ctx.stroke();
+        ctx.restore();
+      }
+
+      // Outward needle tick on the rim
+      ctx.beginPath();
+      ctx.moveTo(sx + uRay.x * (dialR - 5), sy + uRay.y * (dialR - 5));
+      ctx.lineTo(sx + uRay.x * (dialR + 5), sy + uRay.y * (dialR + 5));
+      ctx.strokeStyle = haloColor;
+      ctx.lineWidth = 3.2;
+      ctx.stroke();
+      ctx.strokeStyle = strokeColor;
+      ctx.lineWidth = 1.8;
+      ctx.stroke();
+
+      // Glowing rim bead
+      ctx.beginPath();
+      ctx.arc(rimX, rimY, 3.2, 0, Math.PI * 2);
+      ctx.fillStyle = strokeColor;
+      ctx.fill();
+      ctx.strokeStyle = haloColor;
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  };
+
+  /**
+   * Build screen polyline along the true great-circle arc between two celestial points
+   * so the ray departs startScreen at the exact spherical bearing (Position Angle).
+   */
+  const buildGeodesicScreenPoints = (
+    p1: RulerPoint,
+    p2: RulerPoint,
+    sepDeg: number,
+    activeProj: ProjectionParams,
+    startScreen: { x: number; y: number },
+    endScreen: { x: number; y: number }
+  ): Array<{ x: number; y: number }> => {
+    if (sepDeg <= 1.5 || sepDeg >= 179.5) {
+      return [startScreen, endScreen];
+    }
+    const steps = Math.max(4, Math.min(48, Math.ceil(sepDeg / 1.5)));
+    const a1 = p1.raDeg * DEG2RAD;
+    const d1 = p1.decDeg * DEG2RAD;
+    const a2 = p2.raDeg * DEG2RAD;
+    const d2 = p2.decDeg * DEG2RAD;
+
+    const x1 = Math.cos(d1) * Math.cos(a1);
+    const y1 = Math.cos(d1) * Math.sin(a1);
+    const z1 = Math.sin(d1);
+    const x2 = Math.cos(d2) * Math.cos(a2);
+    const y2 = Math.cos(d2) * Math.sin(a2);
+    const z2 = Math.sin(d2);
+
+    const omega = sepDeg * DEG2RAD;
+    const sinOmega = Math.sin(omega);
+    if (sinOmega < 1e-6) return [startScreen, endScreen];
+
+    const pts: Array<{ x: number; y: number }> = [startScreen];
+    for (let i = 1; i < steps; i++) {
+      const t = i / steps;
+      const w1 = Math.sin((1 - t) * omega) / sinOmega;
+      const w2 = Math.sin(t * omega) / sinOmega;
+      const x = w1 * x1 + w2 * x2;
+      const y = w1 * y1 + w2 * y2;
+      const z = Math.max(-1, Math.min(1, w1 * z1 + w2 * z2));
+      const decDeg = Math.asin(z) * RAD2DEG;
+      const raDeg = ((Math.atan2(y, x) * RAD2DEG) + 360) % 360;
+      const projected = projectStereographicRaw(raDeg, decDeg, activeProj, -0.35);
+      if (!projected) return [startScreen, endScreen];
+      pts.push({ x: projected.x, y: projected.y });
+    }
+    pts.push(endScreen);
+    return pts;
+  };
+
   ctx.save();
 
   // Before the first click: show subtle snap indicator when hovering a celestial target
   if (!measurement) {
     if (active && hoverPoint?.snapped) {
-      const hp = projectPoint(hoverPoint);
+      const hp = projectPointWithZone(hoverPoint);
       if (hp) {
         drawEndpoint(hp.x, hp.y, true, true);
       }
@@ -5381,103 +6554,178 @@ function drawRulerOverlay(
     return;
   }
 
-  const startScreen = projectPoint(measurement.start);
+  const startProj = projectPointWithZone(measurement.start);
   const endPoint = measurement.end ?? (active ? hoverPoint : null);
   const isPreview = measurement.end === null;
-  const endScreen = endPoint ? projectPoint(endPoint) : null;
+  const endProj = endPoint ? projectPointWithZone(endPoint) : null;
 
-  if (startScreen && endScreen && endPoint) {
-    // 1. Straight connecting line (halo + crisp foreground stroke)
-    ctx.save();
-    ctx.lineCap = 'round';
-    if (isPreview) {
-      ctx.setLineDash([6, 4]);
-    }
-    ctx.beginPath();
-    ctx.moveTo(startScreen.x, startScreen.y);
-    ctx.lineTo(endScreen.x, endScreen.y);
-    ctx.strokeStyle = haloColor;
-    ctx.lineWidth = 3.8;
-    ctx.stroke();
+  const dialR = Math.round(Math.min(Math.max(82, Math.min(width, height) * 0.145), 116));
 
-    ctx.strokeStyle = isPreview ? strokePreviewColor : strokeColor;
-    ctx.lineWidth = 1.75;
-    ctx.stroke();
-    ctx.restore();
-
-    // 2. Endpoint markers
-    drawEndpoint(startScreen.x, startScreen.y, Boolean(measurement.start.snapped), false);
-    drawEndpoint(endScreen.x, endScreen.y, Boolean(endPoint.snapped), isPreview);
-
-    // 3. Midpoint angular distance label (0°0'0")
-    const sepDeg = angularDistanceDeg(
-      measurement.start.raDeg,
-      measurement.start.decDeg,
-      endPoint.raDeg,
-      endPoint.decDeg
-    );
-    const labelStr = formatAngularDistanceDMS(sepDeg);
-
-    const visibleSeg = clipSegmentToRect(
-      startScreen.x,
-      startScreen.y,
-      endScreen.x,
-      endScreen.y,
-      28,
-      28,
-      Math.max(30, width - 28),
-      Math.max(30, height - 28)
+  if (startProj) {
+    const basis = computeLocalBearingBasis(
+      measurement.start,
+      startProj.x,
+      startProj.y,
+      startProj.activeProj
     );
 
-    if (visibleSeg) {
-      const segLenPx = Math.hypot(
-        endScreen.x - startScreen.x,
-        endScreen.y - startScreen.y
+    let sepDeg = 0;
+    let paDeg: number | null = null;
+    let segLenPx = 0;
+    let hasActiveRay = false;
+
+    if (endProj && endPoint) {
+      sepDeg = angularDistanceDeg(
+        measurement.start.raDeg,
+        measurement.start.decDeg,
+        endPoint.raDeg,
+        endPoint.decDeg
       );
-      const midX = (visibleSeg.x1 + visibleSeg.x2) / 2;
-      let midY = (visibleSeg.y1 + visibleSeg.y2) / 2;
-      if (segLenPx < 34) {
-        midY = Math.max(22, midY - 19);
+      segLenPx = Math.hypot(endProj.x - startProj.x, endProj.y - startProj.y);
+      if (sepDeg >= 1e-5 && segLenPx >= 3) {
+        paDeg = positionAngleDeg(
+          measurement.start.raDeg,
+          measurement.start.decDeg,
+          endPoint.raDeg,
+          endPoint.decDeg
+        );
+        hasActiveRay = true;
       }
+    }
+
+    // 1. Always render the 360° bearing protractor centered on the first point
+    drawBearingProtractor(
+      startProj.x,
+      startProj.y,
+      dialR,
+      basis,
+      hasActiveRay ? paDeg : null,
+      isPreview,
+      segLenPx
+    );
+
+    if (endProj && endPoint && hasActiveRay && paDeg !== null) {
+      // 2. Geodesic (great-circle) connecting line (halo + crisp foreground stroke)
+      const sameZone = startProj.activeProj === endProj.activeProj;
+      const linePts = sameZone
+        ? buildGeodesicScreenPoints(
+            measurement.start,
+            endPoint,
+            sepDeg,
+            startProj.activeProj,
+            startProj,
+            endProj
+          )
+        : [startProj, endProj];
 
       ctx.save();
-      ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace';
-      ctx.textAlign = 'center';
-      ctx.textBaseline = 'middle';
-      const textW = ctx.measureText(labelStr).width;
-      const padX = 7;
-      const boxW = textW + padX * 2;
-      const boxH = 22;
-      const bx = Math.max(8, Math.min(width - boxW - 8, midX - boxW / 2));
-      const by = Math.max(8, Math.min(height - boxH - 8, midY - boxH / 2));
-      const r = 4;
-
+      ctx.lineCap = 'round';
+      ctx.lineJoin = 'round';
+      if (isPreview) {
+        ctx.setLineDash([6, 4]);
+      }
       ctx.beginPath();
-      ctx.moveTo(bx + r, by);
-      ctx.lineTo(bx + boxW - r, by);
-      ctx.quadraticCurveTo(bx + boxW, by, bx + boxW, by + r);
-      ctx.lineTo(bx + boxW, by + boxH - r);
-      ctx.quadraticCurveTo(bx + boxW, by + boxH, bx + boxW - r, by + boxH);
-      ctx.lineTo(bx + r, by + boxH);
-      ctx.quadraticCurveTo(bx, by + boxH, bx, by + boxH - r);
-      ctx.lineTo(bx, by + r);
-      ctx.quadraticCurveTo(bx, by, bx + r, by);
-      ctx.closePath();
-
-      ctx.fillStyle = badgeBg;
-      ctx.fill();
-      ctx.strokeStyle = badgeBorder;
-      ctx.lineWidth = isPreview ? 1.1 : 1.35;
-      if (isPreview) ctx.setLineDash([3, 2]);
+      ctx.moveTo(linePts[0].x, linePts[0].y);
+      for (let i = 1; i < linePts.length; i++) {
+        ctx.lineTo(linePts[i].x, linePts[i].y);
+      }
+      ctx.strokeStyle = haloColor;
+      ctx.lineWidth = 3.8;
       ctx.stroke();
-      ctx.setLineDash([]);
 
-      ctx.fillStyle = badgeText;
-      ctx.fillText(labelStr, bx + boxW / 2, by + boxH / 2 + 0.5);
+      ctx.strokeStyle = isPreview ? strokePreviewColor : strokeColor;
+      ctx.lineWidth = 1.75;
+      ctx.stroke();
       ctx.restore();
+
+      // 3. Endpoint markers
+      drawEndpoint(startProj.x, startProj.y, Boolean(measurement.start.snapped), false);
+      drawEndpoint(endProj.x, endProj.y, Boolean(endPoint.snapped), isPreview);
+
+      // 4. Distance & Bearing (방위) badges with zero-overlap placement
+      const distStr = formatAngularDistanceDMS(sepDeg);
+      const compass = getCompassDirection(paDeg, nameLang);
+      const bearingStr = `방위 ${paDeg.toFixed(1)}° (${compass})`;
+
+      // Find midpoint on the rendered geodesic (or visible clipped segment)
+      const midIdx = Math.floor(linePts.length / 2);
+      const geoMid = linePts[midIdx] ?? {
+        x: (startProj.x + endProj.x) / 2,
+        y: (startProj.y + endProj.y) / 2,
+      };
+      const visibleSeg = clipSegmentToRect(
+        startProj.x,
+        startProj.y,
+        endProj.x,
+        endProj.y,
+        28,
+        28,
+        Math.max(30, width - 28),
+        Math.max(30, height - 28)
+      );
+
+      const midX =
+        linePts.length > 2 &&
+        geoMid.x >= 28 &&
+        geoMid.x <= width - 28 &&
+        geoMid.y >= 28 &&
+        geoMid.y <= height - 28
+          ? geoMid.x
+          : visibleSeg
+          ? (visibleSeg.x1 + visibleSeg.x2) / 2
+          : geoMid.x;
+      let midY =
+        linePts.length > 2 &&
+        geoMid.x >= 28 &&
+        geoMid.x <= width - 28 &&
+        geoMid.y >= 28 &&
+        geoMid.y <= height - 28
+          ? geoMid.y
+          : visibleSeg
+          ? (visibleSeg.y1 + visibleSeg.y2) / 2
+          : geoMid.y;
+
+      if (segLenPx >= dialR + 58) {
+        // Place bearing badge along the active ray just outside the dial rim (shifted slightly sideways so it doesn't sit on the line)
+        const paRad = paDeg * DEG2RAD;
+        const rayX = Math.cos(paRad) * basis.vNx + Math.sin(paRad) * basis.vEx;
+        const rayY = Math.cos(paRad) * basis.vNy + Math.sin(paRad) * basis.vEy;
+        // Perpendicular offset toward the swept interior side
+        const perpSign = basis.anticlockwise ? 1 : -1;
+        const perpX = -rayY * perpSign;
+        const perpY = rayX * perpSign;
+        const bCx = Math.max(58, Math.min(width - 58, startProj.x + rayX * (dialR + 30) + perpX * 18));
+        const bCy = Math.max(18, Math.min(height - 18, startProj.y + rayY * (dialR + 30) + perpY * 18));
+
+        const distFromMid = Math.hypot(bCx - midX, bCy - midY);
+        if (distFromMid > 64) {
+          drawRoundedBadge(midX, midY, distStr, isPreview);
+          drawRoundedBadge(
+            bCx,
+            bCy,
+            bearingStr,
+            isPreview,
+            '600 11px ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
+            20
+          );
+        } else {
+          drawRoundedBadge(midX, midY, `${distStr} · ${bearingStr}`, isPreview);
+        }
+      } else {
+        // Short line inside/near the dial: single crisp combined badge offset cleanly outside the ray
+        if (segLenPx < 36) {
+          midY = Math.max(22, midY - 22);
+        }
+        drawRoundedBadge(
+          midX,
+          midY,
+          `${distStr} · ${bearingStr}`,
+          isPreview
+        );
+      }
+    } else {
+      drawEndpoint(startProj.x, startProj.y, Boolean(measurement.start.snapped), false);
     }
-  } else if (startScreen) {
-    drawEndpoint(startScreen.x, startScreen.y, Boolean(measurement.start.snapped), false);
   }
 
   ctx.restore();
@@ -5568,7 +6816,17 @@ export function renderStarChart(
         observer.lat,
         fullRotDeg
       );
-      drawRulerOverlay(ctx, width, height, theme, rulerProj, rulerCtx);
+      drawRulerOverlay(
+        ctx,
+        width,
+        height,
+        theme,
+        rulerProj,
+        rulerCtx,
+        undefined,
+        undefined,
+        layers.starLabelLanguage ?? 'ko'
+      );
     }
     return passRes;
   }
@@ -5637,7 +6895,17 @@ export function renderStarChart(
 
   if (rulerCtx) {
     const innerProj = createProjectionParams(view, width, height, lstDeg, observer.lat, normEpRot);
-    drawRulerOverlay(ctx, width, height, theme, proj, rulerCtx, innerProj, clipR);
+    drawRulerOverlay(
+      ctx,
+      width,
+      height,
+      theme,
+      proj,
+      rulerCtx,
+      innerProj,
+      clipR,
+      layers.starLabelLanguage ?? 'ko'
+    );
   }
 
   const outerTargets = outerRes.targets.filter((t) => Math.hypot(t.x - cx, t.y - cy) > clipR);

@@ -1,7 +1,10 @@
 import {
   ChartViewState,
+  Constellation,
+  ConstellationLineStyle,
   CoordSystem,
   DsoType,
+  ObjectNameLanguage,
   Star,
   StarHopGuide,
   ThemeMode,
@@ -350,10 +353,10 @@ export function getStarRadiusPogson(
       : fszDeg <= 100
       ? 0.9
       : 0.82;
-  const baseFloor = 0.56 - 0.22 * deepFactor;
+  const baseFloor = 0.82 - 0.18 * deepFactor;
   const slope = 0.54 - 0.08 * deepFactor;
   const exp = 0.235 - 0.047 * deepFactor;
-  const minFloor = 0.52 - 0.2 * deepFactor; // down to 0.32px crisp pinpoints at 20m
+  const minFloor = 0.76 - 0.16 * deepFactor; // crisp 0.60-0.76px pinpoints even at 20m deep zoom
   const base = baseFloor + slope * (Math.pow(2.5118864, dm * exp) - 1);
   const maxR = fszDeg <= 12 ? 7.6 : fszDeg <= 60 ? 6.2 : 5.2;
   return Math.max(minFloor, Math.min(maxR, base * fovScale));
@@ -882,9 +885,41 @@ export function getDsoTypeLabel(type: DsoType): string {
   }
 }
 
-export function getCompassDirection(azDeg: number): string {
-  const dirs = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
-  return dirs[Math.round((((azDeg % 360) + 360) % 360) / 22.5) % 16];
+const COMPASS_16_EN = [
+  'N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE',
+  'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW',
+] as const;
+
+const COMPASS_16_KO = [
+  '북', '북북동', '북동', '동북동', '동', '동남동', '남동', '남남동',
+  '남', '남남서', '남서', '서남서', '서', '서북서', '북서', '북북서',
+] as const;
+
+export function getCompassDirection(
+  azDeg: number,
+  lang: ObjectNameLanguage = 'en'
+): string {
+  const idx = Math.round((((azDeg % 360) + 360) % 360) / 22.5) % 16;
+  const en = COMPASS_16_EN[idx];
+  const ko = COMPASS_16_KO[idx];
+  if (lang === 'ko') return ko;
+  if (lang === 'ko_en') return `${ko}(${en})`;
+  return en;
+}
+
+const CARDINAL_8_EN = ['N', 'NE', 'E', 'SE', 'S', 'SW', 'W', 'NW'] as const;
+const CARDINAL_8_KO = ['북', '북동', '동', '남동', '남', '남서', '서', '북서'] as const;
+
+export function formatCardinalLabel(
+  azDeg: number,
+  lang: ObjectNameLanguage = 'ko'
+): string {
+  const idx = Math.round((((azDeg % 360) + 360) % 360) / 45) % 8;
+  const en = CARDINAL_8_EN[idx];
+  const ko = CARDINAL_8_KO[idx];
+  if (lang === 'en') return en;
+  if (lang === 'ko_en') return `${ko} (${en})`;
+  return ko;
 }
 
 const FALLBACK_DUBHE: Star = {
@@ -913,8 +948,156 @@ const FALLBACK_NAVI: Star = {
   con: 'Cas',
 };
 
+export function getKoreanCompassDirection(azDeg: number): string {
+  const dirs = ['북', '북동', '동', '남동', '남', '남서', '서', '북서'];
+  return dirs[Math.round((((azDeg % 360) + 360) % 360) / 45) % 8];
+}
+
+interface ConstellationAnchorEntry {
+  star: Star;
+  conAbbr: string;
+  conKoName: string;
+  conName: string;
+  segments: [number, number, number, number][];
+  isPrimaryStyle: boolean;
+}
+
+const constellationAnchorCache = new WeakMap<
+  Constellation[],
+  Map<string, { starsRef: Star[]; entries: ConstellationAnchorEntry[] }>
+>();
+
+function getConstellationAnchorStars(
+  constellations: Constellation[],
+  stars: Star[],
+  lineStyle: ConstellationLineStyle = 'traditional'
+): ConstellationAnchorEntry[] {
+  if (!constellations.length || !stars.length) return [];
+
+  let styleMap = constellationAnchorCache.get(constellations);
+  if (!styleMap) {
+    styleMap = new Map();
+    constellationAnchorCache.set(constellations, styleMap);
+  }
+  const cacheKey = `${lineStyle}:${stars.length}`;
+  const cached = styleMap.get(cacheKey);
+  if (cached && cached.starsRef === stars) {
+    return cached.entries;
+  }
+
+  // Fast spatial bucket lookup for bright stars (by 2° Dec band)
+  const decBuckets = new Map<number, Star[]>();
+  for (const s of stars) {
+    const b = Math.floor((s.dec + 90) / 2);
+    let arr = decBuckets.get(b);
+    if (!arr) {
+      arr = [];
+      decBuckets.set(b, arr);
+    }
+    arr.push(s);
+  }
+
+  const findNearestStarForVertex = (raDeg: number, decDeg: number): Star | null => {
+    const centerBucket = Math.floor((decDeg + 90) / 2);
+    let best: Star | null = null;
+    let bestScore = Infinity;
+    for (let b = centerBucket - 1; b <= centerBucket + 1; b++) {
+      const bucket = decBuckets.get(b);
+      if (!bucket) continue;
+      for (const s of bucket) {
+        if (Math.abs(s.dec - decDeg) > 0.25) continue;
+        const d = angularDistanceDeg(s.ra, s.dec, raDeg, decDeg);
+        if (d <= 0.18) {
+          // Prefer exact coordinate match; tie-break by brightness for close optical doubles
+          const score = d * 20 + Math.max(0, s.mag) * 0.15;
+          if (score < bestScore) {
+            bestScore = score;
+            best = s;
+          }
+        }
+      }
+    }
+    return best;
+  };
+
+  // Map by unique star id so each constellation star accumulates all touching segments
+  const byStarId = new Map<string, ConstellationAnchorEntry>();
+
+  const registerSegments = (
+    c: Constellation,
+    segs: [number, number, number, number][],
+    isPrimaryStyle: boolean
+  ) => {
+    // Collect unique endpoints per constellation to avoid redundant lookups
+    const vertexSegs = new Map<
+      string,
+      { ra: number; dec: number; segments: [number, number, number, number][] }
+    >();
+    const addEnd = (ra: number, dec: number, seg: [number, number, number, number]) => {
+      const key = `${Math.round(ra * 100)}_${Math.round(dec * 100)}`;
+      let item = vertexSegs.get(key);
+      if (!item) {
+        item = { ra, dec, segments: [] };
+        vertexSegs.set(key, item);
+      }
+      item.segments.push(seg);
+    };
+
+    for (const seg of segs) {
+      addEnd(seg[0], seg[1], seg);
+      addEnd(seg[2], seg[3], seg);
+    }
+
+    for (const v of vertexSegs.values()) {
+      const matched = findNearestStarForVertex(v.ra, v.dec);
+      if (!matched) continue;
+      const existing = byStarId.get(matched.id);
+      if (!existing) {
+        byStarId.set(matched.id, {
+          star: matched,
+          conAbbr: c.abbr,
+          conKoName: c.koName,
+          conName: c.name,
+          segments: [...v.segments],
+          isPrimaryStyle,
+        });
+      } else {
+        if (isPrimaryStyle && !existing.isPrimaryStyle) {
+          existing.isPrimaryStyle = true;
+          existing.conAbbr = c.abbr;
+          existing.conKoName = c.koName;
+          existing.conName = c.name;
+          existing.segments = [...v.segments];
+        } else if (isPrimaryStyle === existing.isPrimaryStyle && existing.conAbbr === c.abbr) {
+          existing.segments.push(...v.segments);
+        }
+      }
+    }
+  };
+
+  for (const c of constellations) {
+    const primarySegs =
+      lineStyle === 'modern'
+        ? c.lines
+        : c.traditionalLines && c.traditionalLines.length > 0
+        ? c.traditionalLines
+        : c.lines;
+    registerSegments(c, primarySegs, true);
+
+    if (lineStyle !== 'modern' && c.traditionalLines && c.traditionalLines.length > 0) {
+      registerSegments(c, c.lines, false);
+    }
+  }
+
+  const entries = Array.from(byStarId.values());
+  styleMap.set(cacheKey, { starsRef: stars, entries });
+  return entries;
+}
+
 /**
- * Find one or more naked-eye star-hopping guide paths for a target.
+ * Find one or more star-hopping guide paths for a target, prioritizing the nearest
+ * fairly bright constellation-forming star so observers can hop directly from a
+ * recognizable constellation figure landmark.
  * For Polaris (북극성), provides the two iconic northern-sky pointer routes:
  *   1. Ursa Major Dubhe (큰곰자리 두베, α UMa) -> Polaris
  *   2. Cassiopeia Navi (카시오페아 나비, γ Cas) -> Polaris
@@ -925,7 +1108,9 @@ export function findStarHopGuides(
   targetLabel: string,
   stars: Star[],
   excludeId?: string,
-  targetHip?: number
+  targetHip?: number,
+  constellations?: Constellation[],
+  lineStyle: ConstellationLineStyle = 'traditional'
 ): StarHopGuide[] {
   const lowerLabel = targetLabel.toLowerCase();
   const isPolaris =
@@ -936,6 +1121,11 @@ export function findStarHopGuides(
     targetLabel.includes('북극성') ||
     targetLabel.includes('폴라리스') ||
     angularDistanceDeg(targetRa, targetDec, 37.9545, 89.2641) < 0.35;
+
+  const anchorEntries =
+    constellations && constellations.length > 0
+      ? getConstellationAnchorStars(constellations, stars, lineStyle)
+      : [];
 
   if (isPolaris) {
     const dubhe =
@@ -950,10 +1140,18 @@ export function findStarHopGuides(
           s.name === 'Navi'
       ) ?? FALLBACK_NAVI;
 
+    const dubheEntry = anchorEntries.find((e) => e.star.id === dubhe.id);
+    const naviEntry = anchorEntries.find((e) => e.star.id === navi.id);
+
     const toLabel = '북극성';
     return [
       {
         fromStar: dubhe,
+        fromConstellationKo: dubheEntry?.conKoName ?? '큰곰자리',
+        fromConstellationName: dubheEntry?.conName ?? 'Ursa Major',
+        fromConstellationAbbr: dubheEntry?.conAbbr ?? 'UMa',
+        isConstellationStar: true,
+        anchorSegments: dubheEntry?.segments,
         toRa: targetRa,
         toDec: targetDec,
         toLabel,
@@ -963,6 +1161,11 @@ export function findStarHopGuides(
       },
       {
         fromStar: navi,
+        fromConstellationKo: naviEntry?.conKoName ?? '카시오페이아자리',
+        fromConstellationName: naviEntry?.conName ?? 'Cassiopeia',
+        fromConstellationAbbr: naviEntry?.conAbbr ?? 'Cas',
+        isConstellationStar: true,
+        anchorSegments: naviEntry?.segments,
         toRa: targetRa,
         toDec: targetDec,
         toLabel,
@@ -973,35 +1176,167 @@ export function findStarHopGuides(
     ];
   }
 
-  let bestStar: Star | null = null;
-  let bestScore = Infinity;
+  const isSameStar = (s: Star, dist: number): boolean =>
+    s.id === excludeId || (targetHip !== undefined && s.hip === targetHip) || dist < 0.08;
 
-  for (const s of stars) {
-    if (s.id === excludeId || (targetHip && s.hip === targetHip) || s.mag > 3.8) continue;
-    const dist = angularDistanceDeg(s.ra, s.dec, targetRa, targetDec);
-    if (dist < 0.15 || dist > 35) continue;
-    const score = dist + Math.max(0, s.mag) * 2.2;
-    if (score < bestScore) {
-      bestScore = score;
-      bestStar = s;
+  const angleDiffDeg = (a: number, b: number): number => {
+    const d = Math.abs((((a - b) % 360) + 540) % 360 - 180);
+    return d;
+  };
+
+  // Index constellation anchor entries and constellation metadata by abbreviation
+  const anchorByStarId = new Map<string, ConstellationAnchorEntry>();
+  for (const entry of anchorEntries) {
+    anchorByStarId.set(entry.star.id, entry);
+  }
+  const conByAbbr = new Map<string, Constellation>();
+  if (constellations) {
+    for (const c of constellations) {
+      conByAbbr.set(c.abbr.toLowerCase(), c);
     }
   }
 
-  if (!bestStar) return [];
-  return [
-    {
-      fromStar: bestStar,
+  interface HopCandidate {
+    star: Star;
+    dist: number;
+    pa: number;
+    score: number;
+    anchor?: ConstellationAnchorEntry;
+    conKo?: string;
+    conName?: string;
+    conAbbr?: string;
+  }
+
+  const candidates: HopCandidate[] = [];
+  const seenIds = new Set<string>();
+
+  const considerStar = (s: Star, anchor?: ConstellationAnchorEntry) => {
+    if (seenIds.has(s.id)) return;
+    if (s.mag > 5.2) return;
+    const dist = angularDistanceDeg(s.ra, s.dec, targetRa, targetDec);
+    if (isSameStar(s, dist) || dist > 35) return;
+    seenIds.add(s.id);
+
+    // Unified adjacency + brightness score (lower = better landmark):
+    // Strongly favors bright naked-eye stars (<= 2.5m) close to the target,
+    // gives constellation-forming stars & named stars a helpful recognition bonus,
+    // without ever hiding a much brighter adjacent star.
+    const brightPenalty =
+      s.mag <= 2.5
+        ? (s.mag + 1.5) * 0.55
+        : s.mag <= 3.8
+        ? (2.5 + 1.5) * 0.55 + (s.mag - 2.5) * 1.15
+        : (2.5 + 1.5) * 0.55 + (3.8 - 2.5) * 1.15 + (s.mag - 3.8) * 2.25;
+    const conBonus = anchor
+      ? (anchor.isPrimaryStyle ? -0.75 : -0.3) + (anchor.segments.length >= 2 ? -0.25 : 0)
+      : 0;
+    const namedBonus = s.koName || s.name ? -0.35 : s.bayer ? -0.15 : 0;
+    const score = dist + brightPenalty + conBonus + namedBonus;
+
+    const fallbackCon = s.con ? conByAbbr.get(s.con.toLowerCase()) : undefined;
+    candidates.push({
+      star: s,
+      dist,
+      pa: positionAngleDeg(s.ra, s.dec, targetRa, targetDec),
+      score,
+      anchor,
+      conKo: anchor?.conKoName ?? fallbackCon?.koName,
+      conName: anchor?.conName ?? fallbackCon?.name,
+      conAbbr: anchor?.conAbbr ?? fallbackCon?.abbr ?? s.con,
+    });
+  };
+
+  for (const entry of anchorEntries) {
+    considerStar(entry.star, entry);
+  }
+  for (const s of stars) {
+    if (s.mag > 4.6) continue;
+    considerStar(s, anchorByStarId.get(s.id));
+  }
+
+  if (candidates.length === 0) return [];
+
+  candidates.sort((a, b) => a.score - b.score || a.star.mag - b.star.mag || a.dist - b.dist);
+
+  const chosen: HopCandidate[] = [candidates[0]];
+  const primary = candidates[0];
+  const MAX_GUIDES = 3;
+
+  const isWellSeparated = (cand: HopCandidate, minAngleDeg: number): boolean => {
+    for (const c of chosen) {
+      if (angleDiffDeg(cand.pa, c.pa) < minAngleDeg) return false;
+      if (angularDistanceDeg(cand.star.ra, cand.star.dec, c.star.ra, c.star.dec) < 1.4) {
+        return false;
+      }
+    }
+    return true;
+  };
+
+  // If the primary anchor is somewhat dim (> 2.2m), guarantee we also pull in the brightest nearby
+  // landmark star within 18° (if distinctly brighter and in a different direction) for easy visual acquisition.
+  if (primary.star.mag > 2.2) {
+    let brightestBeacon: HopCandidate | null = null;
+    for (const cand of candidates) {
+      if (cand === primary) continue;
+      if (cand.star.mag > Math.min(3.0, primary.star.mag - 0.8)) continue;
+      if (cand.dist > 18) continue;
+      if (!isWellSeparated(cand, 26)) continue;
+      if (
+        !brightestBeacon ||
+        cand.star.mag < brightestBeacon.star.mag - 0.25 ||
+        (Math.abs(cand.star.mag - brightestBeacon.star.mag) <= 0.25 && cand.dist < brightestBeacon.dist)
+      ) {
+        brightestBeacon = cand;
+      }
+    }
+    if (brightestBeacon) {
+      chosen.push(brightestBeacon);
+    }
+  }
+
+  // Fill remaining slots (up to 3 total) with the best-scoring bright adjacent stars from distinct directions
+  const maxSecondaryDist = Math.min(28, Math.max(12, primary.dist * 2.2 + 4));
+  const maxSecondaryMag = Math.min(4.3, Math.max(3.6, primary.star.mag + 1.1));
+  const maxSecondaryScore = primary.score * 1.85 + 6.5;
+
+  for (const cand of candidates) {
+    if (chosen.length >= MAX_GUIDES) break;
+    if (chosen.includes(cand)) continue;
+    if (cand.dist > maxSecondaryDist) continue;
+    if (cand.star.mag > maxSecondaryMag) continue;
+    if (cand.score > maxSecondaryScore) continue;
+    if (!isWellSeparated(cand, 32)) continue;
+    chosen.push(cand);
+  }
+
+  // Sort final guides so the #1 primary stays first, followed by secondary guides ordered by score
+  const ordered = [chosen[0], ...chosen.slice(1).sort((a, b) => a.score - b.score)];
+
+  return ordered.map((item, idx) => {
+    const s = item.star;
+    const starLabel = s.koName || s.name || s.bayer || s.id;
+    const conPrefix = item.conKo ? `${item.conKo} ` : '';
+    const dirKo = getKoreanCompassDirection(item.pa);
+    return {
+      fromStar: s,
+      fromConstellationKo: item.conKo,
+      fromConstellationName: item.conName,
+      fromConstellationAbbr: item.conAbbr,
+      isConstellationStar: Boolean(item.anchor),
+      isPrimary: idx === 0,
+      anchorSegments: item.anchor?.segments,
       toRa: targetRa,
       toDec: targetDec,
       toLabel: targetLabel,
-      distanceDeg: angularDistanceDeg(bestStar.ra, bestStar.dec, targetRa, targetDec),
-      paDeg: positionAngleDeg(bestStar.ra, bestStar.dec, targetRa, targetDec),
-    },
-  ];
+      distanceDeg: item.dist,
+      paDeg: item.pa,
+      note: `${conPrefix}${starLabel}(${s.mag.toFixed(1)}m)에서 ${dirKo}쪽(방위 ${item.pa.toFixed(0)}°)으로 ${item.dist.toFixed(1)}° 이동`,
+    };
+  });
 }
 
 /**
- * Find the primary naked-eye guide star (mag <= 3.8) within 35° for Star Hopping.
+ * Find the primary constellation-star guide (or bright naked-eye fallback) within 35° for Star Hopping.
  */
 export function findStarHopGuide(
   targetRa: number,
@@ -1009,11 +1344,21 @@ export function findStarHopGuide(
   targetLabel: string,
   stars: Star[],
   excludeId?: string,
-  targetHip?: number
+  targetHip?: number,
+  constellations?: Constellation[],
+  lineStyle: ConstellationLineStyle = 'traditional'
 ): StarHopGuide | null {
   return (
-    findStarHopGuides(targetRa, targetDec, targetLabel, stars, excludeId, targetHip)[0] ??
-    null
+    findStarHopGuides(
+      targetRa,
+      targetDec,
+      targetLabel,
+      stars,
+      excludeId,
+      targetHip,
+      constellations,
+      lineStyle
+    )[0] ?? null
   );
 }
 

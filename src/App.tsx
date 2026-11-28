@@ -62,6 +62,7 @@ import {
   getCatalogSnapshot,
   useCatalogData,
 } from './data/catalogLoader';
+import { findLocalStarById } from './utils/localStarCatalogs';
 import {
   AsterismDraftState,
   AsterismGroup,
@@ -102,6 +103,7 @@ import {
   angularDistanceDeg,
   DEG2RAD,
   equatorialToHorizontal,
+  formatCardinalLabel,
   formatDec,
   formatRA,
   getDsoLimitingMagnitude,
@@ -175,7 +177,11 @@ import {
   mergeObservingSites,
   SAVED_SITES_STORAGE_KEY,
 } from './utils/observingSites';
-import { clampBortleClass, estimateSiteBortleClass } from './utils/bortle';
+import {
+  clampBortleClass,
+  computeBortleMagPenalty,
+  estimateSiteBortleClass,
+} from './utils/bortle';
 import {
   clampUiFontSizeStep,
   getUiFontOption,
@@ -295,11 +301,15 @@ const DEFAULT_LAYERS: LayerSettings = {
   showHorizon: true,
   showTerrain: true,
   showEcliptic: false,
+  showCelestialPoles: false,
   showMilkyWay: false,
   showNebulaContours: false,
   showConstellationLines: true,
   constellationLineStyle: 'traditional',
   constellationLineOpacity: 0.35,
+  constellationProjectionMode: 'modern',
+  showConstellationArt: false,
+  constellationArtOpacity: 0.28,
   showConstellationBoundaries: false,
   showConstellationNames: true,
   showSolarSystem: true,
@@ -338,6 +348,9 @@ const DEFAULT_LAYERS: LayerSettings = {
   dsoLabelOpacity: 1.0,
   showStarLabels: true,
   starLabelLanguage: 'ko',
+  constellationNameStyle: 'name_abbr',
+  starNameStyle: 'traditional',
+  dsoNameStyle: 'code_name',
   showProperStarNames: false,
   starLabelDensityPct: 7,
   starLabelOpacity: 1.0,
@@ -959,6 +972,7 @@ export default function App() {
             showHorizon: false,
             showTerrain: false,
             showEcliptic: false,
+            showCelestialPoles: false,
           }
         : {}),
     };
@@ -1571,11 +1585,17 @@ export default function App() {
     []
   );
 
+  const effectiveCatalogMagOffset =
+    layers.magOffset -
+    (observer.bortleEnabled
+      ? computeBortleMagPenalty(clampBortleClass(observer.bortleClass ?? 4), view.fsz)
+      : 0);
+
   const catalogs = useCatalogData(
     view.ra,
     view.dec,
     view.fsz,
-    layers.magOffset,
+    effectiveCatalogMagOffset,
     searchActive,
     layers.enableGaiaLive,
     layers.showDoubleStars,
@@ -3461,6 +3481,7 @@ export default function App() {
         let st =
           snap.brightStars.find((x) => x.id === target.objectId) ??
           snap.deepStars.find((x) => x.id === target.objectId) ??
+          findLocalStarById(target.objectId) ??
           snap.gaiaStars.find((x) => x.id === target.objectId);
         if (!st) {
           for (const tile of snap.ultraStarTiles.values()) {
@@ -5263,6 +5284,7 @@ export default function App() {
       showHorizon: false,
       showTerrain: false,
       showEcliptic: false,
+      showCelestialPoles: false,
       showFieldStars: false,
       highlightSessionPlan: false,
     };
@@ -6672,7 +6694,7 @@ export default function App() {
                   role="menu"
                   aria-label="동서남북 방위 선택"
                   style={{ left: cardinalMenuPos.left, top: cardinalMenuPos.top }}
-                  className={`fixed z-[120] w-24 p-1 rounded-lg border shadow-xl flex flex-col gap-0.5 ${
+                  className={`fixed z-[120] min-w-28 p-1 rounded-lg border shadow-xl flex flex-col gap-0.5 ${
                     theme === 'white'
                       ? 'bg-white border-slate-300 text-slate-700'
                       : theme === 'red'
@@ -6682,14 +6704,16 @@ export default function App() {
                 >
                   {(
                     [
-                      { label: '동', full: '동쪽', az: 90 },
-                      { label: '서', full: '서쪽', az: 270 },
-                      { label: '남', full: '남쪽', az: 180 },
-                      { label: '북', full: '북쪽', az: 0 },
+                      { full: '동쪽', az: 90 },
+                      { full: '서쪽', az: 270 },
+                      { full: '남쪽', az: 180 },
+                      { full: '북쪽', az: 0 },
                     ] as const
-                  ).map((dir) => (
+                  ).map((dir) => {
+                    const dirLabel = formatCardinalLabel(dir.az, layers.starLabelLanguage ?? 'ko');
+                    return (
                     <button
-                      key={dir.label}
+                      key={dir.az}
                       type="button"
                       role="menuitem"
                       onClick={() => {
@@ -6697,7 +6721,7 @@ export default function App() {
                         setCardinalMenuOpen(false);
                       }}
                       title={`${dir.full} 하늘 바로가기 (방위각 ${dir.az}° · 고도 30° · 화각 60°)`}
-                      className={`w-full h-7 px-2 rounded-md flex items-center justify-between text-xs font-semibold transition-colors ${
+                      className={`w-full h-7 px-2 rounded-md flex items-center justify-between gap-2 text-xs font-semibold whitespace-nowrap transition-colors ${
                         theme === 'white'
                           ? 'text-slate-700 hover:text-blue-700 hover:bg-slate-100'
                           : theme === 'red'
@@ -6705,12 +6729,13 @@ export default function App() {
                           : 'text-slate-200 hover:text-[#22D3EE] hover:bg-[#182438]'
                       }`}
                     >
-                      <span>{dir.label}</span>
+                      <span>{dirLabel}</span>
                       <span className="font-mono text-[10px] opacity-65 tabular-nums">
                         {dir.az}°
                       </span>
                     </button>
-                  ))}
+                    );
+                  })}
                 </div>,
                 document.body
               )}
@@ -6943,7 +6968,8 @@ export default function App() {
                     layers.showGridAltAz ||
                     layers.showHorizon ||
                     layers.showTerrain ||
-                    layers.showEcliptic,
+                    layers.showEcliptic ||
+                    layers.showCelestialPoles,
                   icon: <Grid3x3 className="w-3.5 h-3.5 shrink-0" />,
                 },
                 {
@@ -7135,8 +7161,8 @@ export default function App() {
             onClick={handleToggleRulerMode}
             title={
               rulerMode
-                ? '척도 종료 (두 점 사이 각거리 측정 중)'
-                : '척도 (두 점 사이 각거리 측정)'
+                ? '척도 종료 (두 점 사이 각거리·방위각 측정 중)'
+                : '척도 (두 점 사이 각거리·방위각 측정)'
             }
             aria-label="척도"
             aria-pressed={rulerMode}
@@ -7589,6 +7615,8 @@ export default function App() {
                 centerLocked={centerLocked}
                 solarTrails={solarTrails}
                 theme={theme}
+                nameLanguage={layers.starLabelLanguage ?? 'ko'}
+                constellationLineStyle={layers.constellationLineStyle}
                 observer={observer}
                 optics={optics}
                 equipmentLocker={equipmentLocker}
@@ -7879,6 +7907,7 @@ export default function App() {
             selected={selected}
             activeTab={inspectorTab}
             theme={theme}
+            nameLanguage={layers.starLabelLanguage ?? 'ko'}
             observer={observer}
             optics={optics}
             equipmentLocker={equipmentLocker}

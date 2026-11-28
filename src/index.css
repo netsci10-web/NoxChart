@@ -257,3 +257,18 @@ html[data-font-step]:not([data-font-step="0"]) .text-xl { font-size: calc(20px *
     display: block;
   }
 }
+
+@keyframes gaia-indeterminate {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(260%);
+  }
+}
+
+.gaia-progress-indeterminate {
+  width: 42%;
+  animation: gaia-indeterminate 1.25s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+

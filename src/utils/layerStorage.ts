@@ -1,5 +1,6 @@
 import {
   ConstellationLineStyle,
+  ConstellationProjectionMode,
   DsoType,
   HipsSettings,
   HipsSurveyId,
@@ -79,6 +80,7 @@ export function sanitizeLayerSettings(
     showHorizon: readBool(obj.showHorizon, fallback.showHorizon),
     showTerrain: readBool(obj.showTerrain, fallback.showTerrain),
     showEcliptic: readBool(obj.showEcliptic, fallback.showEcliptic),
+    showCelestialPoles: readBool(obj.showCelestialPoles, fallback.showCelestialPoles),
     showMilkyWay: readBool(obj.showMilkyWay, fallback.showMilkyWay),
     showNebulaContours: readBool(obj.showNebulaContours, fallback.showNebulaContours),
     showConstellationLines: readBool(
@@ -91,6 +93,23 @@ export function sanitizeLayerSettings(
       fallback.constellationLineOpacity,
       0.05,
       1.0
+    ),
+    constellationProjectionMode:
+      obj.constellationProjectionMode === 'modern' ||
+      obj.constellationProjectionMode === 'classical'
+        ? (obj.constellationProjectionMode as ConstellationProjectionMode)
+        : fallback.constellationProjectionMode ?? 'modern',
+    showConstellationArt: readBool(
+      obj.showConstellationArt,
+      obj.constellationProjectionMode === 'classical'
+        ? true
+        : fallback.showConstellationArt ?? false
+    ),
+    constellationArtOpacity: clampNum(
+      obj.constellationArtOpacity,
+      fallback.constellationArtOpacity ?? 0.28,
+      0.05,
+      0.85
     ),
     showConstellationBoundaries: readBool(
       obj.showConstellationBoundaries,
@@ -218,6 +237,27 @@ export function sanitizeLayerSettings(
       obj.starLabelLanguage === 'ko_en'
         ? obj.starLabelLanguage
         : fallback.starLabelLanguage ?? 'ko',
+    constellationNameStyle:
+      obj.constellationNameStyle === 'traditional' ||
+      obj.constellationNameStyle === 'name' ||
+      obj.constellationNameStyle === 'name_abbr' ||
+      obj.constellationNameStyle === 'abbr'
+        ? obj.constellationNameStyle
+        : fallback.constellationNameStyle ?? 'name_abbr',
+    starNameStyle:
+      obj.starNameStyle === 'traditional' ||
+      obj.starNameStyle === 'bayer' ||
+      obj.starNameStyle === 'catalog' ||
+      obj.starNameStyle === 'full'
+        ? obj.starNameStyle
+        : fallback.starNameStyle ?? 'traditional',
+    dsoNameStyle:
+      obj.dsoNameStyle === 'name' ||
+      obj.dsoNameStyle === 'abbr' ||
+      obj.dsoNameStyle === 'code' ||
+      obj.dsoNameStyle === 'code_name'
+        ? obj.dsoNameStyle
+        : fallback.dsoNameStyle ?? 'code_name',
     showProperStarNames: readBool(
       obj.showProperStarNames,
       fallback.showProperStarNames
@@ -393,8 +433,12 @@ const RECOGNIZED_LAYER_KEYS: readonly string[] = [
   'showHorizon',
   'showTerrain',
   'showEcliptic',
+  'showCelestialPoles',
   'showMilkyWay',
   'showConstellationLines',
+  'constellationProjectionMode',
+  'showConstellationArt',
+  'constellationArtOpacity',
   'showConstellationNames',
   'showSolarSystem',
   'showSolarSun',
@@ -417,6 +461,9 @@ const RECOGNIZED_LAYER_KEYS: readonly string[] = [
   'dsoOpacity',
   'showStarLabels',
   'starLabelLanguage',
+  'constellationNameStyle',
+  'starNameStyle',
+  'dsoNameStyle',
   'starLabelOpacity',
   'showFieldStars',
   'magOffset',

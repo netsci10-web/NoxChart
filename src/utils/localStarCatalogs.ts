@@ -178,10 +178,32 @@ const PACK_HEADER_BYTES = 28;
 const PACK_VERSION = 2;
 const HIP_ID_HI_SENTINEL = 0xffffffff;
 
+// Pre-built zero-copy binary spatial index cache stored in IndexedDB ("NXSI" v1):
+// [0..3]   ASCII "NXSI"
+// [4..7]   uint32 version (1)
+// [8..11]  uint32 totalStars
+// [12..15] uint32 hipCount
+// [16..19] uint32 metaJsonByteLength
+// [20..23] uint32 cellCount (648)
+// [24..31] float64 builtAt (ms)
+// [32 .. +metaAligned]            UTF-8 JSON InstalledStarPackMeta[] (8-byte padded)
+// [+0 .. +2600]                   Uint32Array(649) cellOffsets (8-byte padded)
+// [+0 .. +totalStars*16]          Float32Array(totalStars*4) spatially grouped & mag-sorted coords
+// [+0 .. +totalStars*8]           Uint32Array(totalStars*2)  aligned [idHi, idLo]
+// [+0 .. +hipCount*8]             Uint32Array(hipCount*2)    [hipNum, globalStarIdx] sorted by hipNum
+const SPATIAL_CACHE_MAGIC_0 = 0x4e; // 'N'
+const SPATIAL_CACHE_MAGIC_1 = 0x58; // 'X'
+const SPATIAL_CACHE_MAGIC_2 = 0x53; // 'S'
+const SPATIAL_CACHE_MAGIC_3 = 0x49; // 'I'
+const SPATIAL_CACHE_VERSION = 1;
+const SPATIAL_CACHE_HEADER_BYTES = 32;
+const SPATIAL_CACHE_KEY = 'active_v1';
+
 const IDB_NAME = 'noxchart_star_catalogs_v1';
-const IDB_VERSION = 1;
+const IDB_VERSION = 2;
 const STORE_PACKS = 'packs';
 const STORE_HANDLES = 'handles';
+const STORE_SPATIAL_CACHE = 'spatial_cache';
 const FOLDER_HANDLE_KEY = 'noxchart_dir';
 
 // Minimal TypeScript declarations for File System Access API
@@ -372,14 +394,33 @@ export function encodeStarPackBinary(
   return buf;
 }
 
-export function decodeStarPackBinary(buffer: ArrayBuffer): {
+export function parseStarNumericId(star: Star): [number, number] {
+  if (typeof star.hip === 'number' && Number.isInteger(star.hip) && star.hip > 0) {
+    return [HIP_ID_HI_SENTINEL, star.hip >>> 0];
+  }
+  if (star.gaiaId && /^\d{1,20}$/.test(star.gaiaId)) {
+    try {
+      const bi = BigInt(star.gaiaId);
+      if (bi > 0n) {
+        const hi = Number((bi >> 32n) & 0xffffffffn) >>> 0;
+        const lo = Number(bi & 0xffffffffn) >>> 0;
+        if (hi !== HIP_ID_HI_SENTINEL) return [hi, lo];
+      }
+    } catch {
+      return [-1, -1];
+    }
+  }
+  return [-1, -1];
+}
+
+export function decodeStarPackHeader(buffer: ArrayBuffer): {
+  version: number;
   tier: number;
   starCount: number;
   magMin: number;
   magMax: number;
   savedAt: number;
-  starsFlat: Float32Array;
-  starIds: Uint32Array;
+  expectedBytes: number;
 } | null {
   if (buffer.byteLength < PACK_HEADER_BYTES) return null;
   const u8 = new Uint8Array(buffer, 0, 4);
@@ -400,18 +441,39 @@ export function decodeStarPackBinary(buffer: ArrayBuffer): {
   const magMax = view.getFloat32(16, true);
   const savedAt = view.getFloat64(20, true);
   if (tier < 1 || tier > 20) return null;
-
   const coordsBytes = starCount * 16;
   const expectedBytes =
     version === 2 ? PACK_HEADER_BYTES + coordsBytes + starCount * 8 : PACK_HEADER_BYTES + coordsBytes;
-  if (buffer.byteLength < expectedBytes) return null;
+  return { version, tier, starCount, magMin, magMax, savedAt, expectedBytes };
+}
 
-  const starsFlat = new Float32Array(buffer, PACK_HEADER_BYTES, starCount * 4);
+export function decodeStarPackBinary(buffer: ArrayBuffer): {
+  tier: number;
+  starCount: number;
+  magMin: number;
+  magMax: number;
+  savedAt: number;
+  starsFlat: Float32Array;
+  starIds: Uint32Array;
+} | null {
+  const hdr = decodeStarPackHeader(buffer);
+  if (!hdr || buffer.byteLength < hdr.expectedBytes) return null;
+
+  const coordsBytes = hdr.starCount * 16;
+  const starsFlat = new Float32Array(buffer, PACK_HEADER_BYTES, hdr.starCount * 4);
   const starIds =
-    version === 2
-      ? new Uint32Array(buffer, PACK_HEADER_BYTES + coordsBytes, starCount * 2)
-      : new Uint32Array(starCount * 2);
-  return { tier, starCount, magMin, magMax, savedAt, starsFlat, starIds };
+    hdr.version === 2
+      ? new Uint32Array(buffer, PACK_HEADER_BYTES + coordsBytes, hdr.starCount * 2)
+      : new Uint32Array(hdr.starCount * 2);
+  return {
+    tier: hdr.tier,
+    starCount: hdr.starCount,
+    magMin: hdr.magMin,
+    magMax: hdr.magMax,
+    savedAt: hdr.savedAt,
+    starsFlat,
+    starIds,
+  };
 }
 
 // IndexedDB helpers
@@ -431,6 +493,9 @@ function openStarPackDb(): Promise<IDBDatabase | null> {
         if (!db.objectStoreNames.contains(STORE_HANDLES)) {
           db.createObjectStore(STORE_HANDLES, { keyPath: 'key' });
         }
+        if (!db.objectStoreNames.contains(STORE_SPATIAL_CACHE)) {
+          db.createObjectStore(STORE_SPATIAL_CACHE, { keyPath: 'key' });
+        }
       };
       req.onsuccess = () => resolve(req.result);
       req.onerror = () => resolve(null);
@@ -439,6 +504,54 @@ function openStarPackDb(): Promise<IDBDatabase | null> {
     }
   });
   return idbPromise;
+}
+
+async function idbGetSpatialCache(): Promise<ArrayBuffer | null> {
+  const db = await openStarPackDb();
+  if (!db || !db.objectStoreNames.contains(STORE_SPATIAL_CACHE)) return null;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE_SPATIAL_CACHE, 'readonly');
+      const req = tx.objectStore(STORE_SPATIAL_CACHE).get(SPATIAL_CACHE_KEY);
+      req.onsuccess = () => {
+        const rec = req.result as { key: string; buffer?: ArrayBuffer } | undefined;
+        resolve(rec?.buffer instanceof ArrayBuffer ? rec.buffer : null);
+      };
+      req.onerror = () => resolve(null);
+    } catch {
+      resolve(null);
+    }
+  });
+}
+
+async function idbPutSpatialCache(buffer: ArrayBuffer): Promise<boolean> {
+  const db = await openStarPackDb();
+  if (!db || !db.objectStoreNames.contains(STORE_SPATIAL_CACHE)) return false;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE_SPATIAL_CACHE, 'readwrite');
+      tx.objectStore(STORE_SPATIAL_CACHE).put({ key: SPATIAL_CACHE_KEY, buffer });
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+async function idbDeleteSpatialCache(): Promise<void> {
+  const db = await openStarPackDb();
+  if (!db || !db.objectStoreNames.contains(STORE_SPATIAL_CACHE)) return;
+  await new Promise<void>((resolve) => {
+    try {
+      const tx = db.transaction(STORE_SPATIAL_CACHE, 'readwrite');
+      tx.objectStore(STORE_SPATIAL_CACHE).delete(SPATIAL_CACHE_KEY);
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
 }
 
 async function idbGetAllPacks(): Promise<StoredPackRecord[]> {
@@ -479,6 +592,25 @@ async function idbPutPack(record: StoredPackRecord): Promise<boolean> {
     try {
       const tx = db.transaction(STORE_PACKS, 'readwrite');
       tx.objectStore(STORE_PACKS).put(record);
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => resolve(false);
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+async function idbPutPacksBatch(records: StoredPackRecord[]): Promise<boolean> {
+  if (records.length === 0) return true;
+  const db = await openStarPackDb();
+  if (!db) return false;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE_PACKS, 'readwrite');
+      const store = tx.objectStore(STORE_PACKS);
+      for (let i = 0; i < records.length; i++) {
+        store.put(records[i]);
+      }
       tx.oncomplete = () => resolve(true);
       tx.onerror = () => resolve(false);
     } catch {
@@ -548,11 +680,21 @@ async function idbDeleteFolderRecord(): Promise<void> {
 }
 
 // Spatial tile index: 18 dec bands (10° each) × 36 ra bins (10° each) = 648 cells
-// Each cell holds coords Float32Array + ids Uint32Array sorted by magnitude ascending
+// Each cell holds zero-copy Float32Array coords + Uint32Array ids sorted by magnitude ascending
 const DEC_CELL_DEG = 10;
 const RA_CELL_DEG = 10;
 const DEC_CELL_COUNT = 18;
 const RA_CELL_COUNT = 36;
+const TOTAL_CELLS = DEC_CELL_COUNT * RA_CELL_COUNT; // 648
+const CELL_KEYS: readonly string[] = (() => {
+  const arr: string[] = new Array(TOTAL_CELLS);
+  for (let d = 0; d < DEC_CELL_COUNT; d++) {
+    for (let r = 0; r < RA_CELL_COUNT; r++) {
+      arr[d * RA_CELL_COUNT + r] = `${d}_${r}`;
+    }
+  }
+  return arr;
+})();
 
 interface LoadedTierEntry {
   meta: InstalledStarPackMeta;
@@ -560,10 +702,18 @@ interface LoadedTierEntry {
   starIds: Uint32Array;
 }
 
+// Metadata for all installed tiers (always kept in RAM, tiny JSON)
+const installedMetaByTier = new Map<number, InstalledStarPackMeta>();
+// Raw per-tier TypedArrays (lazily populated ONLY during import/download/delete, not on fast startup!)
 const loadedPackDataByTier = new Map<number, LoadedTierEntry>();
+// Dense 648-element spatial cell lookup (zero string allocation / zero Map hashing per frame!)
+let spatialCells: (LocalStarCellData | null)[] = new Array<LocalStarCellData | null>(TOTAL_CELLS).fill(null);
 let spatialIndex: LocalStarSpatialIndex = new Map();
-// O(1) Hipparcos lookup table built from downloaded packs
-let hipIndexMap = new Map<number, [number, number, number, number]>();
+// Contiguous zero-copy views into the active NXSI spatial cache buffer
+let activeSpatialCoords = new Float32Array(0);
+let activeSpatialIds = new Uint32Array(0);
+// Sorted Uint32Array of [hipNum, globalStarIdx] for O(log N) zero-allocation HIP lookup
+let activeHipLookup = new Uint32Array(0);
 let activeDirHandle: FsDirectoryHandleLike | null = null;
 let activeDownloadAbort: AbortController | null = null;
 let initPromise: Promise<void> | null = null;
@@ -621,82 +771,688 @@ export function setStarPackMirrorMode(mode: StarPackMirrorMode): void {
   updateStateSummary({ mirrorMode: mode });
 }
 
-function rebuildSpatialIndex(): void {
-  const coordBuckets = new Map<string, number[]>();
-  const idBuckets = new Map<string, number[]>();
-  const nextHipMap = new Map<number, [number, number, number, number]>();
-  const tierEntries = Array.from(loadedPackDataByTier.values()).sort(
-    (a, b) => a.meta.tier - b.meta.tier
-  );
+function clearSpatialState(): void {
+  spatialCells = new Array<LocalStarCellData | null>(TOTAL_CELLS).fill(null);
+  spatialIndex = new Map();
+  activeSpatialCoords = new Float32Array(0);
+  activeSpatialIds = new Uint32Array(0);
+  activeHipLookup = new Uint32Array(0);
+}
 
-  for (const entry of tierEntries) {
-    const flat = entry.starsFlat;
-    const ids = entry.starIds;
-    const count = Math.floor(flat.length / 4);
-    for (let idx = 0; idx < count; idx++) {
-      const ci = idx * 4;
-      const ii = idx * 2;
-      const ra = flat[ci];
-      const dec = flat[ci + 1];
-      const mag = flat[ci + 2];
-      const bv = flat[ci + 3];
-      const idHi = ids[ii] ?? 0;
-      const idLo = ids[ii + 1] ?? 0;
-      const normRa = ((ra % 360) + 360) % 360;
+/**
+ * Zero-copy hydration from a pre-built NXSI v1 binary spatial cache ArrayBuffer.
+ * Takes < 1ms even for 3,000,000+ stars because it creates subarray views without copying or sorting!
+ */
+function hydrateFromSpatialCacheBuffer(buffer: ArrayBuffer): boolean {
+  if (buffer.byteLength < SPATIAL_CACHE_HEADER_BYTES) return false;
+  const u8 = new Uint8Array(buffer, 0, 4);
+  if (
+    u8[0] !== SPATIAL_CACHE_MAGIC_0 ||
+    u8[1] !== SPATIAL_CACHE_MAGIC_1 ||
+    u8[2] !== SPATIAL_CACHE_MAGIC_2 ||
+    u8[3] !== SPATIAL_CACHE_MAGIC_3
+  ) {
+    return false;
+  }
 
-      if (idHi === HIP_ID_HI_SENTINEL && idLo > 0 && !nextHipMap.has(idLo)) {
-        nextHipMap.set(idLo, [normRa, dec, mag, bv]);
-      }
+  const view = new DataView(buffer);
+  const version = view.getUint32(4, true);
+  const totalStars = view.getUint32(8, true);
+  const hipCount = view.getUint32(12, true);
+  const metaJsonLen = view.getUint32(16, true);
+  const cellCount = view.getUint32(20, true);
+  if (version !== SPATIAL_CACHE_VERSION || cellCount !== TOTAL_CELLS) return false;
 
-      const dBin = Math.max(0, Math.min(DEC_CELL_COUNT - 1, Math.floor((dec + 90) / DEC_CELL_DEG)));
-      const rBin = Math.max(0, Math.min(RA_CELL_COUNT - 1, Math.floor(normRa / RA_CELL_DEG)));
-      const key = `${dBin}_${rBin}`;
-      let cArr = coordBuckets.get(key);
-      let iArr = idBuckets.get(key);
-      if (!cArr || !iArr) {
-        cArr = [];
-        iArr = [];
-        coordBuckets.set(key, cArr);
-        idBuckets.set(key, iArr);
-      }
-      cArr.push(normRa, dec, mag, bv);
-      iArr.push(idHi, idLo);
+  const metaAligned = (metaJsonLen + 7) & ~7;
+  const offsetsByteStart = SPATIAL_CACHE_HEADER_BYTES + metaAligned;
+  const offsetsAligned = (((TOTAL_CELLS + 1) * 4) + 7) & ~7; // 2600
+  const coordsByteStart = offsetsByteStart + offsetsAligned;
+  const coordsByteLen = totalStars * 16;
+  const idsByteStart = coordsByteStart + coordsByteLen;
+  const idsByteLen = totalStars * 8;
+  const hipByteStart = idsByteStart + idsByteLen;
+  const hipByteLen = hipCount * 8;
+  const expectedBytes = hipByteStart + hipByteLen;
+  if (buffer.byteLength < expectedBytes) return false;
+
+  let metas: InstalledStarPackMeta[];
+  try {
+    const metaBytes = new Uint8Array(buffer, SPATIAL_CACHE_HEADER_BYTES, metaJsonLen);
+    const metaText = new TextDecoder().decode(metaBytes);
+    const parsed = JSON.parse(metaText);
+    if (!Array.isArray(parsed)) return false;
+    metas = parsed as InstalledStarPackMeta[];
+  } catch {
+    return false;
+  }
+
+  installedMetaByTier.clear();
+  for (let i = 0; i < metas.length; i++) {
+    const m = metas[i];
+    if (m && typeof m.tier === 'number') {
+      installedMetaByTier.set(m.tier, m);
     }
   }
 
+  const cellOffsets = new Uint32Array(buffer, offsetsByteStart, TOTAL_CELLS + 1);
+  if (cellOffsets[TOTAL_CELLS] !== totalStars) return false;
+
+  const allCoords = new Float32Array(buffer, coordsByteStart, totalStars * 4);
+  const allIds = new Uint32Array(buffer, idsByteStart, totalStars * 2);
+  const hipLookup = new Uint32Array(buffer, hipByteStart, hipCount * 2);
+
+  const nextCells = new Array<LocalStarCellData | null>(TOTAL_CELLS).fill(null);
   const nextIndex: LocalStarSpatialIndex = new Map();
-  for (const [key, cArr] of coordBuckets.entries()) {
-    const iArr = idBuckets.get(key)!;
-    const count = cArr.length / 4;
-    const order = new Uint32Array(count);
-    for (let i = 0; i < count; i++) order[i] = i;
-    order.sort((a, b) => cArr[a * 4 + 2] - cArr[b * 4 + 2]);
-    const sortedCoords = new Float32Array(count * 4);
-    const sortedIds = new Uint32Array(count * 2);
-    for (let i = 0; i < count; i++) {
-      const srcIdx = order[i];
-      const srcC = srcIdx * 4;
-      const dstC = i * 4;
-      sortedCoords[dstC] = cArr[srcC];
-      sortedCoords[dstC + 1] = cArr[srcC + 1];
-      sortedCoords[dstC + 2] = cArr[srcC + 2];
-      sortedCoords[dstC + 3] = cArr[srcC + 3];
-
-      const srcI = srcIdx * 2;
-      const dstI = i * 2;
-      sortedIds[dstI] = iArr[srcI];
-      sortedIds[dstI + 1] = iArr[srcI + 1];
+  for (let c = 0; c < TOTAL_CELLS; c++) {
+    const start = cellOffsets[c];
+    const end = cellOffsets[c + 1];
+    if (end > start) {
+      const cell: LocalStarCellData = {
+        coords: allCoords.subarray(start * 4, end * 4),
+        ids: allIds.subarray(start * 2, end * 2),
+      };
+      nextCells[c] = cell;
+      nextIndex.set(CELL_KEYS[c], cell);
     }
-    nextIndex.set(key, { coords: sortedCoords, ids: sortedIds });
   }
+
+  activeSpatialCoords = allCoords;
+  activeSpatialIds = allIds;
+  activeHipLookup = hipLookup;
+  spatialCells = nextCells;
   spatialIndex = nextIndex;
-  hipIndexMap = nextHipMap;
+  return true;
+}
+
+/**
+ * Ultra-fast Two-Pass TypedArray + O(N) Magnitude Counting-Sort Spatial Index Builder.
+ * Produces a single contiguous NXSI v1 ArrayBuffer ready for zero-copy hydration & IndexedDB caching.
+ */
+function buildSpatialIndexBufferSync(
+  metas: InstalledStarPackMeta[],
+  tierChunks: { starsFlat: Float32Array; starIds: Uint32Array }[]
+): ArrayBuffer {
+  const cellCounts = new Uint32Array(TOTAL_CELLS);
+  let totalStars = 0;
+
+  // Pass 1: Count stars per 10°×10° cell (no JS arrays, no string keys)
+  for (let t = 0; t < tierChunks.length; t++) {
+    const flat = tierChunks[t].starsFlat;
+    const count = (flat.length / 4) | 0;
+    totalStars += count;
+    for (let i = 0; i < count; i++) {
+      const ci = i * 4;
+      let normRa = flat[ci] % 360;
+      if (normRa < 0) normRa += 360;
+      let dBin = ((flat[ci + 1] + 90) * 0.1) | 0;
+      if (dBin < 0) dBin = 0;
+      else if (dBin >= DEC_CELL_COUNT) dBin = DEC_CELL_COUNT - 1;
+      let rBin = (normRa * 0.1) | 0;
+      if (rBin < 0) rBin = 0;
+      else if (rBin >= RA_CELL_COUNT) rBin = RA_CELL_COUNT - 1;
+      cellCounts[dBin * RA_CELL_COUNT + rBin]++;
+    }
+  }
+
+  const cellOffsets = new Uint32Array(TOTAL_CELLS + 1);
+  let maxCellCount = 0;
+  for (let c = 0; c < TOTAL_CELLS; c++) {
+    const cnt = cellCounts[c];
+    if (cnt > maxCellCount) maxCellCount = cnt;
+    cellOffsets[c + 1] = cellOffsets[c] + cnt;
+  }
+
+  // Pass 2: Scatter stars into contiguous cell-grouped TypedArrays
+  const allCoords = new Float32Array(totalStars * 4);
+  const allIds = new Uint32Array(totalStars * 2);
+  const cursors = cellOffsets.slice(0, TOTAL_CELLS);
+
+  for (let t = 0; t < tierChunks.length; t++) {
+    const flat = tierChunks[t].starsFlat;
+    const ids = tierChunks[t].starIds;
+    const count = (flat.length / 4) | 0;
+    for (let i = 0; i < count; i++) {
+      const ci = i * 4;
+      const ii = i * 2;
+      let normRa = flat[ci] % 360;
+      if (normRa < 0) normRa += 360;
+      const dec = flat[ci + 1];
+      let dBin = ((dec + 90) * 0.1) | 0;
+      if (dBin < 0) dBin = 0;
+      else if (dBin >= DEC_CELL_COUNT) dBin = DEC_CELL_COUNT - 1;
+      let rBin = (normRa * 0.1) | 0;
+      if (rBin < 0) rBin = 0;
+      else if (rBin >= RA_CELL_COUNT) rBin = RA_CELL_COUNT - 1;
+      const dst = cursors[dBin * RA_CELL_COUNT + rBin]++;
+      const d4 = dst * 4;
+      const d2 = dst * 2;
+      allCoords[d4] = normRa;
+      allCoords[d4 + 1] = dec;
+      allCoords[d4 + 2] = flat[ci + 2];
+      allCoords[d4 + 3] = flat[ci + 3];
+      allIds[d2] = ids[ii] ?? 0;
+      allIds[d2 + 1] = ids[ii + 1] ?? 0;
+    }
+  }
+
+  // Pass 3: O(N) Magnitude Counting Sort per cell (0.01m bins from -2.00 to +23.01)
+  const MAG_BINS = 2502;
+  const magCounts = new Uint32Array(MAG_BINS);
+  const scratchCoords = new Float32Array(maxCellCount * 4);
+  const scratchIds = new Uint32Array(maxCellCount * 2);
+
+  for (let c = 0; c < TOTAL_CELLS; c++) {
+    const start = cellOffsets[c];
+    const end = cellOffsets[c + 1];
+    const cnt = end - start;
+    if (cnt <= 1) continue;
+
+    let minB = MAG_BINS - 1;
+    let maxB = 0;
+    for (let i = start; i < end; i++) {
+      let b = ((allCoords[i * 4 + 2] + 2.0) * 100.0 + 0.5) | 0;
+      if (b < 0) b = 0;
+      else if (b >= MAG_BINS) b = MAG_BINS - 1;
+      magCounts[b]++;
+      if (b < minB) minB = b;
+      if (b > maxB) maxB = b;
+    }
+
+    let acc = 0;
+    for (let b = minB; b <= maxB; b++) {
+      const v = magCounts[b];
+      magCounts[b] = acc;
+      acc += v;
+    }
+
+    for (let i = start; i < end; i++) {
+      const s4 = i * 4;
+      const s2 = i * 2;
+      const m = allCoords[s4 + 2];
+      let b = ((m + 2.0) * 100.0 + 0.5) | 0;
+      if (b < 0) b = 0;
+      else if (b >= MAG_BINS) b = MAG_BINS - 1;
+      const dst = magCounts[b]++;
+      const d4 = dst * 4;
+      const d2 = dst * 2;
+      scratchCoords[d4] = allCoords[s4];
+      scratchCoords[d4 + 1] = allCoords[s4 + 1];
+      scratchCoords[d4 + 2] = m;
+      scratchCoords[d4 + 3] = allCoords[s4 + 3];
+      scratchIds[d2] = allIds[s2];
+      scratchIds[d2 + 1] = allIds[s2 + 1];
+    }
+
+    allCoords.set(scratchCoords.subarray(0, cnt * 4), start * 4);
+    allIds.set(scratchIds.subarray(0, cnt * 2), start * 2);
+    magCounts.fill(0, minB, maxB + 1);
+  }
+
+  // Pass 4: Build compact sorted HIP lookup table [hipNum, globalStarIdx] using native C++ Float64Array.sort
+  const HIP_IDX_MUL = 33554432; // 2^25 (supports up to 33.5M stars & HIP up to 268M exact in Float64)
+  const seenHipFast = new Uint8Array(250000);
+  const seenHipOverflow = new Set<number>();
+  let hipCount = 0;
+  for (let i = 0; i < totalStars; i++) {
+    const ii = i * 2;
+    if (allIds[ii] === HIP_ID_HI_SENTINEL) {
+      const hip = allIds[ii + 1];
+      if (hip > 0) {
+        if (hip < 250000) {
+          if (seenHipFast[hip] === 0) {
+            seenHipFast[hip] = 1;
+            hipCount++;
+          }
+        } else if (!seenHipOverflow.has(hip)) {
+          seenHipOverflow.add(hip);
+          hipCount++;
+        }
+      }
+    }
+  }
+
+  const hipPacked = new Float64Array(hipCount);
+  if (hipCount > 0) {
+    seenHipFast.fill(0);
+    seenHipOverflow.clear();
+    let hp = 0;
+    for (let i = 0; i < totalStars; i++) {
+      const ii = i * 2;
+      if (allIds[ii] === HIP_ID_HI_SENTINEL) {
+        const hip = allIds[ii + 1];
+        if (hip > 0 && i < HIP_IDX_MUL) {
+          if (hip < 250000) {
+            if (seenHipFast[hip] === 0) {
+              seenHipFast[hip] = 1;
+              hipPacked[hp++] = hip * HIP_IDX_MUL + i;
+            }
+          } else if (!seenHipOverflow.has(hip)) {
+            seenHipOverflow.add(hip);
+            hipPacked[hp++] = hip * HIP_IDX_MUL + i;
+          }
+        }
+      }
+    }
+    hipPacked.sort();
+  }
+
+  // Pack everything into one contiguous 8-byte-aligned NXSI v1 ArrayBuffer
+  const metaJsonBytes = new TextEncoder().encode(JSON.stringify(metas));
+  const metaJsonLen = metaJsonBytes.byteLength;
+  const metaAligned = (metaJsonLen + 7) & ~7;
+  const offsetsByteStart = SPATIAL_CACHE_HEADER_BYTES + metaAligned;
+  const offsetsAligned = (((TOTAL_CELLS + 1) * 4) + 7) & ~7;
+  const coordsByteStart = offsetsByteStart + offsetsAligned;
+  const idsByteStart = coordsByteStart + totalStars * 16;
+  const hipByteStart = idsByteStart + totalStars * 8;
+  const totalBytes = hipByteStart + hipCount * 8;
+
+  const outBuf = new ArrayBuffer(totalBytes);
+  const u8 = new Uint8Array(outBuf);
+  u8[0] = SPATIAL_CACHE_MAGIC_0;
+  u8[1] = SPATIAL_CACHE_MAGIC_1;
+  u8[2] = SPATIAL_CACHE_MAGIC_2;
+  u8[3] = SPATIAL_CACHE_MAGIC_3;
+  const view = new DataView(outBuf);
+  view.setUint32(4, SPATIAL_CACHE_VERSION, true);
+  view.setUint32(8, totalStars, true);
+  view.setUint32(12, hipCount, true);
+  view.setUint32(16, metaJsonLen, true);
+  view.setUint32(20, TOTAL_CELLS, true);
+  view.setFloat64(24, Date.now(), true);
+
+  u8.set(metaJsonBytes, SPATIAL_CACHE_HEADER_BYTES);
+  new Uint32Array(outBuf, offsetsByteStart, TOTAL_CELLS + 1).set(cellOffsets);
+  new Float32Array(outBuf, coordsByteStart, totalStars * 4).set(allCoords);
+  new Uint32Array(outBuf, idsByteStart, totalStars * 2).set(allIds);
+
+  if (hipCount > 0) {
+    const hipOut = new Uint32Array(outBuf, hipByteStart, hipCount * 2);
+    for (let k = 0; k < hipCount; k++) {
+      const packed = hipPacked[k];
+      const hipNum = Math.floor(packed / HIP_IDX_MUL);
+      const starIdx = packed - hipNum * HIP_IDX_MUL;
+      hipOut[k * 2] = hipNum >>> 0;
+      hipOut[k * 2 + 1] = starIdx >>> 0;
+    }
+  }
+
+  return outBuf;
+}
+
+const SPATIAL_WORKER_SOURCE = `
+self.onmessage = function(ev) {
+  try {
+    const { metaJsonBytes, chunks } = ev.data;
+    const DEC_CELL_COUNT = 18;
+    const RA_CELL_COUNT = 36;
+    const TOTAL_CELLS = 648;
+    const HIP_ID_HI_SENTINEL = 0xffffffff;
+    const HEADER_BYTES = 32;
+
+    const cellCounts = new Uint32Array(TOTAL_CELLS);
+    let totalStars = 0;
+    for (let t = 0; t < chunks.length; t++) {
+      const flat = chunks[t].starsFlat;
+      const count = (flat.length / 4) | 0;
+      totalStars += count;
+      for (let i = 0; i < count; i++) {
+        const ci = i * 4;
+        let normRa = flat[ci] % 360;
+        if (normRa < 0) normRa += 360;
+        let dBin = ((flat[ci + 1] + 90) * 0.1) | 0;
+        if (dBin < 0) dBin = 0; else if (dBin >= DEC_CELL_COUNT) dBin = DEC_CELL_COUNT - 1;
+        let rBin = (normRa * 0.1) | 0;
+        if (rBin < 0) rBin = 0; else if (rBin >= RA_CELL_COUNT) rBin = RA_CELL_COUNT - 1;
+        cellCounts[dBin * RA_CELL_COUNT + rBin]++;
+      }
+    }
+
+    const cellOffsets = new Uint32Array(TOTAL_CELLS + 1);
+    let maxCellCount = 0;
+    for (let c = 0; c < TOTAL_CELLS; c++) {
+      const cnt = cellCounts[c];
+      if (cnt > maxCellCount) maxCellCount = cnt;
+      cellOffsets[c + 1] = cellOffsets[c] + cnt;
+    }
+
+    const allCoords = new Float32Array(totalStars * 4);
+    const allIds = new Uint32Array(totalStars * 2);
+    const cursors = cellOffsets.slice(0, TOTAL_CELLS);
+    for (let t = 0; t < chunks.length; t++) {
+      const flat = chunks[t].starsFlat;
+      const ids = chunks[t].starIds;
+      const count = (flat.length / 4) | 0;
+      for (let i = 0; i < count; i++) {
+        const ci = i * 4;
+        const ii = i * 2;
+        let normRa = flat[ci] % 360;
+        if (normRa < 0) normRa += 360;
+        const dec = flat[ci + 1];
+        let dBin = ((dec + 90) * 0.1) | 0;
+        if (dBin < 0) dBin = 0; else if (dBin >= DEC_CELL_COUNT) dBin = DEC_CELL_COUNT - 1;
+        let rBin = (normRa * 0.1) | 0;
+        if (rBin < 0) rBin = 0; else if (rBin >= RA_CELL_COUNT) rBin = RA_CELL_COUNT - 1;
+        const dst = cursors[dBin * RA_CELL_COUNT + rBin]++;
+        const d4 = dst * 4, d2 = dst * 2;
+        allCoords[d4] = normRa;
+        allCoords[d4 + 1] = dec;
+        allCoords[d4 + 2] = flat[ci + 2];
+        allCoords[d4 + 3] = flat[ci + 3];
+        allIds[d2] = ids[ii] || 0;
+        allIds[d2 + 1] = ids[ii + 1] || 0;
+      }
+    }
+
+    const MAG_BINS = 2502;
+    const magCounts = new Uint32Array(MAG_BINS);
+    const scratchCoords = new Float32Array(maxCellCount * 4);
+    const scratchIds = new Uint32Array(maxCellCount * 2);
+    for (let c = 0; c < TOTAL_CELLS; c++) {
+      const start = cellOffsets[c];
+      const end = cellOffsets[c + 1];
+      const cnt = end - start;
+      if (cnt <= 1) continue;
+      let minB = MAG_BINS - 1, maxB = 0;
+      for (let i = start; i < end; i++) {
+        let b = ((allCoords[i * 4 + 2] + 2.0) * 100.0 + 0.5) | 0;
+        if (b < 0) b = 0; else if (b >= MAG_BINS) b = MAG_BINS - 1;
+        magCounts[b]++;
+        if (b < minB) minB = b;
+        if (b > maxB) maxB = b;
+      }
+      let acc = 0;
+      for (let b = minB; b <= maxB; b++) {
+        const v = magCounts[b];
+        magCounts[b] = acc;
+        acc += v;
+      }
+      for (let i = start; i < end; i++) {
+        const s4 = i * 4, s2 = i * 2;
+        const m = allCoords[s4 + 2];
+        let b = ((m + 2.0) * 100.0 + 0.5) | 0;
+        if (b < 0) b = 0; else if (b >= MAG_BINS) b = MAG_BINS - 1;
+        const dst = magCounts[b]++;
+        const d4 = dst * 4, d2 = dst * 2;
+        scratchCoords[d4] = allCoords[s4];
+        scratchCoords[d4 + 1] = allCoords[s4 + 1];
+        scratchCoords[d4 + 2] = m;
+        scratchCoords[d4 + 3] = allCoords[s4 + 3];
+        scratchIds[d2] = allIds[s2];
+        scratchIds[d2 + 1] = allIds[s2 + 1];
+      }
+      allCoords.set(scratchCoords.subarray(0, cnt * 4), start * 4);
+      allIds.set(scratchIds.subarray(0, cnt * 2), start * 2);
+      magCounts.fill(0, minB, maxB + 1);
+    }
+
+    const HIP_IDX_MUL = 33554432;
+    const seenHipFast = new Uint8Array(250000);
+    const seenHipOverflow = new Set();
+    let hipCount = 0;
+    for (let i = 0; i < totalStars; i++) {
+      const ii = i * 2;
+      if (allIds[ii] === HIP_ID_HI_SENTINEL) {
+        const hip = allIds[ii + 1];
+        if (hip > 0) {
+          if (hip < 250000) {
+            if (seenHipFast[hip] === 0) { seenHipFast[hip] = 1; hipCount++; }
+          } else if (!seenHipOverflow.has(hip)) {
+            seenHipOverflow.add(hip); hipCount++;
+          }
+        }
+      }
+    }
+
+    const hipPacked = new Float64Array(hipCount);
+    if (hipCount > 0) {
+      seenHipFast.fill(0);
+      seenHipOverflow.clear();
+      let hp = 0;
+      for (let i = 0; i < totalStars; i++) {
+        const ii = i * 2;
+        if (allIds[ii] === HIP_ID_HI_SENTINEL) {
+          const hip = allIds[ii + 1];
+          if (hip > 0 && i < HIP_IDX_MUL) {
+            if (hip < 250000) {
+              if (seenHipFast[hip] === 0) { seenHipFast[hip] = 1; hipPacked[hp++] = hip * HIP_IDX_MUL + i; }
+            } else if (!seenHipOverflow.has(hip)) {
+              seenHipOverflow.add(hip); hipPacked[hp++] = hip * HIP_IDX_MUL + i;
+            }
+          }
+        }
+      }
+      hipPacked.sort();
+    }
+
+    const metaJsonLen = metaJsonBytes.byteLength;
+    const metaAligned = (metaJsonLen + 7) & ~7;
+    const offsetsByteStart = HEADER_BYTES + metaAligned;
+    const offsetsAligned = (((TOTAL_CELLS + 1) * 4) + 7) & ~7;
+    const coordsByteStart = offsetsByteStart + offsetsAligned;
+    const idsByteStart = coordsByteStart + totalStars * 16;
+    const hipByteStart = idsByteStart + totalStars * 8;
+    const totalBytes = hipByteStart + hipCount * 8;
+
+    const outBuf = new ArrayBuffer(totalBytes);
+    const u8 = new Uint8Array(outBuf);
+    u8[0] = 0x4e; u8[1] = 0x58; u8[2] = 0x53; u8[3] = 0x49;
+    const view = new DataView(outBuf);
+    view.setUint32(4, 1, true);
+    view.setUint32(8, totalStars, true);
+    view.setUint32(12, hipCount, true);
+    view.setUint32(16, metaJsonLen, true);
+    view.setUint32(20, TOTAL_CELLS, true);
+    view.setFloat64(24, Date.now(), true);
+
+    u8.set(metaJsonBytes, HEADER_BYTES);
+    new Uint32Array(outBuf, offsetsByteStart, TOTAL_CELLS + 1).set(cellOffsets);
+    new Float32Array(outBuf, coordsByteStart, totalStars * 4).set(allCoords);
+    new Uint32Array(outBuf, idsByteStart, totalStars * 2).set(allIds);
+
+    if (hipCount > 0) {
+      const hipOut = new Uint32Array(outBuf, hipByteStart, hipCount * 2);
+      for (let k = 0; k < hipCount; k++) {
+        const packed = hipPacked[k];
+        const hipNum = Math.floor(packed / HIP_IDX_MUL);
+        const starIdx = packed - hipNum * HIP_IDX_MUL;
+        hipOut[k * 2] = hipNum >>> 0;
+        hipOut[k * 2 + 1] = starIdx >>> 0;
+      }
+    }
+    self.postMessage({ ok: true, buffer: outBuf }, [outBuf]);
+  } catch (err) {
+    self.postMessage({ ok: false });
+  }
+};
+`;
+
+async function buildSpatialIndexBufferAsync(
+  metas: InstalledStarPackMeta[],
+  tierChunks: { starsFlat: Float32Array; starIds: Uint32Array }[]
+): Promise<ArrayBuffer> {
+  let totalStars = 0;
+  for (let i = 0; i < tierChunks.length; i++) {
+    totalStars += (tierChunks[i].starsFlat.length / 4) | 0;
+  }
+
+  // For small catalogs (<= 120k stars), direct O(N) counting sort takes ~10-15ms (faster than Worker spawn)
+  if (
+    totalStars <= 120000 ||
+    typeof Worker === 'undefined' ||
+    typeof Blob === 'undefined' ||
+    typeof URL === 'undefined'
+  ) {
+    return buildSpatialIndexBufferSync(metas, tierChunks);
+  }
+
+  return new Promise<ArrayBuffer>((resolve) => {
+    let workerUrl: string | null = null;
+    let worker: Worker | null = null;
+    let settled = false;
+    const fallback = () => {
+      if (settled) return;
+      settled = true;
+      if (worker) {
+        try {
+          worker.terminate();
+        } catch {
+          // ignore
+        }
+      }
+      if (workerUrl) URL.revokeObjectURL(workerUrl);
+      resolve(buildSpatialIndexBufferSync(metas, tierChunks));
+    };
+
+    try {
+      const blob = new Blob([SPATIAL_WORKER_SOURCE], { type: 'application/javascript' });
+      workerUrl = URL.createObjectURL(blob);
+      worker = new Worker(workerUrl);
+      worker.onmessage = (ev: MessageEvent<{ ok?: boolean; buffer?: ArrayBuffer }>) => {
+        if (settled) return;
+        if (ev.data?.ok && ev.data.buffer instanceof ArrayBuffer) {
+          settled = true;
+          worker?.terminate();
+          if (workerUrl) URL.revokeObjectURL(workerUrl);
+          resolve(ev.data.buffer);
+        } else {
+          fallback();
+        }
+      };
+      worker.onerror = () => fallback();
+      const metaJsonBytes = new TextEncoder().encode(JSON.stringify(metas));
+      worker.postMessage({ metaJsonBytes, chunks: tierChunks });
+    } catch {
+      fallback();
+    }
+  });
+}
+
+async function ensureRawPackBuffersLoaded(): Promise<void> {
+  let missingAny = false;
+  for (const tier of installedMetaByTier.keys()) {
+    if (!loadedPackDataByTier.has(tier)) {
+      missingAny = true;
+      break;
+    }
+  }
+  if (!missingAny) return;
+
+  const records = await idbGetAllPacks();
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i];
+    if (!installedMetaByTier.has(rec.tier) || loadedPackDataByTier.has(rec.tier)) continue;
+    const decoded = decodeStarPackBinary(rec.buffer);
+    if (!decoded) continue;
+    const meta = installedMetaByTier.get(rec.tier)!;
+    loadedPackDataByTier.set(rec.tier, {
+      meta,
+      starsFlat: decoded.starsFlat,
+      starIds: decoded.starIds,
+    });
+  }
+}
+
+async function rebuildSpatialIndexAsync(persistCache = true): Promise<void> {
+  if (installedMetaByTier.size === 0) {
+    clearSpatialState();
+    if (persistCache) void idbDeleteSpatialCache();
+    return;
+  }
+
+  await ensureRawPackBuffersLoaded();
+  const sortedEntries = Array.from(loadedPackDataByTier.values())
+    .filter((e) => installedMetaByTier.has(e.meta.tier))
+    .sort((a, b) => a.meta.tier - b.meta.tier);
+
+  if (sortedEntries.length === 0) {
+    clearSpatialState();
+    if (persistCache) void idbDeleteSpatialCache();
+    return;
+  }
+
+  const metas = sortedEntries.map((e) => installedMetaByTier.get(e.meta.tier) ?? e.meta);
+  const chunks = sortedEntries.map((e) => ({ starsFlat: e.starsFlat, starIds: e.starIds }));
+  const spatialBuf = await buildSpatialIndexBufferAsync(metas, chunks);
+  hydrateFromSpatialCacheBuffer(spatialBuf);
+  if (persistCache) {
+    // Persist pre-indexed cache asynchronously so UI never waits for IndexedDB commit
+    void idbPutSpatialCache(spatialBuf);
+  }
+}
+
+function lookupHipExactIndex(hipNum: number): number {
+  const arr = activeHipLookup;
+  let lo = 0;
+  let hi = (arr.length >>> 1) - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >>> 1;
+    const val = arr[mid * 2];
+    if (val === hipNum) return arr[mid * 2 + 1];
+    if (val < hipNum) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+
+function findHipLowerBound(minHip: number): number {
+  const arr = activeHipLookup;
+  let lo = 0;
+  let hi = arr.length >>> 1;
+  while (lo < hi) {
+    const mid = (lo + hi) >>> 1;
+    if (arr[mid * 2] < minHip) lo = mid + 1;
+    else hi = mid;
+  }
+  return lo;
+}
+
+let activeCoverageBands: { magMin: number; magMax: number }[] = [];
+let activeContinuousMaxMag = 8.0;
+
+function recomputeCoverageSummary(installedTiers: InstalledStarPackMeta[]): void {
+  if (installedTiers.length === 0) {
+    activeCoverageBands = [];
+    activeContinuousMaxMag = 8.0;
+    return;
+  }
+  const sorted = installedTiers
+    .map((m) => ({ magMin: m.magMin, magMax: m.magMax }))
+    .sort((a, b) => a.magMin - b.magMin || a.magMax - b.magMax);
+
+  const merged: { magMin: number; magMax: number }[] = [];
+  for (let i = 0; i < sorted.length; i++) {
+    const cur = sorted[i];
+    if (merged.length === 0) {
+      merged.push({ ...cur });
+    } else {
+      const last = merged[merged.length - 1];
+      if (cur.magMin <= last.magMax + 0.02) {
+        if (cur.magMax > last.magMax) last.magMax = cur.magMax;
+      } else {
+        merged.push({ ...cur });
+      }
+    }
+  }
+  activeCoverageBands = merged;
+
+  // Contiguous coverage starting from 8.0m (seamless handoff from built-in Hipparcos <= 8.0m)
+  let cont = 8.0;
+  for (let i = 0; i < merged.length; i++) {
+    const b = merged[i];
+    if (b.magMin <= cont + 0.05) {
+      if (b.magMax > cont) cont = b.magMax;
+    } else {
+      break;
+    }
+  }
+  activeContinuousMaxMag = cont;
 }
 
 function updateStateSummary(patch?: Partial<LocalStarCatalogState>): void {
-  const installedTiers = Array.from(loadedPackDataByTier.values())
-    .map((v) => v.meta)
-    .sort((a, b) => a.tier - b.tier);
+  const installedTiers = Array.from(installedMetaByTier.values()).sort(
+    (a, b) => a.tier - b.tier
+  );
 
   let totalStars = 0;
   let totalBytes = 0;
@@ -706,6 +1462,8 @@ function updateStateSummary(patch?: Partial<LocalStarCatalogState>): void {
     totalBytes += m.byteLength;
     if (m.magMax > maxMag) maxMag = m.magMax;
   }
+
+  recomputeCoverageSummary(installedTiers);
 
   currentState = {
     ...currentState,
@@ -730,6 +1488,109 @@ export function getLocalStarSpatialIndex(): LocalStarSpatialIndex {
   return spatialIndex;
 }
 
+export function getLocalCoverageBands(): readonly { magMin: number; magMax: number }[] {
+  return activeCoverageBands;
+}
+
+export function getLocalContinuousMaxMag(): number {
+  return activeContinuousMaxMag;
+}
+
+export function isMagCoveredByLocalCatalog(mag: number): boolean {
+  const bands = activeCoverageBands;
+  for (let i = 0; i < bands.length; i++) {
+    const b = bands[i];
+    if (mag >= b.magMin - 0.005 && mag <= b.magMax + 0.005) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Direct exact lookup of a star by HIP ID, Gaia DR3 source_id, or Gaia L... coordinate ID
+ * inside locally downloaded star catalogs (0ms binary search for HIP, fast TypedArray scan for Gaia).
+ */
+export function findLocalStarById(idOrRaw: string): Star | null {
+  if (activeSpatialCoords.length === 0) return null;
+  const compact = idOrRaw.trim().toLowerCase().replace(/\s+/g, '');
+  if (!compact) return null;
+
+  // 1. Exact HIP lookup (O(log N))
+  const hipMatch = /^(?:hip)?(\d{1,6})$/i.exec(compact);
+  if (hipMatch && activeHipLookup.length > 0) {
+    const hipNum = Number(hipMatch[1]);
+    if (Number.isFinite(hipNum) && hipNum > 0) {
+      const idx = lookupHipExactIndex(hipNum);
+      if (idx >= 0) {
+        const ci = idx * 4;
+        return buildLocalStarObject(
+          activeSpatialCoords[ci],
+          activeSpatialCoords[ci + 1],
+          activeSpatialCoords[ci + 2],
+          activeSpatialCoords[ci + 3],
+          HIP_ID_HI_SENTINEL,
+          hipNum
+        );
+      }
+    }
+  }
+
+  // 2. Exact Gaia coordinate fallback ID ("Gaia L...")
+  const coordIdMatch = /^(?:gaia)?l(\d+)_(\d+)$/i.exec(compact);
+  if (coordIdMatch) {
+    const targetRaKey = coordIdMatch[1];
+    const targetDecKey = coordIdMatch[2];
+    const flat = activeSpatialCoords;
+    const ids = activeSpatialIds;
+    const count = (flat.length / 4) | 0;
+    for (let i = 0; i < count; i++) {
+      const ii = i * 2;
+      if (ids[ii] !== 0 || ids[ii + 1] !== 0) continue;
+      const ci = i * 4;
+      if (
+        String(Math.round(flat[ci] * 1000)) === targetRaKey &&
+        String(Math.round((flat[ci + 1] + 90) * 1000)) === targetDecKey
+      ) {
+        return buildLocalStarObject(flat[ci], flat[ci + 1], flat[ci + 2], flat[ci + 3], 0, 0);
+      }
+    }
+    return null;
+  }
+
+  // 3. Exact 64-bit Gaia DR3 source_id lookup
+  const gaiaMatch = /^(?:gaia(?:dr3)?)?(\d{7,20})$/i.exec(compact);
+  if (gaiaMatch) {
+    const digits = gaiaMatch[1];
+    try {
+      const bi = BigInt(digits);
+      const targetHi = Number((bi >> 32n) & 0xffffffffn) >>> 0;
+      const targetLo = Number(bi & 0xffffffffn) >>> 0;
+      const ids = activeSpatialIds;
+      const flat = activeSpatialCoords;
+      const count = (flat.length / 4) | 0;
+      for (let i = 0; i < count; i++) {
+        const ii = i * 2;
+        if (ids[ii] === targetHi && ids[ii + 1] === targetLo) {
+          const ci = i * 4;
+          return buildLocalStarObject(
+            flat[ci],
+            flat[ci + 1],
+            flat[ci + 2],
+            flat[ci + 3],
+            targetHi,
+            targetLo
+          );
+        }
+      }
+    } catch {
+      return null;
+    }
+  }
+
+  return null;
+}
+
 export function subscribeLocalStarCatalogs(listener: () => void): () => void {
   stateListeners.add(listener);
   return () => {
@@ -737,12 +1598,60 @@ export function subscribeLocalStarCatalogs(listener: () => void): () => void {
   };
 }
 
+/**
+ * Zero-allocation dense spatial cell query (avoids string keys and Map hashing on every animation frame).
+ */
+export function getVisibleLocalStarCells(
+  raHours: number,
+  decDeg: number,
+  fszDeg: number
+): LocalStarCellData[] {
+  if (activeSpatialCoords.length === 0) return [];
+  const halfSpan = Math.min(72, fszDeg * 0.72);
+  const decMin = Math.max(-90, decDeg - halfSpan);
+  const decMax = Math.min(90, decDeg + halfSpan);
+  const startDec = Math.max(0, Math.floor((decMin + 90) / DEC_CELL_DEG));
+  const endDec = Math.min(
+    DEC_CELL_COUNT - 1,
+    Math.floor((Math.min(89.999, decMax) + 90) / DEC_CELL_DEG)
+  );
+
+  const raCenterDeg = ((raHours * 15) % 360 + 360) % 360;
+  const cells: LocalStarCellData[] = [];
+
+  for (let d = startDec; d <= endDec; d++) {
+    const rowBase = d * RA_CELL_COUNT;
+    const bandDecMin = -90 + d * DEC_CELL_DEG;
+    const bandDecMax = bandDecMin + DEC_CELL_DEG;
+    const maxAbsDec = Math.max(Math.abs(bandDecMin), Math.abs(bandDecMax));
+    const cosBand = Math.max(0.12, Math.cos(Math.min(85, maxAbsDec) * DEG2RAD));
+    const raHalfDeg = Math.min(180, halfSpan / cosBand);
+
+    if (raHalfDeg >= 170) {
+      for (let r = 0; r < RA_CELL_COUNT; r++) {
+        const cell = spatialCells[rowBase + r];
+        if (cell) cells.push(cell);
+      }
+    } else {
+      const startRa = Math.floor((raCenterDeg - raHalfDeg) / RA_CELL_DEG);
+      const endRa = Math.floor((raCenterDeg + raHalfDeg) / RA_CELL_DEG);
+      const countRa = Math.min(RA_CELL_COUNT, endRa - startRa + 1);
+      for (let step = 0; step < countRa; step++) {
+        const normR = (((startRa + step) % RA_CELL_COUNT) + RA_CELL_COUNT) % RA_CELL_COUNT;
+        const cell = spatialCells[rowBase + normR];
+        if (cell) cells.push(cell);
+      }
+    }
+  }
+  return cells;
+}
+
 export function getVisibleLocalStarCellKeys(
   raHours: number,
   decDeg: number,
   fszDeg: number
 ): string[] {
-  if (spatialIndex.size === 0) return [];
+  if (activeSpatialCoords.length === 0) return [];
   const halfSpan = Math.min(72, fszDeg * 0.72);
   const decMin = Math.max(-90, decDeg - halfSpan);
   const decMax = Math.min(90, decDeg + halfSpan);
@@ -756,6 +1665,7 @@ export function getVisibleLocalStarCellKeys(
   const keys: string[] = [];
 
   for (let d = startDec; d <= endDec; d++) {
+    const rowBase = d * RA_CELL_COUNT;
     const bandDecMin = -90 + d * DEC_CELL_DEG;
     const bandDecMax = bandDecMin + DEC_CELL_DEG;
     const maxAbsDec = Math.max(Math.abs(bandDecMin), Math.abs(bandDecMax));
@@ -764,19 +1674,15 @@ export function getVisibleLocalStarCellKeys(
 
     if (raHalfDeg >= 170) {
       for (let r = 0; r < RA_CELL_COUNT; r++) {
-        const k = `${d}_${r}`;
-        if (spatialIndex.has(k)) keys.push(k);
+        if (spatialCells[rowBase + r]) keys.push(CELL_KEYS[rowBase + r]);
       }
     } else {
       const startRa = Math.floor((raCenterDeg - raHalfDeg) / RA_CELL_DEG);
       const endRa = Math.floor((raCenterDeg + raHalfDeg) / RA_CELL_DEG);
-      const seen = new Set<number>();
-      for (let r = startRa; r <= endRa; r++) {
-        const normR = ((r % RA_CELL_COUNT) + RA_CELL_COUNT) % RA_CELL_COUNT;
-        if (seen.has(normR)) continue;
-        seen.add(normR);
-        const k = `${d}_${normR}`;
-        if (spatialIndex.has(k)) keys.push(k);
+      const countRa = Math.min(RA_CELL_COUNT, endRa - startRa + 1);
+      for (let step = 0; step < countRa; step++) {
+        const normR = (((startRa + step) % RA_CELL_COUNT) + RA_CELL_COUNT) % RA_CELL_COUNT;
+        if (spatialCells[rowBase + normR]) keys.push(CELL_KEYS[rowBase + normR]);
       }
     }
   }
@@ -877,12 +1783,10 @@ export function searchLocalStarCatalogs(
   // Mode 1: Coordinate proximity search ("05h 35m -05° 23'", "83.8 -5.4")
   const coordTarget = parseCoordinateQuery(trimmed);
   if (coordTarget) {
-    const cellKeys = getVisibleLocalStarCellKeys(coordTarget.raDeg / 15, coordTarget.decDeg, 16);
+    const cells = getVisibleLocalStarCells(coordTarget.raDeg / 15, coordTarget.decDeg, 16);
     const nearby: { star: Star; dist: number }[] = [];
-    for (let c = 0; c < cellKeys.length; c++) {
-      const cell = spatialIndex.get(cellKeys[c]);
-      if (!cell) continue;
-      const { coords, ids } = cell;
+    for (let c = 0; c < cells.length; c++) {
+      const { coords, ids } = cells[c];
       const count = coords.length / 4;
       for (let i = 0; i < count; i++) {
         const ci = i * 4;
@@ -913,63 +1817,72 @@ export function searchLocalStarCatalogs(
     return hits;
   }
 
-  // Mode 2: HIP number search ("HIP 85605", "hip85605", or 2-6 digits)
+  // Mode 2: O(log N) HIP number search ("HIP 85605", "hip85605", or 2-6 digits)
   const hipMatch = /^(?:hip\s*)?(\d{2,6})$/i.exec(qCompact);
-  if (hipMatch && hipIndexMap.size > 0) {
+  if (hipMatch && activeHipLookup.length > 0) {
     const digits = hipMatch[1];
     const exactHip = Number(digits);
-    const exactRow = hipIndexMap.get(exactHip);
-    if (exactRow) {
+    const exactStarIdx = lookupHipExactIndex(exactHip);
+    if (exactStarIdx >= 0) {
+      const ci = exactStarIdx * 4;
       const star = buildLocalStarObject(
-        exactRow[0],
-        exactRow[1],
-        exactRow[2],
-        exactRow[3],
+        activeSpatialCoords[ci],
+        activeSpatialCoords[ci + 1],
+        activeSpatialCoords[ci + 2],
+        activeSpatialCoords[ci + 3],
         HIP_ID_HI_SENTINEL,
         exactHip
       );
       pushHit(star, 122, '로컬 HIP', '로컬 목록');
     }
-    if (digits.length >= 3) {
-      for (const [hipNum, row] of hipIndexMap.entries()) {
-        if (hits.length >= maxResults) break;
-        if (hipNum === exactHip) continue;
-        if (String(hipNum).startsWith(digits)) {
-          const star = buildLocalStarObject(
-            row[0],
-            row[1],
-            row[2],
-            row[3],
-            HIP_ID_HI_SENTINEL,
-            hipNum
-          );
-          pushHit(star, 94, '로컬 HIP', '로컬 목록');
+    if (digits.length >= 3 && exactHip > 0) {
+      const hipPairs = activeHipLookup.length >>> 1;
+      for (let mult = 10; mult <= 10000 && hits.length < maxResults; mult *= 10) {
+        const loNum = exactHip * mult;
+        const hiNum = (exactHip + 1) * mult;
+        if (loNum > 999999) break;
+        let idx = findHipLowerBound(loNum);
+        while (idx < hipPairs && hits.length < maxResults) {
+          const hipNum = activeHipLookup[idx * 2];
+          if (hipNum >= hiNum) break;
+          if (hipNum !== exactHip) {
+            const starIdx = activeHipLookup[idx * 2 + 1];
+            const ci = starIdx * 4;
+            const star = buildLocalStarObject(
+              activeSpatialCoords[ci],
+              activeSpatialCoords[ci + 1],
+              activeSpatialCoords[ci + 2],
+              activeSpatialCoords[ci + 3],
+              HIP_ID_HI_SENTINEL,
+              hipNum
+            );
+            pushHit(star, 94, '로컬 HIP', '로컬 목록');
+          }
+          idx++;
         }
       }
     }
   }
 
-  // Mode 3: Gaia DR3 / Gaia L... ID search ("Gaia DR3 429...", "Gaia 321...", "Gaia L83812_...", or 5+ digits)
+  // Mode 3: Gaia DR3 / Gaia L... ID search across contiguous active spatial TypedArrays
   const gaiaCoordIdMatch = /^(?:gaia\s*)?l(\d{2,6})(?:_(\d{1,6}))?$/i.exec(qCompact);
   if (gaiaCoordIdMatch) {
     const raPrefix = gaiaCoordIdMatch[1];
     const decPrefix = gaiaCoordIdMatch[2] || '';
-    for (const entry of loadedPackDataByTier.values()) {
-      const flat = entry.starsFlat;
-      const ids = entry.starIds;
-      const count = flat.length / 4;
-      for (let i = 0; i < count && hits.length < maxResults; i++) {
-        const ii = i * 2;
-        if (ids[ii] !== 0 || ids[ii + 1] !== 0) continue;
-        const ci = i * 4;
-        const raKey = String(Math.round(flat[ci] * 1000));
-        if (!raKey.startsWith(raPrefix)) continue;
-        const decKey = String(Math.round((flat[ci + 1] + 90) * 1000));
-        if (decPrefix && !decKey.startsWith(decPrefix)) continue;
-        const star = buildLocalStarObject(flat[ci], flat[ci + 1], flat[ci + 2], flat[ci + 3], 0, 0);
-        const exact = raKey === raPrefix && (!decPrefix || decKey === decPrefix);
-        pushHit(star, exact ? 120 : 92, '로컬 Gaia', `${entry.meta.tier}단계`);
-      }
+    const flat = activeSpatialCoords;
+    const ids = activeSpatialIds;
+    const count = (flat.length / 4) | 0;
+    for (let i = 0; i < count && hits.length < maxResults; i++) {
+      const ii = i * 2;
+      if (ids[ii] !== 0 || ids[ii + 1] !== 0) continue;
+      const ci = i * 4;
+      const raKey = String(Math.round(flat[ci] * 1000));
+      if (!raKey.startsWith(raPrefix)) continue;
+      const decKey = String(Math.round((flat[ci + 1] + 90) * 1000));
+      if (decPrefix && !decKey.startsWith(decPrefix)) continue;
+      const star = buildLocalStarObject(flat[ci], flat[ci + 1], flat[ci + 2], flat[ci + 3], 0, 0);
+      const exact = raKey === raPrefix && (!decPrefix || decKey === decPrefix);
+      pushHit(star, exact ? 120 : 92, '로컬 Gaia', '로컬 목록');
     }
     if (hits.length > 0) return hits;
   }
@@ -997,58 +1910,57 @@ export function searchLocalStarCatalogs(
       }
     }
 
-    for (const entry of loadedPackDataByTier.values()) {
-      const flat = entry.starsFlat;
-      const ids = entry.starIds;
-      const count = flat.length / 4;
-      for (let i = 0; i < count && hits.length < maxResults; i++) {
-        const ii = i * 2;
-        const idHi = ids[ii];
-        const idLo = ids[ii + 1];
-        if ((idHi === 0 && idLo === 0) || idHi === HIP_ID_HI_SENTINEL) continue;
+    const flat = activeSpatialCoords;
+    const ids = activeSpatialIds;
+    const count = (flat.length / 4) | 0;
+    for (let i = 0; i < count && hits.length < maxResults; i++) {
+      const ii = i * 2;
+      const idHi = ids[ii];
+      const idLo = ids[ii + 1];
+      if ((idHi === 0 && idLo === 0) || idHi === HIP_ID_HI_SENTINEL) continue;
 
-        if (exactHi >= 0 && idHi === exactHi && idLo === exactLo) {
-          const ci = i * 4;
-          const star = buildLocalStarObject(
-            flat[ci],
-            flat[ci + 1],
-            flat[ci + 2],
-            flat[ci + 3],
-            idHi,
-            idLo
-          );
-          pushHit(star, 125, '로컬 Gaia', `${entry.meta.tier}단계`);
-          continue;
-        }
+      if (exactHi >= 0 && idHi === exactHi && idLo === exactLo) {
+        const ci = i * 4;
+        const star = buildLocalStarObject(
+          flat[ci],
+          flat[ci + 1],
+          flat[ci + 2],
+          flat[ci + 3],
+          idHi,
+          idLo
+        );
+        pushHit(star, 125, '로컬 Gaia', '로컬 목록');
+        continue;
+      }
 
-        const fullStr = ((BigInt(idHi >>> 0) << 32n) | BigInt(idLo >>> 0)).toString();
-        if (fullStr === needle) {
-          const ci = i * 4;
-          const star = buildLocalStarObject(
-            flat[ci],
-            flat[ci + 1],
-            flat[ci + 2],
-            flat[ci + 3],
-            idHi,
-            idLo
-          );
-          pushHit(star, 125, '로컬 Gaia', `${entry.meta.tier}단계`);
-        } else if (
-          fullStr.startsWith(needle) ||
-          fullStr.endsWith(needle) ||
-          (needle.length >= 6 && fullStr.includes(needle))
-        ) {
-          const ci = i * 4;
-          const star = buildLocalStarObject(
-            flat[ci],
-            flat[ci + 1],
-            flat[ci + 2],
-            flat[ci + 3],
-            idHi,
-            idLo
-          );
-          pushHit(star, fullStr.endsWith(needle) ? 112 : 96, '로컬 Gaia', `${entry.meta.tier}단계`);
-        }
+      if (exactHi >= 0 && needle.length >= 16) continue;
+      const fullStr = ((BigInt(idHi >>> 0) << 32n) | BigInt(idLo >>> 0)).toString();
+      if (fullStr === needle) {
+        const ci = i * 4;
+        const star = buildLocalStarObject(
+          flat[ci],
+          flat[ci + 1],
+          flat[ci + 2],
+          flat[ci + 3],
+          idHi,
+          idLo
+        );
+        pushHit(star, 125, '로컬 Gaia', '로컬 목록');
+      } else if (
+        fullStr.startsWith(needle) ||
+        fullStr.endsWith(needle) ||
+        (needle.length >= 6 && fullStr.includes(needle))
+      ) {
+        const ci = i * 4;
+        const star = buildLocalStarObject(
+          flat[ci],
+          flat[ci + 1],
+          flat[ci + 2],
+          flat[ci + 3],
+          idHi,
+          idLo
+        );
+        pushHit(star, fullStr.endsWith(needle) ? 112 : 96, '로컬 Gaia', '로컬 목록');
       }
     }
     if (hits.length > 0) return hits;
@@ -1071,15 +1983,14 @@ export function searchLocalStarCatalogs(
       maxM = hasDecimal ? targetM + 0.15 : targetM + 0.99;
     }
 
-    const viewCells = getVisibleLocalStarCellKeys(viewCenter.raHours, viewCenter.decDeg, 35);
-    const searchCells = viewCells.length > 0 ? viewCells : Array.from(spatialIndex.keys()).slice(0, 24);
+    const viewCells = getVisibleLocalStarCells(viewCenter.raHours, viewCenter.decDeg, 35);
+    const searchCells =
+      viewCells.length > 0 ? viewCells : Array.from(spatialIndex.values()).slice(0, 24);
     const candidates: { star: Star; dist: number }[] = [];
     const viewRaDeg = ((viewCenter.raHours * 15) % 360 + 360) % 360;
 
     for (let c = 0; c < searchCells.length && candidates.length < 240; c++) {
-      const cell = spatialIndex.get(searchCells[c]);
-      if (!cell) continue;
-      const { coords, ids } = cell;
+      const { coords, ids } = searchCells[c];
       const count = coords.length / 4;
       for (let i = 0; i < count && candidates.length < 240; i++) {
         const ci = i * 4;
@@ -1122,34 +2033,25 @@ export function searchLocalStarCatalogs(
     const candidates: { star: Star; dist: number; tierLabel?: string }[] = [];
 
     if (targetTier !== null) {
-      const entry = loadedPackDataByTier.get(targetTier);
-      if (entry) {
-        const flat = entry.starsFlat;
-        const ids = entry.starIds;
-        const count = flat.length / 4;
-        for (let i = 0; i < count; i++) {
-          const ci = i * 4;
-          const ra = flat[ci];
-          const dec = flat[ci + 1];
-          if (Math.abs(dec - viewCenter.decDeg) > 18) continue;
-          const dist = angularDistanceDeg(ra, dec, viewRaDeg, viewCenter.decDeg);
-          if (dist <= 20) {
-            const ii = i * 2;
-            const star = buildLocalStarObject(ra, dec, flat[ci + 2], flat[ci + 3], ids[ii], ids[ii + 1]);
-            candidates.push({ star, dist, tierLabel: `${targetTier}단계` });
-            if (candidates.length >= 200) break;
-          }
-        }
-        // Fallback if current view has few stars in that tier
-        if (candidates.length < 15) {
-          for (let i = 0; i < Math.min(count, 40); i++) {
+      const meta = installedMetaByTier.get(targetTier);
+      if (meta) {
+        const viewCells = getVisibleLocalStarCells(viewCenter.raHours, viewCenter.decDeg, 36);
+        const cellsToScan =
+          viewCells.length > 0 ? viewCells : Array.from(spatialIndex.values()).slice(0, 24);
+        for (let c = 0; c < cellsToScan.length && candidates.length < 200; c++) {
+          const { coords, ids } = cellsToScan[c];
+          const count = coords.length / 4;
+          for (let i = 0; i < count && candidates.length < 200; i++) {
             const ci = i * 4;
+            const mag = coords[ci + 2];
+            if (mag > meta.magMax) break;
+            if (mag < meta.magMin) continue;
             const ii = i * 2;
             const star = buildLocalStarObject(
-              flat[ci],
-              flat[ci + 1],
-              flat[ci + 2],
-              flat[ci + 3],
+              coords[ci],
+              coords[ci + 1],
+              mag,
+              coords[ci + 3],
               ids[ii],
               ids[ii + 1]
             );
@@ -1159,12 +2061,11 @@ export function searchLocalStarCatalogs(
         }
       }
     } else {
-      const viewCells = getVisibleLocalStarCellKeys(viewCenter.raHours, viewCenter.decDeg, 24);
-      const cellsToScan = viewCells.length > 0 ? viewCells : Array.from(spatialIndex.keys()).slice(0, 16);
+      const viewCells = getVisibleLocalStarCells(viewCenter.raHours, viewCenter.decDeg, 24);
+      const cellsToScan =
+        viewCells.length > 0 ? viewCells : Array.from(spatialIndex.values()).slice(0, 16);
       for (let c = 0; c < cellsToScan.length && candidates.length < 220; c++) {
-        const cell = spatialIndex.get(cellsToScan[c]);
-        if (!cell) continue;
-        const { coords, ids } = cell;
+        const { coords, ids } = cellsToScan[c];
         const count = Math.min(40, coords.length / 4);
         for (let i = 0; i < count; i++) {
           const ci = i * 4;
@@ -1202,7 +2103,7 @@ export function searchLocalStarCatalogs(
 
 /**
  * Collects all locally downloaded stars that project inside the current chart viewport frame
- * up to the requested magnitude range, using the 10°×10° magnitude-sorted spatial index.
+ * up to the requested magnitude range, using the dense 10°×10° magnitude-sorted spatial index.
  */
 export function getLocalStarsInFrame(
   viewCenter: { raHours: number; decDeg: number; fszDeg: number },
@@ -1211,19 +2112,18 @@ export function getLocalStarsInFrame(
   isInFrame: (raDeg: number, decDeg: number) => boolean,
   maxStars = 4000
 ): { stars: Star[]; totalCount: number } {
-  if (currentState.totalStars === 0 || spatialIndex.size === 0) {
+  if (currentState.totalStars === 0 || activeSpatialCoords.length === 0) {
     return { stars: [], totalCount: 0 };
   }
   const searchFsz = Math.min(180, Math.max(2, viewCenter.fszDeg * 1.48));
-  const cellKeys = getVisibleLocalStarCellKeys(viewCenter.raHours, viewCenter.decDeg, searchFsz);
+  const cells = getVisibleLocalStarCells(viewCenter.raHours, viewCenter.decDeg, searchFsz);
   const collected: Star[] = [];
   let totalCount = 0;
   const collectCap = Math.max(maxStars * 2, 6000);
 
-  for (let c = 0; c < cellKeys.length; c++) {
-    const cell = spatialIndex.get(cellKeys[c]);
-    if (!cell || cell.coords.length < 4) continue;
-    const { coords, ids } = cell;
+  for (let c = 0; c < cells.length; c++) {
+    const { coords, ids } = cells[c];
+    if (coords.length < 4) continue;
     const count = coords.length / 4;
     for (let i = 0; i < count; i++) {
       const ci = i * 4;
@@ -1270,9 +2170,7 @@ async function writeManifestToDirectory(dir: FsDirectoryHandleLike): Promise<voi
       app: 'NoxChart',
       formatVersion: PACK_VERSION,
       updatedAt: new Date().toISOString(),
-      packs: Array.from(loadedPackDataByTier.values())
-        .map((v) => v.meta)
-        .sort((a, b) => a.tier - b.tier),
+      packs: Array.from(installedMetaByTier.values()).sort((a, b) => a.tier - b.tier),
     };
     const fileHandle = await dir.getFileHandle('noxchart_catalog_manifest.json', { create: true });
     const writable = await fileHandle.createWritable();
@@ -1287,21 +2185,52 @@ async function writeManifestToDirectory(dir: FsDirectoryHandleLike): Promise<voi
 
 async function syncDirectoryWithMemory(dir: FsDirectoryHandleLike): Promise<number> {
   let importedCount = 0;
+  const recordsToPut: StoredPackRecord[] = [];
+  let metaChanged = false;
 
-  // 1. Scan directory for existing .noxstars pack files and load any missing in memory/IndexedDB
+  // 1. Scan directory in parallel, reading only the 28-byte header first to skip unchanged multi-MB files!
   if (typeof dir.values === 'function') {
     try {
+      const fileNames: string[] = [];
       for await (const entry of dir.values()) {
-        if (entry.kind !== 'file' || !entry.name.toLowerCase().endsWith('.noxstars')) continue;
-        try {
-          const fh = await dir.getFileHandle(entry.name);
-          const file = await fh.getFile();
-          const buf = await file.arrayBuffer();
-          const decoded = decodeStarPackBinary(buf);
-          if (!decoded) continue;
+        if (entry.kind === 'file' && entry.name.toLowerCase().endsWith('.noxstars')) {
+          fileNames.push(entry.name);
+        }
+      }
 
-          const existing = loadedPackDataByTier.get(decoded.tier);
-          if (!existing || existing.meta.savedAt < decoded.savedAt) {
+      await Promise.all(
+        fileNames.map(async (name) => {
+          try {
+            const fh = await dir.getFileHandle(name);
+            const file = await fh.getFile();
+            if (file.size < PACK_HEADER_BYTES) return;
+            const headerBuf = await file.slice(0, PACK_HEADER_BYTES).arrayBuffer();
+            const hdr = decodeStarPackHeader(headerBuf);
+            if (!hdr || file.size < hdr.expectedBytes) return;
+
+            const existingMeta = installedMetaByTier.get(hdr.tier);
+            if (
+              existingMeta &&
+              existingMeta.savedAt >= hdr.savedAt &&
+              existingMeta.byteLength === file.size
+            ) {
+              // File already cached in IndexedDB — skip reading multi-MB body completely!
+              if (!existingMeta.savedToFolder) {
+                const updatedMeta = { ...existingMeta, savedToFolder: true };
+                installedMetaByTier.set(hdr.tier, updatedMeta);
+                const loaded = loadedPackDataByTier.get(hdr.tier);
+                if (loaded) loaded.meta = updatedMeta;
+                metaChanged = true;
+                const rec = await idbGetPack(hdr.tier);
+                if (rec) recordsToPut.push({ ...rec, savedToFolder: true });
+              }
+              return;
+            }
+
+            // Missing or newer file on disk — read full buffer
+            const buf = await file.arrayBuffer();
+            const decoded = decodeStarPackBinary(buf);
+            if (!decoded) return;
             const meta: InstalledStarPackMeta = {
               tier: decoded.tier,
               starCount: decoded.starCount,
@@ -1312,52 +2241,67 @@ async function syncDirectoryWithMemory(dir: FsDirectoryHandleLike): Promise<numb
               savedToFolder: true,
               fileName: getTierFileName(decoded.tier),
             };
+            installedMetaByTier.set(decoded.tier, meta);
             loadedPackDataByTier.set(decoded.tier, {
               meta,
               starsFlat: decoded.starsFlat,
               starIds: decoded.starIds,
             });
-            await idbPutPack({ ...meta, buffer: buf });
+            recordsToPut.push({ ...meta, buffer: buf });
             importedCount++;
-          } else if (!existing.meta.savedToFolder) {
-            existing.meta = { ...existing.meta, savedToFolder: true };
-            const rec = await idbGetPack(decoded.tier);
-            if (rec) await idbPutPack({ ...rec, savedToFolder: true });
+          } catch {
+            // Ignore malformed individual files
           }
-        } catch {
-          // Ignore malformed individual files
-        }
-      }
+        })
+      );
     } catch {
       // Ignore directory enumeration failure
     }
   }
 
-  // 2. Push any IndexedDB-only packs into the connected noxchart folder so they persist on disk
-  for (const [tier, entry] of loadedPackDataByTier.entries()) {
-    if (!entry.meta.savedToFolder) {
-      const rec = await idbGetPack(tier);
-      const buf =
-        rec?.buffer ??
-        encodeStarPackBinary(
-          tier,
-          entry.meta.magMin,
-          entry.meta.magMax,
-          entry.starsFlat,
-          entry.starIds,
-          entry.meta.savedAt
-        );
-      const ok = await writePackToDirectory(dir, entry.meta.fileName, buf);
-      if (ok) {
-        entry.meta = { ...entry.meta, savedToFolder: true };
-        await idbPutPack({ ...entry.meta, buffer: buf });
-      }
-    }
+  // 2. Push any IndexedDB-only packs into the connected noxchart folder in parallel
+  const unsavedTiers = Array.from(installedMetaByTier.values()).filter((m) => !m.savedToFolder);
+  if (unsavedTiers.length > 0) {
+    await Promise.all(
+      unsavedTiers.map(async (meta) => {
+        const rec = await idbGetPack(meta.tier);
+        const loaded = loadedPackDataByTier.get(meta.tier);
+        const buf =
+          rec?.buffer ??
+          (loaded
+            ? encodeStarPackBinary(
+                meta.tier,
+                meta.magMin,
+                meta.magMax,
+                loaded.starsFlat,
+                loaded.starIds,
+                meta.savedAt
+              )
+            : null);
+        if (!buf) return;
+        const ok = await writePackToDirectory(dir, meta.fileName, buf);
+        if (ok) {
+          const updatedMeta = { ...meta, savedToFolder: true };
+          installedMetaByTier.set(meta.tier, updatedMeta);
+          if (loaded) loaded.meta = updatedMeta;
+          metaChanged = true;
+          recordsToPut.push({ ...updatedMeta, buffer: buf });
+        }
+      })
+    );
   }
 
-  await writeManifestToDirectory(dir);
+  if (recordsToPut.length > 0) {
+    await idbPutPacksBatch(recordsToPut);
+  }
+  if (importedCount > 0 || unsavedTiers.length > 0) {
+    void writeManifestToDirectory(dir);
+  }
   if (importedCount > 0) {
-    rebuildSpatialIndex();
+    await rebuildSpatialIndexAsync(true);
+  } else if (metaChanged) {
+    // Keep spatial cache metadata in sync without blocking
+    void rebuildSpatialIndexAsync(true);
   }
   return importedCount;
 }
@@ -1365,24 +2309,37 @@ async function syncDirectoryWithMemory(dir: FsDirectoryHandleLike): Promise<numb
 export async function initLocalStarCatalogs(): Promise<void> {
   if (initPromise) return initPromise;
   initPromise = (async () => {
-    let persistentGranted = false;
-    try {
-      if (navigator.storage?.persisted) {
-        persistentGranted = await navigator.storage.persisted();
-        if (!persistentGranted && navigator.storage.persist) {
-          persistentGranted = await navigator.storage.persist();
+    // Kick off persistent storage negotiation in background so it never delays startup read
+    const persistPromise = (async () => {
+      try {
+        if (navigator.storage?.persisted) {
+          let granted = await navigator.storage.persisted();
+          if (!granted && navigator.storage.persist) {
+            granted = await navigator.storage.persist();
+          }
+          return granted;
         }
+      } catch {
+        // Ignore storage persistence API errors
       }
-    } catch {
-      // Ignore storage persistence API errors
+      return false;
+    })();
+
+    // Fast path: Read the single pre-built zero-copy NXSI spatial cache from IndexedDB (< 15-40ms!)
+    const cachedSpatialBuf = await idbGetSpatialCache();
+    let hydratedFromCache = false;
+    if (cachedSpatialBuf) {
+      hydratedFromCache = hydrateFromSpatialCacheBuffer(cachedSpatialBuf);
     }
 
-    const records = await idbGetAllPacks();
-    for (const rec of records) {
-      const decoded = decodeStarPackBinary(rec.buffer);
-      if (!decoded) continue;
-      loadedPackDataByTier.set(decoded.tier, {
-        meta: {
+    // Warm-up fallback (first launch after upgrade or cleared cache): read packs & build fast O(N) cache
+    if (!hydratedFromCache) {
+      const records = await idbGetAllPacks();
+      for (let i = 0; i < records.length; i++) {
+        const rec = records[i];
+        const decoded = decodeStarPackBinary(rec.buffer);
+        if (!decoded) continue;
+        const meta: InstalledStarPackMeta = {
           tier: decoded.tier,
           starCount: decoded.starCount,
           byteLength: rec.buffer.byteLength,
@@ -1391,47 +2348,61 @@ export async function initLocalStarCatalogs(): Promise<void> {
           savedAt: decoded.savedAt,
           savedToFolder: Boolean(rec.savedToFolder),
           fileName: rec.fileName || getTierFileName(decoded.tier),
-        },
-        starsFlat: decoded.starsFlat,
-        starIds: decoded.starIds,
-      });
+        };
+        installedMetaByTier.set(decoded.tier, meta);
+        loadedPackDataByTier.set(decoded.tier, {
+          meta,
+          starsFlat: decoded.starsFlat,
+          starIds: decoded.starIds,
+        });
+      }
+      if (installedMetaByTier.size > 0) {
+        await rebuildSpatialIndexAsync(true);
+      }
     }
-    rebuildSpatialIndex();
 
     const supportsDirPicker =
       typeof window !== 'undefined' &&
       typeof (window as WindowWithDirPicker).showDirectoryPicker === 'function';
-    let folderStatus: LocalFolderStatus = supportsDirPicker ? 'disconnected' : 'unsupported';
-    let folderDisplayName: string | null = null;
+
+    // Publish initialized state IMMEDIATELY so the star chart renders local stars on frame 1!
+    updateStateSummary({
+      initialized: true,
+      folderStatus: supportsDirPicker ? 'disconnected' : 'unsupported',
+    });
+
+    // Finish persistent-storage flag & saved folder handle sync in the background (non-blocking)
+    void persistPromise.then((granted) => {
+      if (granted !== currentState.persistentStorageGranted) {
+        updateStateSummary({ persistentStorageGranted: granted });
+      }
+    });
 
     if (supportsDirPicker) {
-      const savedFolder = await idbGetFolderRecord();
-      if (savedFolder?.handle) {
-        folderDisplayName = savedFolder.displayName || '문서/noxchart';
+      void (async () => {
+        const savedFolder = await idbGetFolderRecord();
+        if (!savedFolder?.handle) return;
+        const folderDisplayName = savedFolder.displayName || '문서/noxchart';
         try {
           const perm = savedFolder.handle.queryPermission
             ? await savedFolder.handle.queryPermission({ mode: 'readwrite' })
             : 'granted';
           if (perm === 'granted') {
             activeDirHandle = savedFolder.handle;
-            folderStatus = 'connected';
-            await syncDirectoryWithMemory(activeDirHandle);
+            updateStateSummary({ folderStatus: 'connected', folderDisplayName });
+            const imported = await syncDirectoryWithMemory(activeDirHandle);
+            if (imported > 0) {
+              updateStateSummary({ folderStatus: 'connected', folderDisplayName });
+            }
           } else {
             activeDirHandle = savedFolder.handle;
-            folderStatus = 'needs-permission';
+            updateStateSummary({ folderStatus: 'needs-permission', folderDisplayName });
           }
         } catch {
-          folderStatus = 'disconnected';
+          updateStateSummary({ folderStatus: 'disconnected', folderDisplayName });
         }
-      }
+      })();
     }
-
-    updateStateSummary({
-      initialized: true,
-      folderStatus,
-      folderDisplayName,
-      persistentStorageGranted: persistentGranted,
-    });
   })();
   return initPromise;
 }
@@ -2052,11 +3023,14 @@ export async function downloadStarCatalogTier(tierNum: number): Promise<{
       fileName,
     };
 
-    await idbPutPack({ ...meta, buffer });
+    installedMetaByTier.set(def.tier, meta);
     loadedPackDataByTier.set(def.tier, { meta, starsFlat, starIds });
-    rebuildSpatialIndex();
+    await Promise.all([
+      idbPutPack({ ...meta, buffer }),
+      rebuildSpatialIndexAsync(true),
+    ]);
     if (activeDirHandle && currentState.folderStatus === 'connected') {
-      await writeManifestToDirectory(activeDirHandle);
+      void writeManifestToDirectory(activeDirHandle);
     }
 
     updateStateSummary({
@@ -2095,20 +3069,21 @@ export async function downloadStarCatalogTier(tierNum: number): Promise<{
 }
 
 export async function removeStarCatalogTier(tierNum: number): Promise<void> {
-  const existing = loadedPackDataByTier.get(tierNum);
+  const existingMeta = installedMetaByTier.get(tierNum);
+  installedMetaByTier.delete(tierNum);
   loadedPackDataByTier.delete(tierNum);
   await idbDeletePack(tierNum);
 
   if (activeDirHandle && currentState.folderStatus === 'connected') {
     try {
-      await activeDirHandle.removeEntry(existing?.meta.fileName || getTierFileName(tierNum));
-      await writeManifestToDirectory(activeDirHandle);
+      await activeDirHandle.removeEntry(existingMeta?.fileName || getTierFileName(tierNum));
+      void writeManifestToDirectory(activeDirHandle);
     } catch {
       // Ignore if file already missing on disk
     }
   }
 
-  rebuildSpatialIndex();
+  await rebuildSpatialIndexAsync(true);
   updateStateSummary();
 }
 
@@ -2161,19 +3136,23 @@ async function resolveStarDataStartIn(): Promise<PickerStartIn> {
 }
 
 export async function exportStarPackToFile(tierNum: number): Promise<boolean> {
-  const entry = loadedPackDataByTier.get(tierNum);
-  if (!entry) return false;
+  const meta = installedMetaByTier.get(tierNum);
+  if (!meta) return false;
   const rec = await idbGetPack(tierNum);
+  const loaded = loadedPackDataByTier.get(tierNum);
   const buffer =
     rec?.buffer ??
-    encodeStarPackBinary(
-      tierNum,
-      entry.meta.magMin,
-      entry.meta.magMax,
-      entry.starsFlat,
-      entry.starIds,
-      entry.meta.savedAt
-    );
+    (loaded
+      ? encodeStarPackBinary(
+          tierNum,
+          meta.magMin,
+          meta.magMax,
+          loaded.starsFlat,
+          loaded.starIds,
+          meta.savedAt
+        )
+      : null);
+  if (!buffer) return false;
 
   const win = window as WindowWithDirPicker;
   if (typeof win.showSaveFilePicker === 'function') {
@@ -2190,7 +3169,7 @@ export async function exportStarPackToFile(tierNum: number): Promise<boolean> {
         fileHandle = await win.showSaveFilePicker({
           id: 'noxchart-star-catalogs',
           startIn,
-          suggestedName: entry.meta.fileName,
+          suggestedName: meta.fileName,
           types,
         });
       } catch (innerErr) {
@@ -2199,7 +3178,7 @@ export async function exportStarPackToFile(tierNum: number): Promise<boolean> {
         fileHandle = await win.showSaveFilePicker({
           id: 'noxchart-star-catalogs',
           startIn: 'documents',
-          suggestedName: entry.meta.fileName,
+          suggestedName: meta.fileName,
           types,
         });
       }
@@ -2220,7 +3199,7 @@ export async function exportStarPackToFile(tierNum: number): Promise<boolean> {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = entry.meta.fileName;
+  a.download = meta.fileName;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -2264,11 +3243,8 @@ export async function pickAndImportStarPackFiles(): Promise<
       });
     }
     if (!handles || handles.length === 0) return { status: 'cancelled' };
-    await idbSaveLastFileHandle(handles[0]);
-    const files: File[] = [];
-    for (const h of handles) {
-      files.push(await h.getFile());
-    }
+    void idbSaveLastFileHandle(handles[0]);
+    const files = await Promise.all(handles.map((h) => h.getFile()));
     const res = await importStarPackFiles(files);
     return { status: 'imported', ...res };
   } catch (err) {
@@ -2290,48 +3266,62 @@ export async function importStarPackFiles(files: FileList | File[]): Promise<{
   let totalStars = 0;
   let failedCount = 0;
 
-  for (const file of list) {
-    try {
-      const buf = await file.arrayBuffer();
-      const decoded = decodeStarPackBinary(buf);
-      if (!decoded) {
-        failedCount++;
-        continue;
-      }
-      const fileName = getTierFileName(decoded.tier);
-      let savedToFolder = false;
-      if (activeDirHandle && currentState.folderStatus === 'connected') {
-        savedToFolder = await writePackToDirectory(activeDirHandle, fileName, buf);
-      }
-      const meta: InstalledStarPackMeta = {
-        tier: decoded.tier,
-        starCount: decoded.starCount,
-        byteLength: buf.byteLength,
-        magMin: decoded.magMin,
-        magMax: decoded.magMax,
-        savedAt: decoded.savedAt,
-        savedToFolder,
-        fileName,
-      };
-      await idbPutPack({ ...meta, buffer: buf });
-      loadedPackDataByTier.set(decoded.tier, {
-        meta,
-        starsFlat: decoded.starsFlat,
-        starIds: decoded.starIds,
-      });
-      importedTiers.push(decoded.tier);
-      totalStars += decoded.starCount;
-    } catch {
+  // Read all selected files in parallel instead of sequentially
+  const rawBuffers = await Promise.all(
+    list.map((file) => file.arrayBuffer().catch(() => null))
+  );
+
+  const recordsToStore: StoredPackRecord[] = [];
+  const folderConnected = Boolean(activeDirHandle && currentState.folderStatus === 'connected');
+
+  for (let i = 0; i < rawBuffers.length; i++) {
+    const buf = rawBuffers[i];
+    if (!buf) {
       failedCount++;
+      continue;
     }
+    const decoded = decodeStarPackBinary(buf);
+    if (!decoded) {
+      failedCount++;
+      continue;
+    }
+    const fileName = getTierFileName(decoded.tier);
+    const meta: InstalledStarPackMeta = {
+      tier: decoded.tier,
+      starCount: decoded.starCount,
+      byteLength: buf.byteLength,
+      magMin: decoded.magMin,
+      magMax: decoded.magMax,
+      savedAt: decoded.savedAt,
+      savedToFolder: folderConnected,
+      fileName,
+    };
+    installedMetaByTier.set(decoded.tier, meta);
+    loadedPackDataByTier.set(decoded.tier, {
+      meta,
+      starsFlat: decoded.starsFlat,
+      starIds: decoded.starIds,
+    });
+    recordsToStore.push({ ...meta, buffer: buf });
+    importedTiers.push(decoded.tier);
+    totalStars += decoded.starCount;
   }
 
   if (importedTiers.length > 0) {
-    rebuildSpatialIndex();
-    if (activeDirHandle && currentState.folderStatus === 'connected') {
-      await writeManifestToDirectory(activeDirHandle);
-    }
+    // Build spatial index (Web Worker for large packs) & batch-write to IndexedDB concurrently!
+    await Promise.all([
+      rebuildSpatialIndexAsync(true),
+      idbPutPacksBatch(recordsToStore),
+    ]);
     updateStateSummary({ lastError: null });
+
+    // Mirror imported files to connected folder in parallel without delaying star rendering
+    if (folderConnected && activeDirHandle) {
+      const targetDir = activeDirHandle;
+      void Promise.all(
+        recordsToStore.map((rec) => writePackToDirectory(targetDir, rec.fileName, rec.buffer))
+      ).then(() => writeManifestToDirectory(targetDir));
+    }
   }
 
   return { importedTiers, totalStars, failedCount };

@@ -105,6 +105,12 @@ export interface DoubleStarSystem {
   pairs?: DoubleStarPair[]; // Additional pairs in multiple star systems
 }
 
+export type ObjectNameLanguage = 'ko' | 'en' | 'ko_en';
+export type ConstellationNameStyle = 'traditional' | 'name' | 'name_abbr' | 'abbr';
+export type ConstellationProjectionMode = 'modern' | 'classical';
+export type StarNameStyle = 'traditional' | 'bayer' | 'catalog' | 'full';
+export type DsoNameStyle = 'name' | 'abbr' | 'code' | 'code_name';
+
 export interface LayerSettings {
   showGridEq: boolean;
   showGridAltAz: boolean;
@@ -113,11 +119,15 @@ export interface LayerSettings {
   showHorizon: boolean;
   showTerrain: boolean;
   showEcliptic: boolean;
+  showCelestialPoles: boolean;
   showMilkyWay: boolean;
   showNebulaContours: boolean;
   showConstellationLines: boolean;
   constellationLineStyle: ConstellationLineStyle;
   constellationLineOpacity: number; // 0.05..1.0
+  constellationProjectionMode?: ConstellationProjectionMode; // 별자리 투영 모드 (현대 / 고전 도안)
+  showConstellationArt?: boolean; // 독립 렌더링 레이어: 별자리 경계 내부 고전 도안 투영
+  constellationArtOpacity?: number; // 0.05..0.85 고전 도안 투영 진하기
   showConstellationBoundaries: boolean;
   showConstellationNames: boolean;
   showSolarSystem: boolean;
@@ -156,7 +166,10 @@ export interface LayerSettings {
   dsoSymbolOpacity: number; // 0.05..1.0 심우주 천체 심볼 진하기
   dsoLabelOpacity: number; // 0.05..1.0 심우주 천체 라벨 진하기
   showStarLabels: boolean;
-  starLabelLanguage?: 'ko' | 'en' | 'ko_en'; // 항성 이름 표시 언어 (한글 / 영어 / 한글(영어))
+  starLabelLanguage?: ObjectNameLanguage; // 전체 천체 이름 표기 언어 (한글 / 영어 / 한글(영어))
+  constellationNameStyle?: ConstellationNameStyle; // 별자리 이름 표기법 (전통 / 이름 / 이름+약어 / 약어)
+  starNameStyle?: StarNameStyle; // 항성 이름 표기법 (전통 / 바이어 약어 / 번호 / 이름+약어)
+  dsoNameStyle?: DsoNameStyle; // 성운·심우주 표기법 (이름 / 약어 / 번호 / 번호+이름)
   showProperStarNames: boolean; // 알려진 항성 고유 이름 표시 (항성 이름 표시 OFF 시에도 표시)
   starLabelDensityPct: number; // 0..100 (% of currently visible on-screen stars to label)
   starLabelOpacity: number; // 0.05..1.0 항성 이름 표시 진하기
@@ -362,6 +375,12 @@ export interface ObservationLogStoreState {
 
 export interface StarHopGuide {
   fromStar: Star;
+  fromConstellationKo?: string;
+  fromConstellationName?: string;
+  fromConstellationAbbr?: string;
+  isConstellationStar?: boolean;
+  isPrimary?: boolean;
+  anchorSegments?: [number, number, number, number][];
   toRa: number;
   toDec: number;
   toLabel: string;
