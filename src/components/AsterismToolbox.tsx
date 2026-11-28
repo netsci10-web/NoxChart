@@ -38,9 +38,12 @@ import {
   ThemeMode,
 } from '../types/astronomy';
 import {
+  ASTERISM_CATEGORIES,
   ASTERISM_COLOR_SWATCHES,
   downloadAsterismsJson,
   downloadSingleAsterismJson,
+  getAsterismCategoryLabel,
+  normalizeAsterismCategory,
   parseAsterismsFromJson,
 } from '../utils/asterismStorage';
 import {
@@ -97,6 +100,28 @@ interface AsterismToolboxProps {
   onChangeView: (updater: (prev: ChartViewState) => ChartViewState) => void;
 }
 
+function DividerLineIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={2}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <line x1="3" y1="12" x2="21" y2="12" />
+      <line x1="3" y1="8" x2="3" y2="16" />
+      <line x1="7.5" y1="9.5" x2="7.5" y2="14.5" />
+      <line x1="12" y1="7.5" x2="12" y2="16.5" />
+      <line x1="16.5" y1="9.5" x2="16.5" y2="14.5" />
+      <line x1="21" y1="8" x2="21" y2="16" />
+    </svg>
+  );
+}
+
 const TOOL_BUTTONS: {
   id: AsterismTool;
   label: string;
@@ -108,7 +133,7 @@ const TOOL_BUTTONS: {
     id: 'select',
     label: '선택 · 편집',
     shortLabel: '선택',
-    hint: '도형 클릭 선택 · 꼭짓점 드래그 · 미선택 시 항성 클릭으로 새 성군 생성',
+    hint: '도형 클릭 선택 · 꼭짓점 드래그 · 미선택 시 항성 클릭으로 새 그리기 생성',
     icon: MousePointer2,
   },
   {
@@ -136,8 +161,15 @@ const TOOL_BUTTONS: {
     id: 'arrow',
     label: '방향 지시선',
     shortLabel: '방향선',
-    hint: 'A→B 두 별로 방향 포인터 생성 (1×~5× 연장 지원)',
+    hint: 'A→B 두 지점으로 방향선 생성 (시작·끝 화살표 및 1×~5× 연장 지원)',
     icon: ArrowUpRight,
+  },
+  {
+    id: 'divider',
+    label: '등분선 넣기',
+    shortLabel: '등분선',
+    hint: '두 지점 사이를 균등 분할하는 등분 눈금선 그리기 (2~12등분)',
+    icon: DividerLineIcon,
   },
   {
     id: 'label',
@@ -170,12 +202,48 @@ const LABEL_DIRECTION_GRID: (
   { dir: 'se', glyph: '↘', title: '우하 (남동)' },
 ];
 
+const DIVISION_MIN = 2;
+const DIVISION_MAX = 12;
+const DIVISION_STEPS = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12] as const;
+
+const ARROW_HEAD_PRESETS: {
+  label: string;
+  title: string;
+  start: boolean;
+  end: boolean;
+}[] = [
+  { label: '→', title: '끝점 화살표', start: false, end: true },
+  { label: '←', title: '시작점 화살표', start: true, end: false },
+  { label: '↔', title: '양쪽 화살표', start: true, end: true },
+  { label: '—', title: '화살표 없음', start: false, end: false },
+];
+
 function getShapeTypeLabel(obj: AsterismObject): string {
   if (obj.type === 'polyline') return obj.smooth ? '원호' : '선';
   if (obj.type === 'polygon') return '다각형';
   if (obj.type === 'circle') return '원';
   if (obj.type === 'arrow') return '방향선';
+  if (obj.type === 'divider') return '등분선';
   return '텍스트';
+}
+
+function getToolPropertiesTitle(tool: AsterismTool): string {
+  switch (tool) {
+    case 'polyline':
+      return '폴리라인 도구 속성';
+    case 'polygon':
+      return '다각형 도구 속성';
+    case 'circle':
+      return '원 도구 속성';
+    case 'arrow':
+      return '방향선 도구 속성';
+    case 'divider':
+      return '등분선 도구 속성';
+    case 'label':
+      return '텍스트 도구 속성';
+    default:
+      return '그리기 속성';
+  }
 }
 
 function formatShortRa(raDeg: number): string {
@@ -248,7 +316,8 @@ export function AsterismToolbox({
 
   const schedulePopoverHide = (delayMs = 190) => {
     clearHideTimer();
-    if (popover === 'none') return;
+    // Properties panel ("속성") opens and closes strictly on click — never auto-hide on hover leave
+    if (popover === 'none' || popover === 'props') return;
     hideTimerRef.current = window.setTimeout(() => {
       hideTimerRef.current = null;
       if (
@@ -357,6 +426,7 @@ export function AsterismToolbox({
   const activeAsterismShapes = activeAsterism
     ? store.objects.filter((o) => o.asterismId === activeAsterism.id)
     : [];
+  const isPopoverHidden = popover !== 'props' && popoverAutoHidden;
 
   const activeAsterismLayer = activeAsterism
     ? store.layers.find((l) => l.id === activeAsterism.layerId) ?? null
@@ -381,8 +451,8 @@ export function AsterismToolbox({
         const { addedCount } = onImportBundle(res.layers, res.asterisms, res.objects);
         setNotice(
           addedCount > 0
-            ? `성군·도형 ${addedCount}개 항목을 불러왔습니다.`
-            : '이미 동일한 성군 데이터가 모두 존재합니다.'
+            ? `그리기·도형 ${addedCount}개 항목을 불러왔습니다.`
+            : '이미 동일한 그리기 데이터가 모두 존재합니다.'
         );
       }
       if (importInputRef.current) importInputRef.current.value = '';
@@ -395,9 +465,6 @@ export function AsterismToolbox({
       circleLinkEyepiece: checked,
       circleLinkFinder: checked ? false : store.settings.circleLinkFinder,
     });
-    if (checked) {
-      onChangeOptics((p) => ({ ...p, showEyepiece: true }));
-    }
   };
 
   const handleToggleCircleLinkFinder = (checked: boolean) => {
@@ -405,9 +472,6 @@ export function AsterismToolbox({
       circleLinkFinder: checked,
       circleLinkEyepiece: checked ? false : store.settings.circleLinkEyepiece,
     });
-    if (checked) {
-      onChangeOptics((p) => ({ ...p, showFinder7x50: true }));
-    }
   };
 
   const rightEdgeOffsetPx = rightDrawerOpen ? 304 : 28;
@@ -430,11 +494,13 @@ export function AsterismToolbox({
 
   const popoverTitle =
     popover === 'props'
-      ? selectedObj
+      ? activeTool !== 'select'
+        ? getToolPropertiesTitle(activeTool)
+        : selectedObj
         ? '선택된 도형 속성'
-        : '성군 속성'
+        : '그리기 속성'
       : popover === 'layers'
-      ? '성군레이어 관리'
+      ? '그리기 레이어 관리'
       : '아이피스 · 파인더 시야 연동';
 
   const renderColorPalette = (currentColor: string, onPick: (hex: string) => void) => {
@@ -565,7 +631,7 @@ export function AsterismToolbox({
                 onClick={onCancelDraft}
                 className={`px-1.5 py-0.5 border text-[10px] ${ui.buttonIdle}`}
                 style={{ borderRadius: '4px' }}
-                title="작도 취소 (ESC)"
+                title="그리기 취소 (ESC)"
               >
                 취소
               </button>
@@ -579,7 +645,7 @@ export function AsterismToolbox({
       <div
         className={`no-print absolute top-1/2 -translate-y-1/2 z-20 flex flex-col items-center gap-1 p-1.5 border shadow-md backdrop-blur-sm transition-[right] duration-200 ease-out ${ui.hudOverlay}`}
         style={{ right: `${rightEdgeOffsetPx}px`, borderRadius: '8px' }}
-        aria-label="성군 작도 도구"
+        aria-label="그리기 도구"
       >
         {/* 6 Vector Tools */}
         {TOOL_BUTTONS.map((tool) => {
@@ -624,18 +690,18 @@ export function AsterismToolbox({
           <span className="text-[8px] leading-none font-medium">스냅</span>
         </button>
 
-        {/* Properties Popover Toggle ("속성") */}
+        {/* Properties Popover Toggle ("속성" — strictly click to open/close) */}
         <button
           type="button"
           onClick={() => handlePopoverTriggerClick('props')}
-          onMouseEnter={() => handlePopoverTriggerEnter('props')}
-          onMouseLeave={() => handlePopoverTriggerLeave('props')}
           title={
             popover === 'props'
-              ? '속성 창 활성화됨 (마우스를 올리면 표시 · 다시 클릭하면 닫기)'
+              ? '속성 창 닫기 (클릭)'
+              : activeTool !== 'select'
+              ? `${getToolPropertiesTitle(activeTool)} 열기 (클릭)`
               : selectedObj
-              ? '선택된 도형 속성 편집'
-              : '성군 속성 및 작도 스타일 설정'
+              ? '선택된 도형 속성 열기 (클릭)'
+              : '그리기 속성 열기 (클릭)'
           }
           className={`w-9 h-8 border flex flex-col items-center justify-center gap-0.5 transition-colors ${
             popover === 'props' ? ui.buttonActive : ui.buttonIdle
@@ -655,7 +721,7 @@ export function AsterismToolbox({
           title={
             popover === 'layers'
               ? '레이어 창 활성화됨 (마우스를 올리면 표시 · 다시 클릭하면 닫기)'
-              : '현재 제작중인 성군레이어 관리'
+              : '현재 제작중인 그리기 레이어 관리'
           }
           className={`w-9 h-8 border flex flex-col items-center justify-center gap-0.5 transition-colors relative ${
             popover === 'layers' ? ui.buttonActive : ui.buttonIdle
@@ -727,7 +793,7 @@ export function AsterismToolbox({
         <button
           type="button"
           onClick={() => setBackupOpen(true)}
-          title="성군 백업관리 (개별/전체 JSON 백업 및 불러오기)"
+          title="그리기 백업관리 (개별/전체 JSON 백업 및 불러오기)"
           className={`w-9 h-8 border flex flex-col items-center justify-center gap-0.5 transition-colors ${ui.buttonIdle}`}
           style={{ borderRadius: '5px' }}
         >
@@ -739,7 +805,7 @@ export function AsterismToolbox({
         <button
           type="button"
           onClick={onCloseDrawingMode}
-          title="성군 작도 모드 종료"
+          title="그리기 모드 종료"
           className={`w-9 h-7 border flex items-center justify-center transition-colors ${ui.buttonIdle}`}
           style={{ borderRadius: '5px' }}
         >
@@ -751,13 +817,14 @@ export function AsterismToolbox({
       {popover !== 'none' && (
         <div
           ref={popoverRef}
-          aria-hidden={popoverAutoHidden}
+          aria-hidden={isPopoverHidden}
           onMouseEnter={() => {
-            if (popoverAutoHidden) return;
+            if (popover === 'props' || isPopoverHidden) return;
             pointerInPopoverRef.current = true;
             clearHideTimer();
           }}
           onMouseLeave={() => {
+            if (popover === 'props') return;
             pointerInPopoverRef.current = false;
             schedulePopoverHide(180);
           }}
@@ -791,13 +858,13 @@ export function AsterismToolbox({
                 (target.tagName === 'INPUT' && (target as HTMLInputElement).type === 'color'))
             ) {
               nativePickerOpenRef.current = false;
-              if (!pointerInPopoverRef.current && !pointerInActiveTriggerRef.current) {
+              if (popover !== 'props' && !pointerInPopoverRef.current && !pointerInActiveTriggerRef.current) {
                 schedulePopoverHide(180);
               }
             }
           }}
           className={`no-print absolute top-1/2 -translate-y-1/2 z-20 w-[284px] max-h-[80vh] overflow-y-auto astro-scroll border p-3 shadow-lg backdrop-blur-md text-[11px] space-y-3 transition-all duration-150 ${
-            popoverAutoHidden
+            isPopoverHidden
               ? 'opacity-0 translate-x-1.5 pointer-events-none'
               : 'opacity-100 translate-x-0 pointer-events-auto'
           } ${ui.panel}`}
@@ -819,8 +886,461 @@ export function AsterismToolbox({
           {/* POPOVER 1: PROPERTIES ("속성") */}
           {popover === 'props' && (
             <div className="space-y-2.5">
-              {/* CASE A: A SHAPE IS SELECTED -> "선택된 도형 속성" */}
-              {selectedObj ? (
+              {/* CASE 0: A DRAWING TOOL OTHER THAN SELECT IS ACTIVE -> SHOW THAT TOOL'S PROPERTIES */}
+              {activeTool !== 'select' ? (
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between gap-1.5">
+                    <span
+                      className={`px-1.5 py-0.5 border text-[9.5px] font-semibold ${ui.buttonActive}`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      {getToolPropertiesTitle(activeTool)}
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onChangeTool('select');
+                        onSelectObject(null);
+                      }}
+                      title="선택 도구로 전환하여 그리기 속성 보기"
+                      className={`px-1.5 py-0.5 border text-[9.5px] ${ui.buttonIdle}`}
+                      style={{ borderRadius: '4px' }}
+                    >
+                      그리기 속성
+                    </button>
+                  </div>
+
+                  {/* Tool-specific controls */}
+                  {activeTool === 'polyline' && (
+                    <div className="space-y-1">
+                      <span className={`text-[10px] block ${ui.textSecondary}`}>폴리라인 형태</span>
+                      <div className="grid grid-cols-2 gap-1">
+                        <button
+                          type="button"
+                          onClick={() => onUpdateSettings({ defaultSmooth: false })}
+                          className={`py-1 border text-[10px] font-medium ${
+                            !store.settings.defaultSmooth ? ui.buttonActive : ui.buttonIdle
+                          }`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          선 (직선)
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => onUpdateSettings({ defaultSmooth: true })}
+                          className={`py-1 border text-[10px] font-medium ${
+                            store.settings.defaultSmooth ? ui.buttonActive : ui.buttonIdle
+                          }`}
+                          style={{ borderRadius: '4px' }}
+                        >
+                          원호 (곡선)
+                        </button>
+                      </div>
+                    </div>
+                  )}
+
+                  {activeTool === 'polygon' && (
+                    <div className="space-y-1">
+                      <div className="flex items-center justify-between text-[10px]">
+                        <span className={ui.textSecondary}>내부 채우기 투명도</span>
+                        <span className={`font-mono tabular-nums ${ui.textPrimary}`}>
+                          {Math.round(store.settings.defaultFillAlpha * 100)}%
+                        </span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0}
+                        max={0.45}
+                        step={0.02}
+                        value={store.settings.defaultFillAlpha}
+                        onChange={(e) =>
+                          onUpdateSettings({ defaultFillAlpha: Number(e.target.value) })
+                        }
+                        className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                      />
+                    </div>
+                  )}
+
+                  {activeTool === 'circle' && (
+                    <div
+                      className={`p-2 border space-y-1.5 ${ui.panelMuted} ${ui.border}`}
+                      style={{ borderRadius: '5px' }}
+                    >
+                      <label className="flex items-center justify-between cursor-pointer text-[10px]">
+                        <span className={ui.textSecondary}>원 내부 채우기</span>
+                        <input
+                          type="checkbox"
+                          checked={store.settings.defaultCircleFillEnabled}
+                          onChange={(e) =>
+                            onUpdateSettings({ defaultCircleFillEnabled: e.target.checked })
+                          }
+                          className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                        />
+                      </label>
+                      {store.settings.defaultCircleFillEnabled && (
+                        <div>
+                          <div className="flex items-center justify-between text-[9.5px]">
+                            <span className={ui.textMuted}>채우기 투명도</span>
+                            <span className={`font-mono ${ui.textPrimary}`}>
+                              {Math.round(store.settings.defaultFillAlpha * 100)}%
+                            </span>
+                          </div>
+                          <input
+                            type="range"
+                            min={0.02}
+                            max={0.45}
+                            step={0.01}
+                            value={store.settings.defaultFillAlpha}
+                            onChange={(e) =>
+                              onUpdateSettings({ defaultFillAlpha: Number(e.target.value) })
+                            }
+                            className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                          />
+                        </div>
+                      )}
+                      <label className="flex items-center justify-between cursor-pointer text-[10px] pt-0.5">
+                        <span className={ui.textSecondary}>
+                          아이피스 시야 연동 (Ø{optics.eyepieceFovDeg.toFixed(2)}°)
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={store.settings.circleLinkEyepiece}
+                          onChange={(e) => handleToggleCircleLinkEyepiece(e.target.checked)}
+                          className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                        />
+                      </label>
+                      <label className="flex items-center justify-between cursor-pointer text-[10px]">
+                        <span className={ui.textSecondary}>
+                          파인더 시야 연동 (Ø{finderFovDeg.toFixed(2)}°)
+                        </span>
+                        <input
+                          type="checkbox"
+                          checked={store.settings.circleLinkFinder}
+                          onChange={(e) => handleToggleCircleLinkFinder(e.target.checked)}
+                          className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                        />
+                      </label>
+                    </div>
+                  )}
+
+                  {activeTool === 'arrow' && (
+                    <div
+                      className={`p-2 border space-y-2 ${ui.panelMuted} ${ui.border}`}
+                      style={{ borderRadius: '5px' }}
+                    >
+                      <div className="space-y-1">
+                        <span className={`text-[10px] block font-medium ${ui.textSecondary}`}>
+                          화살표 방향 설정
+                        </span>
+                        <div className="grid grid-cols-4 gap-1">
+                          {ARROW_HEAD_PRESETS.map((preset) => {
+                            const isActive =
+                              Boolean(store.settings.defaultArrowStart) === preset.start &&
+                              Boolean(store.settings.defaultArrowEnd) === preset.end;
+                            return (
+                              <button
+                                key={preset.label}
+                                type="button"
+                                title={preset.title}
+                                onClick={() =>
+                                  onUpdateSettings({
+                                    defaultArrowStart: preset.start,
+                                    defaultArrowEnd: preset.end,
+                                  })
+                                }
+                                className={`py-1 border text-[11px] font-semibold ${
+                                  isActive ? ui.buttonActive : ui.buttonIdle
+                                }`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                {preset.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5 pt-1">
+                          <label className="flex items-center justify-between cursor-pointer text-[10px]">
+                            <span className={ui.textSecondary}>시작점 화살표</span>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(store.settings.defaultArrowStart)}
+                              onChange={(e) =>
+                                onUpdateSettings({ defaultArrowStart: e.target.checked })
+                              }
+                              className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                            />
+                          </label>
+                          <label className="flex items-center justify-between cursor-pointer text-[10px]">
+                            <span className={ui.textSecondary}>끝점 화살표</span>
+                            <input
+                              type="checkbox"
+                              checked={store.settings.defaultArrowEnd !== false}
+                              onChange={(e) =>
+                                onUpdateSettings({ defaultArrowEnd: e.target.checked })
+                              }
+                              className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                            />
+                          </label>
+                        </div>
+                      </div>
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={ui.textSecondary}>방향 연장 배수 (1×~5×)</span>
+                          <span className={`font-mono tabular-nums ${ui.textPrimary}`}>
+                            {store.settings.defaultExtensionFactor.toFixed(1)}×
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={1}
+                          max={5}
+                          step={0.5}
+                          value={store.settings.defaultExtensionFactor}
+                          onChange={(e) =>
+                            onUpdateSettings({ defaultExtensionFactor: Number(e.target.value) })
+                          }
+                          className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {activeTool === 'divider' && (
+                    <div
+                      className={`p-2 border space-y-2 ${ui.panelMuted} ${ui.border}`}
+                      style={{ borderRadius: '5px' }}
+                    >
+                      {(() => {
+                        const divVal = Math.max(
+                          DIVISION_MIN,
+                          Math.min(DIVISION_MAX, Math.round(store.settings.defaultDivisionCount ?? 4))
+                        );
+                        return (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className={`font-medium ${ui.textSecondary}`}>등분 수 (N등분)</span>
+                              <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
+                                {divVal}등분
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min={DIVISION_MIN}
+                              max={DIVISION_MAX}
+                              step={1}
+                              value={divVal}
+                              onChange={(e) =>
+                                onUpdateSettings({ defaultDivisionCount: Number(e.target.value) })
+                              }
+                              className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                            />
+                            <div className="relative h-6 mx-[7px] select-none">
+                              {DIVISION_STEPS.map((n) => {
+                                const pct =
+                                  ((n - DIVISION_MIN) / (DIVISION_MAX - DIVISION_MIN)) * 100;
+                                const active = divVal === n;
+                                return (
+                                  <button
+                                    key={n}
+                                    type="button"
+                                    onClick={() => onUpdateSettings({ defaultDivisionCount: n })}
+                                    style={{ left: `${pct}%` }}
+                                    className="absolute top-0 -translate-x-1/2 flex flex-col items-center cursor-pointer group"
+                                    title={`${n}등분`}
+                                  >
+                                    <span
+                                      className={`w-px h-1 mb-0.5 transition-colors ${
+                                        active ? 'bg-current opacity-90' : 'bg-current opacity-25 group-hover:opacity-60'
+                                      }`}
+                                    />
+                                    <span
+                                      className={`px-0.5 min-w-[14px] text-center text-[9px] leading-[13px] font-mono tabular-nums rounded transition-colors ${
+                                        active
+                                          ? `${ui.buttonActive} font-bold border`
+                                          : `${ui.textMuted} group-hover:opacity-100`
+                                      }`}
+                                    >
+                                      {n}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      <label className="flex items-center justify-between cursor-pointer text-[10px]">
+                        <span className={ui.textSecondary}>등분 눈금 번호 표시</span>
+                        <input
+                          type="checkbox"
+                          checked={store.settings.defaultDivisionShowLabels !== false}
+                          onChange={(e) =>
+                            onUpdateSettings({ defaultDivisionShowLabels: e.target.checked })
+                          }
+                          className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                        />
+                      </label>
+                      <label
+                        className={`flex items-center justify-between cursor-pointer text-[10px] ${
+                          store.settings.defaultDivisionShowLabels === false ? 'opacity-50' : ''
+                        }`}
+                      >
+                        <span className={ui.textSecondary}>눈금 번호 반대로 표시</span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(store.settings.defaultDivisionReverseLabels)}
+                          disabled={store.settings.defaultDivisionShowLabels === false}
+                          onChange={(e) =>
+                            onUpdateSettings({ defaultDivisionReverseLabels: e.target.checked })
+                          }
+                          className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                        />
+                      </label>
+                    </div>
+                  )}
+
+                  {activeTool === 'label' && (
+                    <div className="space-y-2">
+                      <div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={ui.textSecondary}>텍스트 크기</span>
+                          <span className={`font-mono tabular-nums ${ui.textPrimary}`}>
+                            {Math.round(store.settings.defaultTextSize)}px
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={8}
+                          max={32}
+                          step={1}
+                          value={store.settings.defaultTextSize}
+                          onChange={(e) =>
+                            onUpdateSettings({ defaultTextSize: Number(e.target.value) })
+                          }
+                          className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={ui.textSecondary}>텍스트 투명도</span>
+                          <span className={`font-mono tabular-nums ${ui.textPrimary}`}>
+                            {Math.round(store.settings.defaultTextOpacity * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0.1}
+                          max={1.0}
+                          step={0.05}
+                          value={store.settings.defaultTextOpacity}
+                          onChange={(e) =>
+                            onUpdateSettings({ defaultTextOpacity: Number(e.target.value) })
+                          }
+                          className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Stroke properties for non-label drawing tools */}
+                  {activeTool !== 'label' && (
+                    <div className={`pt-2 border-t space-y-2 ${ui.divider}`}>
+                      <div className="grid grid-cols-3 gap-1">
+                        {(
+                          [
+                            ['solid', '실선'],
+                            ['dashed', '점선'],
+                            ['dashdot', '일점쇄선'],
+                          ] as [AsterismLineStyle, string][]
+                        ).map(([st, lbl]) => (
+                          <button
+                            key={st}
+                            type="button"
+                            onClick={() => onUpdateSettings({ defaultLineStyle: st })}
+                            className={`py-1 border text-[10px] ${
+                              store.settings.defaultLineStyle === st
+                                ? ui.buttonActive
+                                : ui.buttonIdle
+                            }`}
+                            style={{ borderRadius: '4px' }}
+                          >
+                            {lbl}
+                          </button>
+                        ))}
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={ui.textSecondary}>선 두께</span>
+                          <span className={`font-mono tabular-nums ${ui.textPrimary}`}>
+                            {store.settings.defaultLineWidth.toFixed(1)}px
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0.5}
+                          max={10.0}
+                          step={0.1}
+                          value={store.settings.defaultLineWidth}
+                          onChange={(e) =>
+                            onUpdateSettings({ defaultLineWidth: Number(e.target.value) })
+                          }
+                          className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                        />
+                      </div>
+                      <div>
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={ui.textSecondary}>선 투명도</span>
+                          <span className={`font-mono tabular-nums ${ui.textPrimary}`}>
+                            {Math.round(store.settings.defaultOpacity * 100)}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={0.1}
+                          max={1.0}
+                          step={0.05}
+                          value={store.settings.defaultOpacity}
+                          onChange={(e) =>
+                            onUpdateSettings({ defaultOpacity: Number(e.target.value) })
+                          }
+                          className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Color Swatches */}
+                  <div className="flex items-center justify-between gap-2 pt-1">
+                    <span className={`text-[10px] shrink-0 ${ui.textSecondary}`}>색상</span>
+                    {renderColorPalette(store.settings.defaultColor, (hex) =>
+                      onUpdateSettings({ defaultColor: hex })
+                    )}
+                  </div>
+
+                  {/* Compact Snap Controls */}
+                  <div className={`pt-2 border-t space-y-1.5 ${ui.divider}`}>
+                    <label className="flex items-center justify-between cursor-pointer text-[10px]">
+                      <span className={ui.textMuted}>항성·DSO 자동 스냅</span>
+                      <input
+                        type="checkbox"
+                        checked={store.settings.snapEnabled}
+                        onChange={(e) => onUpdateSettings({ snapEnabled: e.target.checked })}
+                        className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                      />
+                    </label>
+                    <label className="flex items-center justify-between cursor-pointer text-[10px]">
+                      <span className={ui.textMuted}>빈 공간 자유 좌표 허용</span>
+                      <input
+                        type="checkbox"
+                        checked={store.settings.allowFreeSpace}
+                        onChange={(e) => onUpdateSettings({ allowFreeSpace: e.target.checked })}
+                        className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                      />
+                    </label>
+                  </div>
+                </div>
+              ) : selectedObj ? (
+                /* CASE A: A SHAPE IS SELECTED -> "선택된 도형 속성" */
                 <div className="space-y-2.5">
                   <div className="flex items-center justify-between gap-1.5">
                     <span
@@ -833,11 +1353,11 @@ export function AsterismToolbox({
                       <button
                         type="button"
                         onClick={() => onSelectObject(null)}
-                        title="도형 선택 해제 (성군 속성 보기)"
+                        title="도형 선택 해제 (그리기 속성 보기)"
                         className={`px-1.5 py-0.5 border text-[9.5px] ${ui.buttonIdle}`}
                         style={{ borderRadius: '4px' }}
                       >
-                        성군 속성
+                        그리기 속성
                       </button>
                       <button
                         type="button"
@@ -892,7 +1412,7 @@ export function AsterismToolbox({
                       </select>
                     </div>
                     <div className="space-y-1">
-                      <label className={`text-[10px] block ${ui.textSecondary}`}>소속 성군</label>
+                      <label className={`text-[10px] block ${ui.textSecondary}`}>소속 그리기</label>
                       <select
                         value={selectedObj.asterismId}
                         onChange={(e) => {
@@ -1130,28 +1650,192 @@ export function AsterismToolbox({
                     </div>
                   )}
 
-                  {/* Arrow Extension Multiplier */}
+                  {/* Arrow Start/End Arrowheads & Extension Multiplier */}
                   {selectedObj.type === 'arrow' && (
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-[10px]">
-                        <span className={ui.textSecondary}>방향 연장 배수 (1×~5×)</span>
-                        <span className={`font-mono ${ui.textPrimary}`}>
-                          {(selectedObj.extensionFactor ?? 1).toFixed(1)}×
+                    <div
+                      className={`p-2 border space-y-2 ${ui.panelMuted} ${ui.border}`}
+                      style={{ borderRadius: '5px' }}
+                    >
+                      <div className="space-y-1">
+                        <span className={`text-[10px] block font-medium ${ui.textSecondary}`}>
+                          화살표 방향 설정
                         </span>
+                        <div className="grid grid-cols-4 gap-1">
+                          {ARROW_HEAD_PRESETS.map((preset) => {
+                            const isActive =
+                              Boolean(selectedObj.arrowStart) === preset.start &&
+                              (selectedObj.arrowEnd !== false) === preset.end;
+                            return (
+                              <button
+                                key={preset.label}
+                                type="button"
+                                title={preset.title}
+                                onClick={() =>
+                                  onUpdateObject(selectedObj.id, {
+                                    arrowStart: preset.start,
+                                    arrowEnd: preset.end,
+                                  })
+                                }
+                                className={`py-1 border text-[11px] font-semibold ${
+                                  isActive ? ui.buttonActive : ui.buttonIdle
+                                }`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                {preset.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                        <div className="grid grid-cols-2 gap-1.5 pt-1">
+                          <label className="flex items-center justify-between cursor-pointer text-[10px]">
+                            <span className={ui.textSecondary}>시작점 화살표</span>
+                            <input
+                              type="checkbox"
+                              checked={Boolean(selectedObj.arrowStart)}
+                              onChange={(e) =>
+                                onUpdateObject(selectedObj.id, { arrowStart: e.target.checked })
+                              }
+                              className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                            />
+                          </label>
+                          <label className="flex items-center justify-between cursor-pointer text-[10px]">
+                            <span className={ui.textSecondary}>끝점 화살표</span>
+                            <input
+                              type="checkbox"
+                              checked={selectedObj.arrowEnd !== false}
+                              onChange={(e) =>
+                                onUpdateObject(selectedObj.id, { arrowEnd: e.target.checked })
+                              }
+                              className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                            />
+                          </label>
+                        </div>
                       </div>
-                      <input
-                        type="range"
-                        min={1}
-                        max={5}
-                        step={0.5}
-                        value={selectedObj.extensionFactor ?? 1}
-                        onChange={(e) =>
-                          onUpdateObject(selectedObj.id, {
-                            extensionFactor: Number(e.target.value),
-                          })
-                        }
-                        className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
-                      />
+
+                      <div className="space-y-1">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={ui.textSecondary}>방향 연장 배수 (1×~5×)</span>
+                          <span className={`font-mono ${ui.textPrimary}`}>
+                            {(selectedObj.extensionFactor ?? 1).toFixed(1)}×
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={1}
+                          max={5}
+                          step={0.5}
+                          value={selectedObj.extensionFactor ?? 1}
+                          onChange={(e) =>
+                            onUpdateObject(selectedObj.id, {
+                              extensionFactor: Number(e.target.value),
+                            })
+                          }
+                          className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Equal Division Line Controls */}
+                  {selectedObj.type === 'divider' && (
+                    <div
+                      className={`p-2 border space-y-2 ${ui.panelMuted} ${ui.border}`}
+                      style={{ borderRadius: '5px' }}
+                    >
+                      {(() => {
+                        const divVal = Math.max(
+                          DIVISION_MIN,
+                          Math.min(DIVISION_MAX, Math.round(selectedObj.divisionCount ?? 4))
+                        );
+                        return (
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between text-[10px]">
+                              <span className={`font-medium ${ui.textSecondary}`}>등분 수 (N등분)</span>
+                              <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
+                                {divVal}등분
+                              </span>
+                            </div>
+                            <input
+                              type="range"
+                              min={DIVISION_MIN}
+                              max={DIVISION_MAX}
+                              step={1}
+                              value={divVal}
+                              onChange={(e) =>
+                                onUpdateObject(selectedObj.id, {
+                                  divisionCount: Number(e.target.value),
+                                })
+                              }
+                              className={`w-full h-1.5 cursor-pointer ${accentRangeCls}`}
+                            />
+                            <div className="relative h-6 mx-[7px] select-none">
+                              {DIVISION_STEPS.map((n) => {
+                                const pct =
+                                  ((n - DIVISION_MIN) / (DIVISION_MAX - DIVISION_MIN)) * 100;
+                                const active = divVal === n;
+                                return (
+                                  <button
+                                    key={n}
+                                    type="button"
+                                    onClick={() =>
+                                      onUpdateObject(selectedObj.id, { divisionCount: n })
+                                    }
+                                    style={{ left: `${pct}%` }}
+                                    className="absolute top-0 -translate-x-1/2 flex flex-col items-center cursor-pointer group"
+                                    title={`${n}등분`}
+                                  >
+                                    <span
+                                      className={`w-px h-1 mb-0.5 transition-colors ${
+                                        active ? 'bg-current opacity-90' : 'bg-current opacity-25 group-hover:opacity-60'
+                                      }`}
+                                    />
+                                    <span
+                                      className={`px-0.5 min-w-[14px] text-center text-[9px] leading-[13px] font-mono tabular-nums rounded transition-colors ${
+                                        active
+                                          ? `${ui.buttonActive} font-bold border`
+                                          : `${ui.textMuted} group-hover:opacity-100`
+                                      }`}
+                                    >
+                                      {n}
+                                    </span>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                        );
+                      })()}
+                      <label className="flex items-center justify-between cursor-pointer text-[10px]">
+                        <span className={ui.textSecondary}>등분 눈금 번호 표시</span>
+                        <input
+                          type="checkbox"
+                          checked={selectedObj.divisionShowLabels !== false}
+                          onChange={(e) =>
+                            onUpdateObject(selectedObj.id, {
+                              divisionShowLabels: e.target.checked,
+                            })
+                          }
+                          className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                        />
+                      </label>
+                      <label
+                        className={`flex items-center justify-between cursor-pointer text-[10px] ${
+                          selectedObj.divisionShowLabels === false ? 'opacity-50' : ''
+                        }`}
+                      >
+                        <span className={ui.textSecondary}>눈금 번호 반대로 표시</span>
+                        <input
+                          type="checkbox"
+                          checked={Boolean(selectedObj.divisionReverseLabels)}
+                          disabled={selectedObj.divisionShowLabels === false}
+                          onChange={(e) =>
+                            onUpdateObject(selectedObj.id, {
+                              divisionReverseLabels: e.target.checked,
+                            })
+                          }
+                          className={`w-3.5 h-3.5 ${accentRangeCls}`}
+                        />
+                      </label>
                     </div>
                   )}
 
@@ -1298,58 +1982,60 @@ export function AsterismToolbox({
                 <div className="space-y-3">
                   {activeAsterism ? (
                     <div className="space-y-2">
-                      <div className="flex items-center justify-between gap-1">
-                        <span
-                          className={`px-1.5 py-0.5 border text-[9.5px] font-semibold ${
-                            theme === 'white'
-                              ? 'border-amber-400/70 bg-amber-50 text-amber-800'
-                              : theme === 'red'
-                              ? 'border-red-800 bg-[#260606] text-red-300'
-                              : 'border-amber-400/40 bg-amber-500/15 text-amber-200'
-                          }`}
-                          style={{ borderRadius: '4px' }}
-                        >
-                          성군 · 도형 {activeAsterismShapes.length}개
-                        </span>
-                        <div className="flex items-center gap-1">
-                          <button
-                            type="button"
-                            onClick={() => onFocusAsterismGroup(activeAsterism)}
-                            title="이 성군 위치·시야로 바로가기"
-                            className={`p-1 border ${ui.buttonIdle}`}
+                      <div className="space-y-1.5">
+                        <div className="flex items-center justify-between gap-1">
+                          <span
+                            className={`px-1.5 py-0.5 border text-[9.5px] font-semibold ${
+                              theme === 'white'
+                                ? 'border-amber-400/70 bg-amber-50 text-amber-800'
+                                : theme === 'red'
+                                ? 'border-red-800 bg-[#260606] text-red-300'
+                                : 'border-amber-400/40 bg-amber-500/15 text-amber-200'
+                            }`}
                             style={{ borderRadius: '4px' }}
                           >
-                            <Navigation className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => {
-                              downloadSingleAsterismJson(store, activeAsterism.id);
-                              setNotice(`‘${activeAsterism.name}’ 개별 백업 완료`);
-                            }}
-                            title="이 성군만 개별 JSON 백업"
-                            className={`p-1 border ${ui.buttonIdle}`}
-                            style={{ borderRadius: '4px' }}
-                          >
-                            <Download className="w-3 h-3" />
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => onCreateAsterismGroup()}
-                            title="새 성군 만들기"
-                            className={`px-1.5 py-0.5 border text-[9.5px] flex items-center gap-0.5 ${ui.buttonIdle}`}
-                            style={{ borderRadius: '4px' }}
-                          >
-                            <Plus className="w-2.5 h-2.5" />
-                            <span>새 성군</span>
-                          </button>
+                            {getAsterismCategoryLabel(activeAsterism.category)} · 도형 {activeAsterismShapes.length}개
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => onFocusAsterismGroup(activeAsterism)}
+                              title="이 그리기 위치·시야로 바로가기"
+                              className={`p-1 border ${ui.buttonIdle}`}
+                              style={{ borderRadius: '4px' }}
+                            >
+                              <Navigation className="w-3 h-3" />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                downloadSingleAsterismJson(store, activeAsterism.id);
+                                setNotice(`‘${activeAsterism.name}’ 개별 백업 완료`);
+                              }}
+                              title="이 그리기만 개별 JSON 백업"
+                              className={`p-1 border ${ui.buttonIdle}`}
+                              style={{ borderRadius: '4px' }}
+                            >
+                              <Download className="w-3 h-3" />
+                            </button>
+                          </div>
                         </div>
+                        <button
+                          type="button"
+                          onClick={() => onCreateAsterismGroup()}
+                          title="새 그리기 만들기"
+                          className={`w-full py-1.5 px-2.5 border text-[11.5px] font-semibold flex items-center justify-center gap-1.5 transition-colors cursor-pointer ${ui.buttonIdle}`}
+                          style={{ borderRadius: '5px' }}
+                        >
+                          <Plus className="w-3.5 h-3.5 shrink-0" />
+                          <span>새 그리기</span>
+                        </button>
                       </div>
 
                       {/* Asterism Name (NOT rendered on chart) */}
                       <div className="space-y-1">
                         <div className="flex items-center justify-between">
-                          <label className={`text-[10px] ${ui.textSecondary}`}>성군 이름</label>
+                          <label className={`text-[10px] ${ui.textSecondary}`}>그리기 이름</label>
                           <span className={`text-[9px] ${ui.textMuted}`}>성도에 미표시</span>
                         </div>
                         <input
@@ -1362,6 +2048,32 @@ export function AsterismToolbox({
                           className={`w-full px-2 py-1 border text-[11px] ${ui.input}`}
                           style={{ borderRadius: '4px' }}
                         />
+                      </div>
+
+                      {/* Classification Selector (성군 / 호핑 / 스타체인 / 기타) */}
+                      <div className="space-y-1">
+                        <label className={`text-[10px] block ${ui.textSecondary}`}>분류</label>
+                        <div className="grid grid-cols-4 gap-1">
+                          {ASTERISM_CATEGORIES.map((cat) => {
+                            const active =
+                              normalizeAsterismCategory(activeAsterism.category) === cat.id;
+                            return (
+                              <button
+                                key={cat.id}
+                                type="button"
+                                onClick={() =>
+                                  onUpdateAsterismGroup(activeAsterism.id, { category: cat.id })
+                                }
+                                className={`py-1 px-1 border text-[10px] font-medium text-center transition-colors cursor-pointer ${
+                                  active ? ui.buttonActive : ui.buttonIdle
+                                }`}
+                                style={{ borderRadius: '4px' }}
+                              >
+                                {cat.label}
+                              </button>
+                            );
+                          })}
+                        </div>
                       </div>
 
                       {/* Layer Selector ABOVE Observation Memo + Apply View Button underneath */}
@@ -1436,7 +2148,7 @@ export function AsterismToolbox({
                           onChange={(e) =>
                             onUpdateAsterismGroup(activeAsterism.id, { memo: e.target.value })
                           }
-                          placeholder={'성군 관측 포인트나 호핑 안내를 여러 줄로 기록하세요.'}
+                          placeholder={'관측 포인트나 호핑 안내를 여러 줄로 기록하세요.'}
                           className={`w-full px-2 py-1.5 border text-[10.5px] leading-snug resize-y ${ui.input}`}
                           style={{ borderRadius: '4px' }}
                         />
@@ -1552,7 +2264,7 @@ export function AsterismToolbox({
                       style={{ borderRadius: '6px' }}
                     >
                       <p className={`text-[10px] leading-snug break-keep ${ui.textSecondary}`}>
-                        현재 선택된 성군이 없습니다. 성도의 항성을 클릭하거나 아래 버튼으로 새 성군을 만드세요.
+                        현재 선택된 그리기가 없습니다. 성도의 항성을 클릭하거나 아래 버튼으로 새 그리기를 만드세요.
                       </p>
                       <button
                         type="button"
@@ -1561,7 +2273,7 @@ export function AsterismToolbox({
                         style={{ borderRadius: '4px' }}
                       >
                         <Plus className="w-3.5 h-3.5" />
-                        <span>새 성군 만들기</span>
+                        <span>새 그리기 만들기</span>
                       </button>
                     </div>
                   )}
@@ -1587,7 +2299,7 @@ export function AsterismToolbox({
                             : 'text-cyan-300'
                         }`}
                       >
-                        새 도형 기본 작도 속성
+                        새 도형 기본 그리기 속성
                       </div>
                       <button
                         type="button"
@@ -1599,7 +2311,7 @@ export function AsterismToolbox({
                             `‘${activeAsterism.name}’ 도형 ${activeAsterismShapes.length}개에 일괄 적용했습니다.`
                           );
                         }}
-                        title="현재 성군의 모든 도형에 선 두께·선 투명도·텍스트 크기·텍스트 투명도를 일괄 적용"
+                        title="현재 그리기의 모든 도형에 선 두께·선 투명도·텍스트 크기·텍스트 투명도를 일괄 적용"
                         className={`px-2 py-0.5 border text-[9.5px] font-semibold whitespace-nowrap shrink-0 transition-colors ${
                           !activeAsterism || activeAsterismShapes.length === 0
                             ? `${ui.buttonIdle} opacity-45 cursor-not-allowed`
@@ -1892,15 +2604,15 @@ export function AsterismToolbox({
           {popover === 'layers' && (
             <div className="space-y-2.5">
               <div className="flex items-center justify-between gap-1.5">
-                <span className={`text-[10px] ${ui.textSecondary}`}>현재 제작중인 성군</span>
+                <span className={`text-[10.5px] ${ui.textSecondary}`}>현재 제작중인 그리기</span>
                 <button
                   type="button"
                   onClick={() => onCreateAsterismGroup()}
-                  className={`px-2 py-0.5 border text-[10px] font-medium flex items-center gap-0.5 ${ui.buttonIdle}`}
-                  style={{ borderRadius: '4px' }}
+                  className={`px-2.5 py-1.5 border text-[11px] font-semibold flex items-center gap-1 transition-colors cursor-pointer ${ui.buttonIdle}`}
+                  style={{ borderRadius: '5px' }}
                 >
-                  <Plus className="w-3 h-3" />
-                  <span>새 성군</span>
+                  <Plus className="w-3.5 h-3.5 shrink-0" />
+                  <span>새 그리기</span>
                 </button>
               </div>
 
@@ -1922,7 +2634,7 @@ export function AsterismToolbox({
                     <button
                       type="button"
                       onClick={() => onToggleAsterismGroupVisible(activeAsterism.id)}
-                      title={activeAsterism.visible ? '성군 숨기기' : '성군 표시'}
+                      title={activeAsterism.visible ? '그리기 숨기기' : '그리기 표시'}
                       className={`p-0.5 shrink-0 ${
                         activeAsterism.visible ? ui.accentText : ui.textMuted
                       }`}
@@ -1940,7 +2652,7 @@ export function AsterismToolbox({
                         onSelectObject(null);
                         onChangePopover('props');
                       }}
-                      title="클릭하여 성군 속성 편집"
+                      title="클릭하여 그리기 속성 편집"
                       className="min-w-0 flex-1 text-left rounded px-1 -mx-1 py-0.5 transition-colors hover:bg-black/10 dark:hover:bg-white/10"
                     >
                       <div className={`text-[11px] font-semibold truncate ${ui.textPrimary}`}>
@@ -1954,7 +2666,7 @@ export function AsterismToolbox({
                     <button
                       type="button"
                       onClick={() => onFocusAsterismGroup(activeAsterism)}
-                      title="이 성군 위치·시야로 바로가기"
+                      title="이 그리기 위치·시야로 바로가기"
                       className={`p-1 border shrink-0 ${ui.buttonIdle}`}
                       style={{ borderRadius: '4px' }}
                     >
@@ -1963,7 +2675,7 @@ export function AsterismToolbox({
                     <button
                       type="button"
                       onClick={() => onDeleteAsterismGroup(activeAsterism.id)}
-                      title="현재 성군 삭제"
+                      title="현재 그리기 삭제"
                       className={`p-1 ${ui.textMuted} hover:text-red-400 shrink-0`}
                     >
                       <Trash2 className="w-3 h-3" />
@@ -2050,7 +2762,7 @@ export function AsterismToolbox({
                   style={{ borderRadius: '6px' }}
                 >
                   <p className={`text-[10px] leading-snug break-keep ${ui.textMuted}`}>
-                    현재 제작중인 성군이 없습니다. 성도의 항성을 클릭하거나 새 성군을 만들어 시작하세요.
+                    현재 제작중인 그리기가 없습니다. 성도의 항성을 클릭하거나 새 그리기를 만들어 시작하세요.
                   </p>
                   <button
                     type="button"
@@ -2059,7 +2771,7 @@ export function AsterismToolbox({
                     style={{ borderRadius: '4px' }}
                   >
                     <Plus className="w-3 h-3" />
-                    <span>새 성군 시작</span>
+                    <span>새 그리기 시작</span>
                   </button>
                 </div>
               )}
@@ -2070,7 +2782,7 @@ export function AsterismToolbox({
           {popover === 'optics' && (
             <div className="space-y-2">
               <p className={`text-[10px] leading-snug break-keep ${ui.textMuted}`}>
-                아이피스·파인더 시야 원을 띄우거나, 원 그리기 도구와 연동하여 시야 크기 그대로 원을 작도할 수 있습니다.
+                아이피스·파인더 시야 원을 띄우거나, 원 그리기 도구와 연동하여 시야 크기 그대로 원을 그릴 수 있습니다.
               </p>
 
               <div className="space-y-1">
@@ -2266,7 +2978,7 @@ export function AsterismToolbox({
             <div className={`flex items-center justify-between pb-2 border-b ${ui.divider}`}>
               <div className="flex items-center gap-1.5">
                 <Download className={`w-4 h-4 ${ui.accentText}`} />
-                <h3 className={`font-semibold text-sm ${ui.textPrimary}`}>성군 백업관리</h3>
+                <h3 className={`font-semibold text-sm ${ui.textPrimary}`}>그리기 백업관리</h3>
               </div>
               <button
                 type="button"
@@ -2282,7 +2994,7 @@ export function AsterismToolbox({
             {/* Individual & Full JSON Backup / Import */}
             <div className="space-y-1.5">
               <div className={`text-[11px] font-semibold ${ui.textSecondary}`}>
-                JSON 백업 파일 ({store.layers.length}그룹 · {store.asterisms.length}성군 ·{' '}
+                JSON 백업 파일 ({store.layers.length}그룹 · {store.asterisms.length}그리기 ·{' '}
                 {store.objects.length}도형)
               </div>
               <div className="grid grid-cols-2 gap-2">
@@ -2303,7 +3015,7 @@ export function AsterismToolbox({
                   style={{ borderRadius: '5px' }}
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>개별 성군 백업</span>
+                  <span>개별 그리기 백업</span>
                 </button>
                 <button
                   type="button"
@@ -2317,7 +3029,7 @@ export function AsterismToolbox({
                   style={{ borderRadius: '5px' }}
                 >
                   <Download className="w-3.5 h-3.5" />
-                  <span>전체 성군 백업</span>
+                  <span>전체 그리기 백업</span>
                 </button>
               </div>
               <button

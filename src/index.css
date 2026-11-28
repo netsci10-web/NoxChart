@@ -14,7 +14,7 @@
     margin: 0;
     padding: 0;
     overflow: hidden;
-    background-color: #0b0f19;
+    background-color: var(--ui-bg-main, #121212);
     overscroll-behavior: none;
     font-family: var(--font-sans);
     -webkit-font-smoothing: antialiased;
@@ -27,21 +27,26 @@
     font-family: var(--font-sans);
   }
 
+  input[type="checkbox"],
+  input[type="range"] {
+    accent-color: var(--ui-accent, #e4e4e7);
+  }
+
   html[data-theme="dark"],
   html[data-theme="dark"] body {
-    background-color: #0b0f19;
+    background-color: var(--ui-bg-main, #121212);
     color-scheme: dark;
   }
 
   html[data-theme="red"],
   html[data-theme="red"] body {
-    background-color: #0b0101;
+    background-color: var(--ui-bg-main, #0a0202);
     color-scheme: dark;
   }
 
   html[data-theme="white"],
   html[data-theme="white"] body {
-    background-color: #e2e8f0;
+    background-color: var(--ui-bg-main, #f8f7f4);
     color-scheme: light;
   }
 }

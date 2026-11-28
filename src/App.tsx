@@ -11,6 +11,7 @@ import {
   ChevronRight,
   ChevronUp,
   Compass,
+  Crosshair,
   Download,
   Globe2,
   Grid3x3,
@@ -24,6 +25,7 @@ import {
   Share2,
   Star,
   Sun,
+  Target,
   Trophy,
   Waypoints,
   X,
@@ -98,6 +100,7 @@ import {
   SensorExportCaptionConfig,
   Star as StarType,
   ThemeMode,
+  UiThemePresetId,
 } from './types/astronomy';
 import {
   angularDistanceDeg,
@@ -190,7 +193,14 @@ import {
   UiFontFamily,
 } from './utils/uiTypography';
 import { getSolarSystemBodies, getSolarSystemDailyTrail } from './utils/solarSystem';
-import { getUiTheme } from './utils/themeClasses';
+import {
+  applyUiThemePresetToDom,
+  getDefaultPresetForThemeMode,
+  getUiTheme,
+  getUiThemePreset,
+  isValidUiThemePresetId,
+  UI_THEME_PRESETS,
+} from './utils/themeClasses';
 
 const SESSION_STORAGE_KEY = 'sidereal_atlas_session_v1';
 const OBSERVING_LISTS_STORAGE_KEY = 'sidereal_atlas_observing_lists_v1';
@@ -224,6 +234,7 @@ const APP_PREFS_STORAGE_KEY = 'noxchart_app_prefs_v1';
 
 interface SavedAppPrefs {
   theme?: ThemeMode;
+  uiThemePreset?: UiThemePresetId;
   redIntensity?: number;
   uiFontFamily?: UiFontFamily;
   uiFontSizeStep?: number;
@@ -296,6 +307,9 @@ const DEFAULT_THEME: ThemeMode = 'dark';
 const DEFAULT_LAYERS: LayerSettings = {
   showGridEq: false,
   showGridAltAz: true,
+  showGridLabels: true,
+  gridLabelYPercent: 80,
+  gridLabelXPercent: 20,
   gridLineWidth: 0.8,
   gridLineOpacity: 0.35,
   showHorizon: true,
@@ -309,7 +323,8 @@ const DEFAULT_LAYERS: LayerSettings = {
   constellationLineOpacity: 0.35,
   constellationProjectionMode: 'modern',
   showConstellationArt: false,
-  constellationArtOpacity: 0.28,
+  constellationArtScope: 'all',
+  constellationArtOpacity: 0.45,
   showConstellationBoundaries: false,
   showConstellationNames: true,
   showSolarSystem: true,
@@ -458,6 +473,9 @@ function loadSavedAppPrefs(): SavedAppPrefs {
         const res: SavedAppPrefs = {};
         if (parsed.theme === 'dark' || parsed.theme === 'white' || parsed.theme === 'red') {
           res.theme = parsed.theme;
+        }
+        if (isValidUiThemePresetId(parsed.uiThemePreset)) {
+          res.uiThemePreset = parsed.uiThemePreset;
         }
         if (typeof parsed.redIntensity === 'number' && Number.isFinite(parsed.redIntensity)) {
           res.redIntensity = Math.max(0, Math.min(100, Math.round(parsed.redIntensity)));
@@ -752,6 +770,24 @@ export default function App() {
     if (params.has('mode')) return initialUrl.theme;
     return initialAppPrefs.theme ?? initialUrl.theme;
   });
+  const [uiThemePreset, setUiThemePreset] = useState<UiThemePresetId>(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.has('mode')) return getDefaultPresetForThemeMode(initialUrl.theme);
+    if (initialAppPrefs.uiThemePreset) return initialAppPrefs.uiThemePreset;
+    return getDefaultPresetForThemeMode(initialAppPrefs.theme ?? initialUrl.theme);
+  });
+  const handleChangeTheme = useCallback((nextMode: ThemeMode) => {
+    setTheme(nextMode);
+    setUiThemePreset((prev) => {
+      const curPreset = getUiThemePreset(prev);
+      return curPreset.chartMode === nextMode ? prev : getDefaultPresetForThemeMode(nextMode);
+    });
+  }, []);
+  const handleSelectUiThemePreset = useCallback((presetId: UiThemePresetId) => {
+    const preset = getUiThemePreset(presetId);
+    setUiThemePreset(preset.id);
+    setTheme(preset.chartMode);
+  }, []);
   const [redIntensity, setRedIntensity] = useState<number>(
     () => initialAppPrefs.redIntensity ?? 50
   );
@@ -789,13 +825,14 @@ export default function App() {
     delete htmlEl.dataset.fontEnlarged;
   }, [uiFontFamily, uiFontSizeStep]);
 
-  // Keep mobile/tablet browser chrome, iOS status bar & safe-area background synced with active theme
+  // Keep CSS theme variables, browser chrome, iOS status bar & safe-area background synced with active theme preset
   useEffect(() => {
-    const headerBg =
-      theme === 'white' ? '#E2E8F0' : theme === 'red' ? '#0B0101' : '#0B0F19';
+    const preset = getUiThemePreset(uiThemePreset);
+    applyUiThemePresetToDom(preset.id);
+    const headerBg = preset.bgMain;
     document.documentElement.dataset.theme = theme;
     document.documentElement.style.backgroundColor = headerBg;
-    document.documentElement.style.colorScheme = theme === 'white' ? 'light' : 'dark';
+    document.documentElement.style.colorScheme = preset.isLight ? 'light' : 'dark';
     document.body.style.backgroundColor = headerBg;
 
     let themeMeta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]');
@@ -814,8 +851,8 @@ export default function App() {
       appleStatusMeta.name = 'apple-mobile-web-app-status-bar-style';
       document.head.appendChild(appleStatusMeta);
     }
-    appleStatusMeta.content = theme === 'white' ? 'default' : 'black-translucent';
-  }, [theme]);
+    appleStatusMeta.content = preset.isLight ? 'default' : 'black-translucent';
+  }, [theme, uiThemePreset]);
 
   // Apply adjustable red night-vision intensity (brightness / saturation / contrast) when red theme is active
   const redOverlayAlpha = useMemo(() => {
@@ -1343,7 +1380,7 @@ export default function App() {
     const btn = themeMenuRef.current;
     if (!btn) return;
     const rect = btn.getBoundingClientRect();
-    const menuWidth = 112;
+    const menuWidth = 232;
     const centeredLeft = rect.left + rect.width / 2 - menuWidth / 2;
     const clampedLeft = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, centeredLeft));
     setThemeMenuPos({ left: clampedLeft, top: rect.bottom + 6 });
@@ -1377,6 +1414,50 @@ export default function App() {
       window.removeEventListener('resize', handleResize);
     };
   }, [themeMenuOpen, updateThemeMenuPos]);
+
+  const [fovMenuOpen, setFovMenuOpen] = useState(false);
+  const [fovMenuPos, setFovMenuPos] = useState<{ left: number; top: number } | null>(null);
+  const fovMenuRef = useRef<HTMLDivElement>(null);
+  const fovDropdownRef = useRef<HTMLDivElement>(null);
+
+  const updateFovMenuPos = useCallback(() => {
+    const btn = fovMenuRef.current;
+    if (!btn) return;
+    const rect = btn.getBoundingClientRect();
+    const menuWidth = 256;
+    const centeredLeft = rect.left + rect.width / 2 - menuWidth / 2;
+    const clampedLeft = Math.max(8, Math.min(window.innerWidth - menuWidth - 8, centeredLeft));
+    setFovMenuPos({ left: clampedLeft, top: rect.bottom + 6 });
+  }, []);
+
+  useEffect(() => {
+    if (!fovMenuOpen) return;
+    updateFovMenuPos();
+    const handleOutside = (e: MouseEvent) => {
+      const target = e.target as Node;
+      if (
+        fovMenuRef.current &&
+        !fovMenuRef.current.contains(target) &&
+        (!fovDropdownRef.current || !fovDropdownRef.current.contains(target))
+      ) {
+        setFovMenuOpen(false);
+      }
+    };
+    const handleEsc = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        setFovMenuOpen(false);
+      }
+    };
+    const handleResize = () => updateFovMenuPos();
+    document.addEventListener('mousedown', handleOutside);
+    window.addEventListener('keydown', handleEsc);
+    window.addEventListener('resize', handleResize);
+    return () => {
+      document.removeEventListener('mousedown', handleOutside);
+      window.removeEventListener('keydown', handleEsc);
+      window.removeEventListener('resize', handleResize);
+    };
+  }, [fovMenuOpen, updateFovMenuPos]);
 
   const [rulerMode, setRulerMode] = useState(false);
   const [rulerMeasurement, setRulerMeasurement] = useState<RulerMeasurement | null>(null);
@@ -1865,6 +1946,7 @@ export default function App() {
     try {
       const prefs: SavedAppPrefs = {
         theme,
+        uiThemePreset,
         redIntensity,
         uiFontFamily,
         uiFontSizeStep,
@@ -1880,6 +1962,7 @@ export default function App() {
     }
   }, [
     theme,
+    uiThemePreset,
     redIntensity,
     uiFontFamily,
     uiFontSizeStep,
@@ -2067,7 +2150,7 @@ export default function App() {
 
             const basePrefs = basePayload.root.prefs;
             if (nextTheme !== (basePrefs?.theme ?? DEFAULT_THEME)) {
-              setTheme(nextTheme);
+              handleChangeTheme(nextTheme);
               changed = true;
             }
             if (
@@ -5193,6 +5276,7 @@ export default function App() {
       dec: defaultHzCenter.dec,
     });
     setTheme(DEFAULT_THEME);
+    setUiThemePreset(getDefaultPresetForThemeMode(DEFAULT_THEME));
     setLayers({
       ...DEFAULT_LAYERS,
       dsoCategories: { ...DEFAULT_LAYERS.dsoCategories },
@@ -5441,7 +5525,13 @@ export default function App() {
 
   const handleChangeAsterismTool = useCallback((tool: AsterismTool) => {
     setAsterismDraft(null);
-    setAsterismTool((prev) => (tool !== 'select' && prev === tool ? 'select' : tool));
+    setAsterismTool((prev) => {
+      const next = tool !== 'select' && prev === tool ? 'select' : tool;
+      if (next !== 'select') {
+        setAsterismSelectedId(null);
+      }
+      return next;
+    });
   }, []);
 
   const handleCloseAsterismMode = useCallback(() => {
@@ -5486,6 +5576,7 @@ export default function App() {
       setAsterismSelectedId(null);
       setAsterismDraft(null);
       setAsterismTool('select');
+      setDetailWindowOpen(false);
       setAsterismMode(true);
       setAsterismPopover('layers');
     },
@@ -5498,6 +5589,7 @@ export default function App() {
       setAsterismSelectedId(objectId);
       setAsterismDraft(null);
       setAsterismTool('select');
+      setDetailWindowOpen(false);
       setAsterismMode(true);
       setAsterismPopover('props');
     },
@@ -5574,11 +5666,11 @@ export default function App() {
       if (!target) return false;
       const childCount = cur.objects.filter((o) => o.asterismId === asterismId).length;
       const ok = await requestConfirm({
-        title: '성군 삭제 확인',
-        message: `‘${target.name}’ 성군을 삭제하시겠습니까?`,
+        title: '그리기 삭제 확인',
+        message: `‘${target.name}’ 그리기를 삭제하시겠습니까?`,
         detail:
           childCount > 0
-            ? `이 성군에 포함된 도형 요소 ${childCount}개도 함께 삭제됩니다.`
+            ? `이 그리기에 포함된 도형 요소 ${childCount}개도 함께 삭제됩니다.`
             : undefined,
         confirmLabel: '삭제',
       });
@@ -5731,7 +5823,10 @@ export default function App() {
   );
 
   const finalizeAsterismVertices = useCallback(
-    (tool: 'polyline' | 'polygon' | 'circle' | 'arrow', rawVertices: AsterismVertex[]) => {
+    (
+      tool: 'polyline' | 'polygon' | 'circle' | 'arrow' | 'divider',
+      rawVertices: AsterismVertex[]
+    ) => {
       if (tool === 'circle') {
         if (rawVertices.length < 2) {
           setAsterismDraft(null);
@@ -5777,6 +5872,13 @@ export default function App() {
           smooth,
           fillAlpha: tool === 'polygon' ? s.defaultFillAlpha : undefined,
           extensionFactor: tool === 'arrow' ? s.defaultExtensionFactor : undefined,
+          arrowStart: tool === 'arrow' ? Boolean(s.defaultArrowStart) : undefined,
+          arrowEnd: tool === 'arrow' ? s.defaultArrowEnd !== false : undefined,
+          divisionCount: tool === 'divider' ? s.defaultDivisionCount : undefined,
+          divisionShowLabels:
+            tool === 'divider' ? s.defaultDivisionShowLabels !== false : undefined,
+          divisionReverseLabels:
+            tool === 'divider' ? Boolean(s.defaultDivisionReverseLabels) : undefined,
           visibleFovRange: [asterism.visibleFovRange[0], asterism.visibleFovRange[1]],
           label: getNextShapeName(tool, smooth, base.objects, asterism.id),
           labelAnchor: s.defaultLabelAnchor,
@@ -5806,7 +5908,8 @@ export default function App() {
         asterismTool !== 'polyline' &&
         asterismTool !== 'polygon' &&
         asterismTool !== 'circle' &&
-        asterismTool !== 'arrow'
+        asterismTool !== 'arrow' &&
+        asterismTool !== 'divider'
       ) {
         return;
       }
@@ -5821,6 +5924,10 @@ export default function App() {
       const nextVerts = [...asterismDraft.vertices, vertex];
       if (asterismTool === 'arrow' && nextVerts.length >= 2) {
         finalizeAsterismVertices('arrow', nextVerts);
+        return;
+      }
+      if (asterismTool === 'divider' && nextVerts.length >= 2) {
+        finalizeAsterismVertices('divider', nextVerts);
         return;
       }
       if (asterismTool === 'circle' && nextVerts.length >= 2) {
@@ -6147,11 +6254,11 @@ export default function App() {
       if (!target) return false;
       const grpCount = cur.asterisms.filter((g) => g.layerId === layerId).length;
       const ok = await requestConfirm({
-        title: '성군 그룹 삭제 확인',
+        title: '그리기 그룹 삭제 확인',
         message: `‘${target.name}’ 그룹을 삭제하시겠습니까?`,
         detail:
           grpCount > 0
-            ? `이 그룹의 성군 ${grpCount}개는 기본 그룹으로 이동됩니다.`
+            ? `이 그룹의 그리기 ${grpCount}개는 기본 그룹으로 이동됩니다.`
             : undefined,
         confirmLabel: '삭제',
       });
@@ -6439,6 +6546,8 @@ export default function App() {
       if (prev) {
         setAsterismSelectedId(null);
         setAsterismPopover('none');
+      } else {
+        setDetailWindowOpen(false);
       }
       return !prev;
     });
@@ -6533,6 +6642,7 @@ export default function App() {
           onScroll={() => {
             if (cardinalMenuOpen) setCardinalMenuOpen(false);
             if (themeMenuOpen) setThemeMenuOpen(false);
+            if (fovMenuOpen) setFovMenuOpen(false);
           }}
           onWheel={(e) => {
             const el = headerRef.current;
@@ -6562,13 +6672,7 @@ export default function App() {
         <div className="flex items-center gap-2 shrink-0">
           {/* Equatorial vs Horizontal Coordinate System Icon-Only Switcher */}
           <div
-            className={`flex items-center gap-1 p-0.5 rounded-lg border ${
-              theme === 'white'
-                ? 'bg-slate-100 border-slate-300'
-                : theme === 'red'
-                ? 'bg-[#100101] border-[#420C0C]'
-                : 'bg-[#0B1220] border-[#25334D]'
-            }`}
+            className="flex items-center gap-1 p-0.5 rounded-lg border bg-[var(--ui-bg-surface)] border-[var(--ui-border)]"
             role="group"
             aria-label="좌표계 전환"
           >
@@ -6577,18 +6681,10 @@ export default function App() {
               onClick={() => handleSelectCoordSystem('equatorial')}
               title="적도좌표계 (RA/Dec · 천구의 북극 위)"
               aria-label="적도좌표계"
-              className={`w-8 h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+              className={`w-8 h-7 rounded-md flex items-center justify-center transition-colors shrink-0 cursor-pointer ${
                 view.coordSystem === 'equatorial'
-                  ? theme === 'white'
-                    ? 'bg-blue-700 text-white'
-                    : theme === 'red'
-                    ? 'bg-[#7F1D1D] text-[#FF5252]'
-                    : 'bg-[#0094B8] text-white'
-                  : theme === 'white'
-                  ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-200'
-                  : theme === 'red'
-                  ? 'text-[#B83232] hover:text-[#FF4D4D] hover:bg-[#220404]'
-                  : 'text-slate-400 hover:text-white hover:bg-[#182438]'
+                  ? 'bg-[var(--ui-accent)] text-[var(--ui-accent-contrast)]'
+                  : 'text-[var(--ui-text-muted)] hover:text-[var(--ui-text-primary)] hover:bg-[var(--ui-bg-hover)]'
               }`}
             >
               <Globe2 className="w-4 h-4" />
@@ -6598,18 +6694,10 @@ export default function App() {
               onClick={() => handleSelectCoordSystem('horizontal')}
               title="지평좌표계 (Alt/Az · 관측지 지평선 수평 · 지형 활성화)"
               aria-label="지평좌표계"
-              className={`w-8 h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+              className={`w-8 h-7 rounded-md flex items-center justify-center transition-colors shrink-0 cursor-pointer ${
                 view.coordSystem === 'horizontal'
-                  ? theme === 'white'
-                    ? 'bg-blue-700 text-white'
-                    : theme === 'red'
-                    ? 'bg-[#7F1D1D] text-[#FF5252]'
-                    : 'bg-[#0094B8] text-white'
-                  : theme === 'white'
-                  ? 'text-slate-500 hover:text-slate-900 hover:bg-slate-200'
-                  : theme === 'red'
-                  ? 'text-[#B83232] hover:text-[#FF4D4D] hover:bg-[#220404]'
-                  : 'text-slate-400 hover:text-white hover:bg-[#182438]'
+                  ? 'bg-[var(--ui-accent)] text-[var(--ui-accent-contrast)]'
+                  : 'text-[var(--ui-text-muted)] hover:text-[var(--ui-text-primary)] hover:bg-[var(--ui-bg-hover)]'
               }`}
             >
               <Mountain className="w-4 h-4" />
@@ -6621,16 +6709,8 @@ export default function App() {
             title="지평선 아래 지형 실루엣 표시"
             className={`h-8 px-2 rounded-lg border flex items-center gap-1.5 text-[11px] font-medium cursor-pointer select-none whitespace-nowrap shrink-0 transition-colors ${
               layers.showTerrain
-                ? theme === 'white'
-                  ? 'bg-blue-50 border-blue-400 text-blue-800'
-                  : theme === 'red'
-                  ? 'bg-[#2A0505] border-[#B91C1C] text-[#FF6B6B]'
-                  : 'bg-cyan-500/15 border-cyan-400/55 text-cyan-200'
-                : theme === 'white'
-                ? 'bg-slate-100 border-slate-300 text-slate-600 hover:bg-white'
-                : theme === 'red'
-                ? 'bg-[#100101] border-[#420C0C] text-[#B83232] hover:bg-[#220404]'
-                : 'bg-[#0B1220] border-[#25334D] text-slate-400 hover:text-slate-200 hover:bg-[#182438]'
+                ? 'bg-[var(--ui-bg-hover)] border-[var(--ui-accent)] text-[var(--ui-accent-text)]'
+                : 'bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-secondary)] hover:text-[var(--ui-text-primary)] hover:bg-[var(--ui-bg-hover)]'
             }`}
           >
             <input
@@ -6644,13 +6724,7 @@ export default function App() {
                   showHorizon: checked ? true : prev.showHorizon,
                 }));
               }}
-              className={`w-3.5 h-3.5 cursor-pointer ${
-                theme === 'white'
-                  ? 'accent-blue-600'
-                  : theme === 'red'
-                  ? 'accent-red-500'
-                  : 'accent-cyan-400'
-              }`}
+              className="w-3.5 h-3.5 cursor-pointer"
             />
             <span>지형</span>
           </label>
@@ -6664,18 +6738,10 @@ export default function App() {
               aria-label="방위 바로가기 메뉴"
               aria-expanded={cardinalMenuOpen}
               aria-haspopup="menu"
-              className={`h-8 px-2 rounded-lg border flex items-center justify-center gap-1 transition-colors shrink-0 ${
+              className={`h-8 px-2 rounded-lg border flex items-center justify-center gap-1 transition-colors shrink-0 cursor-pointer ${
                 cardinalMenuOpen
-                  ? theme === 'white'
-                    ? 'bg-blue-700 border-blue-700 text-white'
-                    : theme === 'red'
-                    ? 'bg-[#7F1D1D] border-[#EF4444] text-[#FF5252]'
-                    : 'bg-[#0094B8] border-[#22D3EE] text-white'
-                  : theme === 'white'
-                  ? 'bg-slate-100 border-slate-300 text-slate-600 hover:text-blue-700 hover:bg-white'
-                  : theme === 'red'
-                  ? 'bg-[#100101] border-[#420C0C] text-[#DC2626] hover:text-[#FF5252] hover:bg-[#220404]'
-                  : 'bg-[#0B1220] border-[#25334D] text-slate-300 hover:text-[#22D3EE] hover:bg-[#182438]'
+                  ? 'bg-[var(--ui-accent)] border-[var(--ui-accent)] text-[var(--ui-accent-contrast)]'
+                  : 'bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-secondary)] hover:text-[var(--ui-accent-text)] hover:bg-[var(--ui-bg-hover)]'
               }`}
             >
               <Compass className="w-4 h-4 shrink-0" />
@@ -6694,13 +6760,7 @@ export default function App() {
                   role="menu"
                   aria-label="동서남북 방위 선택"
                   style={{ left: cardinalMenuPos.left, top: cardinalMenuPos.top }}
-                  className={`fixed z-[120] min-w-28 p-1 rounded-lg border shadow-xl flex flex-col gap-0.5 ${
-                    theme === 'white'
-                      ? 'bg-white border-slate-300 text-slate-700'
-                      : theme === 'red'
-                      ? 'bg-[#100101] border-[#420C0C] text-[#DC2626]'
-                      : 'bg-[#0B1220] border-[#25334D] text-slate-200'
-                  }`}
+                  className="fixed z-[120] min-w-28 p-1 rounded-lg border shadow-xl flex flex-col gap-0.5 bg-[var(--ui-bg-main)] border-[var(--ui-border)] text-[var(--ui-text-primary)]"
                 >
                   {(
                     [
@@ -6721,13 +6781,7 @@ export default function App() {
                         setCardinalMenuOpen(false);
                       }}
                       title={`${dir.full} 하늘 바로가기 (방위각 ${dir.az}° · 고도 30° · 화각 60°)`}
-                      className={`w-full h-7 px-2 rounded-md flex items-center justify-between gap-2 text-xs font-semibold whitespace-nowrap transition-colors ${
-                        theme === 'white'
-                          ? 'text-slate-700 hover:text-blue-700 hover:bg-slate-100'
-                          : theme === 'red'
-                          ? 'text-[#DC2626] hover:text-[#FF5252] hover:bg-[#220404]'
-                          : 'text-slate-200 hover:text-[#22D3EE] hover:bg-[#182438]'
-                      }`}
+                      className="w-full h-7 px-2 rounded-md flex items-center justify-between gap-2 text-xs font-semibold whitespace-nowrap transition-colors cursor-pointer text-[var(--ui-text-primary)] hover:text-[var(--ui-accent-text)] hover:bg-[var(--ui-bg-hover)]"
                     >
                       <span>{dirLabel}</span>
                       <span className="font-mono text-[10px] opacity-65 tabular-nums">
@@ -6743,37 +6797,15 @@ export default function App() {
 
           {/* Limiting Magnitude Display + Slider (2-row compact layout: badges on top, slider below) */}
           <div
-            className={`flex flex-col justify-center gap-0.5 rounded-lg border px-2 py-0.5 shrink-0 ${
-              theme === 'white'
-                ? 'bg-slate-100 border-slate-300 text-slate-700'
-                : theme === 'red'
-                ? 'bg-[#100101] border-[#420C0C] text-[#DC2626]'
-                : 'bg-[#0B1220] border-[#25334D] text-slate-300'
-            }`}
+            className="flex flex-col justify-center gap-0.5 rounded-lg border px-2 py-0.5 shrink-0 bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-secondary)]"
             title="현재 시야각 기준 항성 및 DSO 한계등급 조절"
           >
             <div className="flex items-center justify-center gap-1 leading-none">
-              <span
-                className={`rounded border px-1 py-[1px] flex items-center gap-0.5 font-mono text-[10px] font-bold tabular-nums whitespace-nowrap ${
-                  theme === 'white'
-                    ? 'bg-sky-50 border-sky-200 text-sky-700'
-                    : theme === 'red'
-                    ? 'bg-[#200303] border-[#5A1212] text-[#FF3B3B]'
-                    : 'bg-[#162235] border-[#2C3E5C] text-[#22D3EE]'
-                }`}
-              >
+              <span className="rounded border px-1 py-[1px] flex items-center gap-0.5 font-mono text-[10px] font-bold tabular-nums whitespace-nowrap bg-[var(--ui-bg-main)] border-[var(--ui-border)] text-[var(--ui-accent-text)]">
                 <Star className="w-2.5 h-2.5 fill-current shrink-0" />
                 <span>{magLimit.toFixed(1)}</span>
               </span>
-              <span
-                className={`rounded border px-1 py-[1px] flex items-center font-mono text-[10px] font-bold tabular-nums whitespace-nowrap ${
-                  theme === 'white'
-                    ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                    : theme === 'red'
-                    ? 'bg-[#200303] border-[#5A1212] text-[#EF4444]'
-                    : 'bg-[#162235] border-[#2C3E5C] text-[#10B981]'
-                }`}
-              >
+              <span className="rounded border px-1 py-[1px] flex items-center font-mono text-[10px] font-bold tabular-nums whitespace-nowrap bg-[var(--ui-bg-main)] border-[var(--ui-border)] text-[var(--ui-text-secondary)]">
                 DSO{' '}
                 {layers.showDso
                   ? dsoMagLimit.toFixed(1)
@@ -6806,9 +6838,7 @@ export default function App() {
                 }}
                 aria-label="한계 등급 보정"
                 title="한계 등급 보정 (-3.0m ~ +3.0m)"
-                className={`w-[68px] h-1.5 cursor-pointer ${
-                  theme === 'red' ? 'accent-red-600' : 'accent-cyan-500'
-                }`}
+                className="w-[68px] h-1.5 cursor-pointer"
               />
               <button
                 type="button"
@@ -6816,14 +6846,10 @@ export default function App() {
                   setLayers((p) => ({ ...p, magOffset: 0, dsoMagOffset: 0 }))
                 }
                 title="클릭하여 한계 등급 보정 초기화 (0.0m)"
-                className={`font-mono text-[9.5px] tabular-nums whitespace-nowrap w-7 text-right hover:opacity-100 transition-opacity ${
+                className={`font-mono text-[9.5px] tabular-nums whitespace-nowrap w-7 text-right hover:opacity-100 transition-opacity cursor-pointer ${
                   layers.magOffset !== 0 || layers.dsoMagOffset !== 0
-                    ? theme === 'white'
-                      ? 'text-sky-700 font-semibold'
-                      : theme === 'red'
-                      ? 'text-[#FF3B3B] font-semibold'
-                      : 'text-cyan-400 font-semibold'
-                    : 'opacity-70'
+                    ? 'text-[var(--ui-accent-text)] font-semibold'
+                    : 'text-[var(--ui-text-muted)]'
                 }`}
               >
                 {layers.magOffset >= 0
@@ -6836,13 +6862,7 @@ export default function App() {
 
           {/* Temporary Hide Sky Layers — 7 Individual Category Icons */}
           <div
-            className={`flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
-              theme === 'white'
-                ? 'bg-slate-100 border-slate-300'
-                : theme === 'red'
-                ? 'bg-[#100101] border-[#420C0C]'
-                : 'bg-[#0B1220] border-[#25334D]'
-            }`}
+            className="flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 bg-[var(--ui-bg-surface)] border-[var(--ui-border)]"
             role="group"
             aria-label="레이어 일시 숨김 (별자리, 태양계, 항성, 이중성, 심우주, 좌표그리드, 하이브리드 실사배경)"
           >
@@ -6988,16 +7008,8 @@ export default function App() {
                   ? 'bg-[#450A0A] border-[#EF4444] text-[#FCA5A5]'
                   : 'bg-amber-500/20 border-amber-400/75 text-amber-300'
                 : item.configuredOn
-                ? theme === 'white'
-                  ? 'border-transparent text-sky-700 hover:bg-slate-200/85'
-                  : theme === 'red'
-                  ? 'border-transparent text-[#FF4D4D] hover:bg-[#220404]'
-                  : 'border-transparent text-cyan-300 hover:bg-[#182438]'
-                : theme === 'white'
-                ? 'border-transparent text-slate-400 opacity-55 hover:opacity-90 hover:bg-slate-200/60'
-                : theme === 'red'
-                ? 'border-transparent text-[#7F1D1D] opacity-60 hover:opacity-95 hover:bg-[#1B0303]'
-                : 'border-transparent text-slate-500 opacity-55 hover:opacity-90 hover:bg-[#141E30]';
+                ? 'border-transparent text-[var(--ui-accent-text)] hover:bg-[var(--ui-bg-hover)]'
+                : 'border-transparent text-[var(--ui-text-muted)] opacity-55 hover:opacity-95 hover:bg-[var(--ui-bg-hover)]';
 
               return (
                 <button
@@ -7037,31 +7049,357 @@ export default function App() {
               );
             })}
           </div>
+
+          {/* Optical FOV Rings Quick-Check Dropdown */}
+          {(() => {
+            const activeFovRingCount =
+              Number(optics.showCrosshair) +
+              Number(optics.showTelrad) +
+              Number(optics.showFinder7x50) +
+              Number(optics.showEyepiece) +
+              Number(optics.showSensorBox);
+            const myFinders = equipmentLocker.items.filter((it) => it.category === 'finder');
+            const activeFinder =
+              myFinders.length > 0
+                ? myFinders.find((f) => f.id === equipmentLocker.activeIds.finder) ?? myFinders[0]
+                : null;
+            const finderFov =
+              activeFinder?.fovDeg && activeFinder.fovDeg > 0 ? activeFinder.fovDeg : 7.0;
+            const finderTitle = activeFinder ? activeFinder.name : '7×50 파인더';
+            const finderCustomColor =
+              activeFinder?.finderColor && /^#[0-9a-fA-F]{6}$/.test(activeFinder.finderColor)
+                ? activeFinder.finderColor
+                : undefined;
+            const finderCrosshair = Boolean(activeFinder?.finderCrosshair);
+            const mOn = Boolean(optics.sensorMosaicSupported);
+            const sw = mOn ? Math.max(1, optics.sensorMosaicScaleW ?? 1) : 1;
+            const sh = mOn ? Math.max(1, optics.sensorMosaicScaleH ?? 1) : 1;
+            const sensorEffW = optics.sensorWidthDeg * sw;
+            const sensorEffH = optics.sensorHeightDeg * sh;
+
+            return (
+              <div ref={fovMenuRef} className="relative shrink-0">
+                <button
+                  type="button"
+                  onClick={() => setFovMenuOpen((o) => !o)}
+                  title={
+                    activeFovRingCount > 0
+                      ? `광학계 시야링 (${activeFovRingCount}개 표시 중 · 클릭하여 선택)`
+                      : '광학계 시야링 표시 선택'
+                  }
+                  aria-label="광학계 시야링 메뉴"
+                  aria-expanded={fovMenuOpen}
+                  aria-haspopup="menu"
+                  className={`relative h-8 px-2 rounded-lg border flex items-center justify-center gap-1 transition-colors shrink-0 cursor-pointer ${
+                    fovMenuOpen
+                      ? 'bg-[var(--ui-accent)] border-[var(--ui-accent)] text-[var(--ui-accent-contrast)]'
+                      : activeFovRingCount > 0
+                      ? 'bg-[var(--ui-bg-hover)] border-[var(--ui-accent)] text-[var(--ui-accent-text)] hover:opacity-95'
+                      : 'bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-secondary)] hover:text-[var(--ui-accent-text)] hover:bg-[var(--ui-bg-hover)]'
+                  }`}
+                >
+                  <Target className="w-4 h-4 shrink-0" />
+                  <ChevronDown
+                    className={`w-3 h-3 shrink-0 transition-transform ${
+                      fovMenuOpen ? 'rotate-180' : ''
+                    }`}
+                  />
+                  {activeFovRingCount > 0 && (
+                    <span className="absolute -top-1 -right-1 min-w-[14px] h-[14px] px-0.5 rounded-full text-[8.5px] font-mono font-bold leading-[14px] text-center bg-[var(--ui-accent)] text-[var(--ui-accent-contrast)]">
+                      {activeFovRingCount}
+                    </span>
+                  )}
+                </button>
+
+                {fovMenuOpen &&
+                  fovMenuPos &&
+                  createPortal(
+                    <div
+                      ref={fovDropdownRef}
+                      role="menu"
+                      aria-label="광학계 시야링 선택"
+                      style={{ left: fovMenuPos.left, top: fovMenuPos.top }}
+                      className="fixed z-[120] w-64 p-2 rounded-lg border shadow-xl text-xs space-y-1.5 bg-[var(--ui-bg-main)] border-[var(--ui-border)] text-[var(--ui-text-primary)]"
+                    >
+                      <div
+                        className={`flex items-center justify-between gap-2 pb-1.5 border-b ${ui.divider}`}
+                      >
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <Target className={`w-3.5 h-3.5 shrink-0 ${ui.accentText}`} />
+                          <span className={`font-semibold text-[11px] truncate ${ui.textPrimary}`}>
+                            광학계 시야링
+                          </span>
+                          <span className={`font-mono text-[9.5px] tabular-nums ${ui.textMuted}`}>
+                            {activeFovRingCount > 0 ? `${activeFovRingCount}개` : '꺼짐'}
+                          </span>
+                        </div>
+                        {activeFovRingCount > 0 && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setOptics((p) => ({
+                                ...p,
+                                showCrosshair: false,
+                                showTelrad: false,
+                                showFinder7x50: false,
+                                showEyepiece: false,
+                                showSensorBox: false,
+                              }))
+                            }
+                            className={`px-1.5 py-0.5 border rounded text-[9.5px] font-medium whitespace-nowrap cursor-pointer transition-colors ${ui.buttonIdle}`}
+                          >
+                            전체 끄기
+                          </button>
+                        )}
+                      </div>
+
+                      <div className="space-y-1">
+                        {/* 1. 중앙 십자선 */}
+                        <label
+                          className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md cursor-pointer transition-colors border ${
+                            optics.showCrosshair
+                              ? theme === 'white'
+                                ? 'bg-sky-50 border-sky-200'
+                                : theme === 'red'
+                                ? 'bg-[#1D0505] border-[#5A1212]'
+                                : 'bg-[#0C2130] border-[#1A4B64]'
+                              : theme === 'white'
+                              ? 'border-transparent hover:bg-slate-100'
+                              : 'border-transparent hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <Crosshair
+                              className={`w-3.5 h-3.5 shrink-0 ${
+                                theme === 'red' ? 'text-[#EF4444]' : 'text-cyan-400'
+                              }`}
+                            />
+                            <span className={`truncate text-[11px] tracking-[-0.04em] ${ui.textPrimary}`}>
+                              중앙 십자선
+                            </span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={optics.showCrosshair}
+                            onChange={(e) =>
+                              setOptics((p) => ({ ...p, showCrosshair: e.target.checked }))
+                            }
+                            className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
+                          />
+                        </label>
+
+                        {/* 2. Telrad */}
+                        <label
+                          className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md cursor-pointer transition-colors border ${
+                            optics.showTelrad
+                              ? theme === 'white'
+                                ? 'bg-rose-50 border-rose-200'
+                                : theme === 'red'
+                                ? 'bg-[#1D0505] border-[#5A1212]'
+                                : 'bg-[#261117] border-[#612331]'
+                              : theme === 'white'
+                              ? 'border-transparent hover:bg-slate-100'
+                              : 'border-transparent hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <span
+                              className={`w-3 h-3 rounded-full border-2 shrink-0 inline-block ${
+                                theme === 'red' ? 'border-[#DC2626]' : 'border-rose-500'
+                              }`}
+                              aria-hidden="true"
+                            />
+                            <span className={`truncate text-[11px] tracking-[-0.04em] ${ui.textSecondary}`}>
+                              Telrad (0.5°·2°·4°)
+                            </span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={optics.showTelrad}
+                            onChange={(e) =>
+                              setOptics((p) => ({ ...p, showTelrad: e.target.checked }))
+                            }
+                            className="w-3.5 h-3.5 shrink-0 accent-rose-500 cursor-pointer"
+                          />
+                        </label>
+
+                        {/* 3. 광학 파인더 */}
+                        <label
+                          className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md cursor-pointer transition-colors border ${
+                            optics.showFinder7x50
+                              ? theme === 'white'
+                                ? 'bg-sky-50 border-sky-200'
+                                : theme === 'red'
+                                ? 'bg-[#1D0505] border-[#5A1212]'
+                                : 'bg-[#0C2130] border-[#1A4B64]'
+                              : theme === 'white'
+                              ? 'border-transparent hover:bg-slate-100'
+                              : 'border-transparent hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <span
+                              className={`w-3 h-3 rounded-full border-2 shrink-0 inline-flex items-center justify-center relative ${
+                                finderCustomColor
+                                  ? ''
+                                  : theme === 'red'
+                                  ? 'border-[#EF4444]'
+                                  : 'border-cyan-400'
+                              }`}
+                              style={finderCustomColor ? { borderColor: finderCustomColor } : undefined}
+                              aria-hidden="true"
+                            >
+                              {finderCrosshair && (
+                                <>
+                                  <span
+                                    className="absolute inset-x-0 top-1/2 -translate-y-1/2 h-[1px]"
+                                    style={{
+                                      backgroundColor:
+                                        finderCustomColor ??
+                                        (theme === 'red' ? '#EF4444' : '#22D3EE'),
+                                    }}
+                                  />
+                                  <span
+                                    className="absolute inset-y-0 left-1/2 -translate-x-1/2 w-[1px]"
+                                    style={{
+                                      backgroundColor:
+                                        finderCustomColor ??
+                                        (theme === 'red' ? '#EF4444' : '#22D3EE'),
+                                    }}
+                                  />
+                                </>
+                              )}
+                            </span>
+                            <span className={`truncate text-[11px] tracking-[-0.04em] ${ui.textSecondary}`}>
+                              {finderTitle} ({finderFov.toFixed(1)}°)
+                            </span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={optics.showFinder7x50}
+                            onChange={(e) =>
+                              setOptics((p) => ({
+                                ...p,
+                                showFinder7x50: e.target.checked,
+                                finderFovDeg: finderFov,
+                                finderLabel: finderTitle,
+                                finderColor: finderCustomColor,
+                                finderCrosshair,
+                              }))
+                            }
+                            className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
+                          />
+                        </label>
+
+                        {/* 4. 망원경 아이피스 */}
+                        <label
+                          className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md cursor-pointer transition-colors border ${
+                            optics.showEyepiece
+                              ? theme === 'white'
+                                ? 'bg-amber-50 border-amber-300'
+                                : theme === 'red'
+                                ? 'bg-[#1D0505] border-[#5A1212]'
+                                : 'bg-[#261B0A] border-[#784912]'
+                              : theme === 'white'
+                              ? 'border-transparent hover:bg-slate-100'
+                              : 'border-transparent hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <span
+                              className={`w-3 h-3 rounded-full border-2 shrink-0 inline-block ${
+                                theme === 'red' ? 'border-[#B91C1C]' : 'border-amber-400'
+                              }`}
+                              aria-hidden="true"
+                            />
+                            <span className={`truncate text-[11px] tracking-[-0.04em] ${ui.textSecondary}`}>
+                              망원경 아이피스 ({optics.eyepieceFovDeg.toFixed(2)}°)
+                            </span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={optics.showEyepiece}
+                            onChange={(e) =>
+                              setOptics((p) => ({ ...p, showEyepiece: e.target.checked }))
+                            }
+                            className="w-3.5 h-3.5 shrink-0 accent-amber-500 cursor-pointer"
+                          />
+                        </label>
+
+                        {/* 5. 촬영 센서 화각 프레임 */}
+                        <label
+                          className={`flex items-center justify-between gap-1.5 px-2 py-1.5 rounded-md cursor-pointer transition-colors border ${
+                            optics.showSensorBox
+                              ? theme === 'white'
+                                ? 'bg-emerald-50 border-emerald-300'
+                                : theme === 'red'
+                                ? 'bg-[#1D0505] border-[#5A1212]'
+                                : 'bg-[#092320] border-[#155E54]'
+                              : theme === 'white'
+                              ? 'border-transparent hover:bg-slate-100'
+                              : 'border-transparent hover:bg-white/5'
+                          }`}
+                        >
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <span
+                              className={`w-3 h-2.5 rounded-[2px] border-2 shrink-0 inline-block ${
+                                theme === 'red' ? 'border-[#EF4444]' : 'border-emerald-400'
+                              }`}
+                              aria-hidden="true"
+                            />
+                            <span className={`truncate text-[11px] tracking-[-0.04em] ${ui.textSecondary}`}>
+                              촬영 센서 화각 ({sensorEffW.toFixed(2)}°×{sensorEffH.toFixed(2)}°)
+                            </span>
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={optics.showSensorBox}
+                            onChange={(e) =>
+                              setOptics((p) => ({ ...p, showSensorBox: e.target.checked }))
+                            }
+                            className="w-3.5 h-3.5 shrink-0 accent-emerald-500 cursor-pointer"
+                          />
+                        </label>
+                      </div>
+
+                      <div className={`pt-1.5 border-t ${ui.divider}`}>
+                        <label className="flex items-center justify-between gap-1.5 px-1 cursor-pointer">
+                          <span className={`text-[10.5px] tracking-[-0.04em] ${ui.textMuted}`}>
+                            시야링 옆 종류·시야각 표시
+                          </span>
+                          <input
+                            type="checkbox"
+                            checked={optics.showReticleLabel !== false}
+                            onChange={(e) =>
+                              setOptics((p) => ({ ...p, showReticleLabel: e.target.checked }))
+                            }
+                            className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
+                          />
+                        </label>
+                      </div>
+                    </div>,
+                    document.body
+                  )}
+              </div>
+            );
+          })()}
         </div>
 
         {/* Right: Theme Dropdown, Standalone Ruler (척도), Grouped Tool Box (관측목록/챌린지/작도), URL Share, PNG Export, Sensor FOV PNG, Print */}
         <div className="flex items-center gap-1 sm:gap-1.5 shrink-0">
-          {/* Single-Icon Screen Theme Dropdown (same pattern as Cardinal Direction selector) */}
+          {/* Single-Icon Screen Theme Preset Dropdown (9 Curated Themes) */}
           <div ref={themeMenuRef} className="relative shrink-0">
             <button
               type="button"
               onClick={() => setThemeMenuOpen((o) => !o)}
-              title="화면 테마 선택 (다크 · 화이트 · 적색)"
+              title={`화면 테마 선택 (현재: ${getUiThemePreset(uiThemePreset).name})`}
               aria-label="화면 테마 메뉴"
               aria-expanded={themeMenuOpen}
               aria-haspopup="menu"
               className={`h-8 px-2 rounded-lg border flex items-center justify-center gap-1 transition-colors shrink-0 cursor-pointer ${
                 themeMenuOpen
-                  ? theme === 'white'
-                    ? 'bg-blue-700 border-blue-700 text-white'
-                    : theme === 'red'
-                    ? 'bg-[#7F1D1D] border-[#EF4444] text-[#FF5252]'
-                    : 'bg-[#0094B8] border-[#22D3EE] text-white'
-                  : theme === 'white'
-                  ? 'bg-slate-100 border-slate-300 text-slate-600 hover:text-blue-700 hover:bg-white'
-                  : theme === 'red'
-                  ? 'bg-[#100101] border-[#420C0C] text-[#DC2626] hover:text-[#FF5252] hover:bg-[#220404]'
-                  : 'bg-[#0B1220] border-[#25334D] text-slate-300 hover:text-[#22D3EE] hover:bg-[#182438]'
+                  ? 'bg-[var(--ui-accent)] border-[var(--ui-accent)] text-[var(--ui-accent-contrast)]'
+                  : 'bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-secondary)] hover:text-[var(--ui-accent-text)] hover:bg-[var(--ui-bg-hover)]'
               }`}
             >
               {theme === 'dark' ? (
@@ -7089,63 +7427,49 @@ export default function App() {
                   role="menu"
                   aria-label="화면 테마 선택"
                   style={{ left: themeMenuPos.left, top: themeMenuPos.top }}
-                  className={`fixed z-[120] w-28 p-1 rounded-lg border shadow-xl flex flex-col gap-0.5 ${
-                    theme === 'white'
-                      ? 'bg-white border-slate-300 text-slate-700'
-                      : theme === 'red'
-                      ? 'bg-[#100101] border-[#420C0C] text-[#DC2626]'
-                      : 'bg-[#0B1220] border-[#25334D] text-slate-200'
-                  }`}
+                  className="fixed z-[120] w-[232px] max-h-[340px] overflow-y-auto astro-scroll p-1 rounded-lg border shadow-xl flex flex-col gap-0.5 bg-[var(--ui-bg-main)] border-[var(--ui-border)] text-[var(--ui-text-primary)]"
                 >
-                  {(
-                    [
-                      { id: 'dark', label: '다크', desc: '다크 모드' },
-                      { id: 'white', label: '화이트', desc: '인쇄용 화이트 모드' },
-                      { id: 'red', label: '적색', desc: '적색 야간 모드' },
-                    ] as const
-                  ).map((opt) => {
-                    const active = theme === opt.id;
+                  {UI_THEME_PRESETS.map((preset) => {
+                    const active = uiThemePreset === preset.id;
                     return (
                       <button
-                        key={opt.id}
+                        key={preset.id}
                         type="button"
                         role="menuitemradio"
                         aria-checked={active}
                         onClick={() => {
-                          setTheme(opt.id);
+                          handleSelectUiThemePreset(preset.id);
                           setThemeMenuOpen(false);
                         }}
-                        title={opt.desc}
-                        className={`w-full h-7 px-2 rounded-md flex items-center justify-between text-xs font-semibold transition-colors cursor-pointer ${
+                        title={`${preset.name} (${preset.subtitle})`}
+                        className={`w-full py-1.5 px-2 rounded-md flex items-center justify-between gap-2 text-[11px] font-semibold transition-colors cursor-pointer ${
                           active
-                            ? theme === 'white'
-                              ? 'bg-blue-600 text-white'
-                              : theme === 'red'
-                              ? 'bg-[#7F1D1D] text-[#FF5252]'
-                              : 'bg-[#0094B8] text-white'
-                            : theme === 'white'
-                            ? 'text-slate-700 hover:text-blue-700 hover:bg-slate-100'
-                            : theme === 'red'
-                            ? 'text-[#DC2626] hover:text-[#FF5252] hover:bg-[#220404]'
-                            : 'text-slate-200 hover:text-[#22D3EE] hover:bg-[#182438]'
+                            ? 'bg-[var(--ui-accent)] text-[var(--ui-accent-contrast)]'
+                            : 'text-[var(--ui-text-primary)] hover:text-[var(--ui-accent-text)] hover:bg-[var(--ui-bg-hover)]'
                         }`}
                       >
-                        <span className="flex items-center gap-1.5">
-                          {opt.id === 'dark' ? (
-                            <Moon className="w-3.5 h-3.5 shrink-0" />
-                          ) : opt.id === 'white' ? (
-                            <Sun className="w-3.5 h-3.5 shrink-0" />
-                          ) : (
+                        <span className="flex items-center gap-1.5 min-w-0">
+                          <span
+                            className="inline-flex items-center shrink-0 rounded overflow-hidden border"
+                            style={{ borderColor: preset.border }}
+                            aria-hidden="true"
+                          >
                             <span
-                              className={`w-3 h-3 rounded-full inline-block shrink-0 ${
-                                active
-                                  ? 'bg-[#FF6B6B] ring-1 ring-white/70'
-                                  : 'bg-red-600'
-                              }`}
-                              aria-hidden="true"
+                              className="w-1.5 h-3 block"
+                              style={{ backgroundColor: preset.bgMain }}
                             />
-                          )}
-                          <span>{opt.label}</span>
+                            <span
+                              className="w-1.5 h-3 block"
+                              style={{ backgroundColor: preset.bgSurface }}
+                            />
+                            <span
+                              className="w-1.5 h-3 block"
+                              style={{ backgroundColor: preset.accent }}
+                            />
+                          </span>
+                          <span className="truncate">
+                            {preset.order}. {preset.name}
+                          </span>
                         </span>
                         {active && <Check className="w-3 h-3 shrink-0" />}
                       </button>
@@ -7174,32 +7498,17 @@ export default function App() {
             <Ruler className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
           </button>
 
-          {/* Grouped Rectangular Box: 관측목록 · 챌린지 · 작도 */}
+          {/* Grouped Rectangular Box: 관측목록 · 챌린지 · 그리기 */}
           <div
-            className={`flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 ${
-              theme === 'white'
-                ? 'bg-slate-100 border-slate-300'
-                : theme === 'red'
-                ? 'bg-[#100101] border-[#420C0C]'
-                : 'bg-[#0B1220] border-[#25334D]'
-            }`}
+            className="flex items-center gap-0.5 p-0.5 rounded-lg border shrink-0 bg-[var(--ui-bg-surface)] border-[var(--ui-border)]"
             role="group"
-            aria-label="관측목록, 챌린지, 작도, 관측기록"
+            aria-label="관측목록, 챌린지, 그리기, 관측기록"
           >
             {(() => {
               const hasActiveChallenge = challenges.some((t) => t.activeOnChart);
-              const activeBoxBtn =
-                theme === 'white'
-                  ? 'bg-blue-700 text-white'
-                  : theme === 'red'
-                  ? 'bg-[#7F1D1D] text-[#FF5252]'
-                  : 'bg-[#0094B8] text-white';
+              const activeBoxBtn = 'bg-[var(--ui-accent)] text-[var(--ui-accent-contrast)]';
               const idleBoxBtn =
-                theme === 'white'
-                  ? 'text-slate-600 hover:text-slate-900 hover:bg-slate-200'
-                  : theme === 'red'
-                  ? 'text-[#B83232] hover:text-[#FF4D4D] hover:bg-[#220404]'
-                  : 'text-slate-400 hover:text-white hover:bg-[#182438]';
+                'text-[var(--ui-text-muted)] hover:text-[var(--ui-text-primary)] hover:bg-[var(--ui-bg-hover)]';
               return (
                 <>
                   <button
@@ -7210,21 +7519,13 @@ export default function App() {
                     }}
                     title={`관측목록 (${sessionPlan.length})`}
                     aria-label={`관측목록 (${sessionPlan.length})`}
-                    className={`relative w-7 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
+                    className={`relative w-7 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 cursor-pointer ${
                       rightOpen && inspectorTab === 'session' ? activeBoxBtn : idleBoxBtn
                     }`}
                   >
                     <Bookmark className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                     {sessionPlan.length > 0 && (
-                      <span
-                        className={`absolute -top-0.5 -right-0.5 min-w-[13px] h-[13px] px-0.5 rounded-full text-[8px] font-mono font-bold leading-[13px] text-center ${
-                          theme === 'white'
-                            ? 'bg-blue-600 text-white'
-                            : theme === 'red'
-                            ? 'bg-[#DC2626] text-black'
-                            : 'bg-cyan-500 text-slate-950'
-                        }`}
-                      >
+                      <span className="absolute -top-0.5 -right-0.5 min-w-[13px] h-[13px] px-0.5 rounded-full text-[8px] font-mono font-bold leading-[13px] text-center bg-[var(--ui-accent)] text-[var(--ui-accent-contrast)]">
                         {sessionPlan.length > 99 ? '99' : sessionPlan.length}
                       </span>
                     )}
@@ -7261,10 +7562,10 @@ export default function App() {
                     }}
                     title={
                       asterismMode
-                        ? '성군 작도 진행 중 (작도 탭 열기/닫기)'
-                        : '성군 작도 탭 열기/닫기'
+                        ? '그리기 진행 중 (그리기 탭 열기/닫기)'
+                        : '그리기 탭 열기/닫기'
                     }
-                    aria-label="성군 작도"
+                    aria-label="그리기"
                     aria-pressed={asterismMode || (rightOpen && inspectorTab === 'asterism')}
                     className={`relative w-7 h-6 sm:w-7 sm:h-7 rounded-md flex items-center justify-center transition-colors shrink-0 ${
                       asterismMode || (rightOpen && inspectorTab === 'asterism')
@@ -7434,15 +7735,7 @@ export default function App() {
                     className="w-4 h-4 rounded-full object-cover shrink-0"
                   />
                 ) : (
-                  <span
-                    className={`w-4 h-4 rounded-full text-[9.5px] font-bold flex items-center justify-center shrink-0 ${
-                      theme === 'white'
-                        ? 'bg-blue-600 text-white'
-                        : theme === 'red'
-                        ? 'bg-[#DC2626] text-black'
-                        : 'bg-cyan-500 text-slate-950'
-                    }`}
-                  >
+                  <span className="w-4 h-4 rounded-full text-[9.5px] font-bold flex items-center justify-center shrink-0 bg-[var(--ui-accent)] text-[var(--ui-accent-contrast)]">
                     {(authUser.displayName || authUser.email || 'U').slice(0, 1).toUpperCase()}
                   </span>
                 )}
@@ -7472,7 +7765,7 @@ export default function App() {
                 onClick={() => void handleGoogleLogin()}
                 title="Google 로그인 (클라우드 자동 동기화)"
                 aria-label="Google 로그인"
-                className={`h-7 px-2 border flex items-center gap-1 text-[10.5px] font-medium whitespace-nowrap transition-colors shrink-0 cursor-pointer disabled:opacity-50 ${ui.buttonLoad}`}
+                className="h-7 px-2 border flex items-center gap-1 text-[10.5px] font-medium whitespace-nowrap transition-colors shrink-0 cursor-pointer disabled:opacity-50 bg-[var(--ui-bg-surface)] border-[var(--ui-accent)] text-[var(--ui-accent-text)] hover:bg-[var(--ui-bg-hover)]"
                 style={{ borderRadius: '4px' }}
               >
                 <LogIn className="w-3.5 h-3.5 shrink-0" />
@@ -7609,7 +7902,7 @@ export default function App() {
                   : undefined
               }
             />
-            {selected && detailWindowOpen && !tourState.active && (
+            {selected && detailWindowOpen && !tourState.active && !asterismMode && (
               <CelestialInfoWindow
                 selected={selected}
                 centerLocked={centerLocked}
@@ -7656,13 +7949,7 @@ export default function App() {
                 title="시간 조절바 펼치기"
                 aria-label="시간 조절바 펼치기"
                 aria-expanded={false}
-                className={`no-print absolute z-30 bottom-0 left-1/2 -translate-x-1/2 h-5 w-16 border border-b-0 flex items-center justify-center transition-[background-color,box-shadow] duration-200 ease-out cursor-pointer ${
-                  theme === 'white'
-                    ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-400 shadow-md'
-                    : theme === 'red'
-                    ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-[0_0_12px_rgba(239,68,68,0.45)]'
-                    : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 border-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.45)]'
-                }`}
+                className="no-print absolute z-30 bottom-0 left-1/2 -translate-x-1/2 h-5 w-16 border border-b-0 flex items-center justify-center transition-[opacity,background-color,box-shadow] duration-200 ease-out cursor-pointer bg-[var(--ui-accent)] hover:opacity-90 text-[var(--ui-accent-contrast)] border-[var(--ui-border)] shadow-md"
                 style={{
                   borderTopLeftRadius: '6px',
                   borderTopRightRadius: '6px',
@@ -7767,7 +8054,9 @@ export default function App() {
             onImportSites={handleImportSites}
             onImportLayerSettings={handleImportLayerSettings}
             onResetLayerSettings={handleResetLayerSettings}
-            onChangeTheme={setTheme}
+            onChangeTheme={handleChangeTheme}
+            uiThemePreset={uiThemePreset}
+            onChangeUiThemePreset={handleSelectUiThemePreset}
             redIntensity={redIntensity}
             onChangeRedIntensity={setRedIntensity}
             uiFontFamily={uiFontFamily}
@@ -7831,13 +8120,7 @@ export default function App() {
               : '왼쪽 메뉴 펼치기'
           }
           aria-label={leftOpen ? '왼쪽 메뉴 접기' : '왼쪽 메뉴 펼치기'}
-          className={`no-print absolute z-30 top-[30%] -translate-y-1/2 h-16 w-5 border border-l-0 flex items-center justify-center transition-[left,background-color,box-shadow] duration-200 ease-out cursor-pointer ${
-            theme === 'white'
-              ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-400 shadow-md'
-              : theme === 'red'
-              ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-[0_0_12px_rgba(239,68,68,0.45)]'
-              : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 border-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.45)]'
-          }`}
+          className="no-print absolute z-30 top-[30%] -translate-y-1/2 h-16 w-5 border border-l-0 flex items-center justify-center transition-[left,opacity,background-color,box-shadow] duration-200 ease-out cursor-pointer bg-[var(--ui-accent)] hover:opacity-90 text-[var(--ui-accent-contrast)] border-[var(--ui-border)] shadow-md"
           style={{
             left: leftOpen ? '270px' : '0px',
             borderTopRightRadius: '6px',
@@ -8070,13 +8353,7 @@ export default function App() {
               : '오른쪽 메뉴 펼치기'
           }
           aria-label={rightOpen ? '오른쪽 메뉴 접기' : '오른쪽 메뉴 펼치기'}
-          className={`no-print absolute z-30 top-[30%] -translate-y-1/2 h-16 w-5 border border-r-0 flex items-center justify-center transition-[right,background-color,box-shadow] duration-200 ease-out cursor-pointer ${
-            theme === 'white'
-              ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-400 shadow-md'
-              : theme === 'red'
-              ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-[0_0_12px_rgba(239,68,68,0.45)]'
-              : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 border-cyan-300 shadow-[0_0_12px_rgba(34,211,238,0.45)]'
-          }`}
+          className="no-print absolute z-30 top-[30%] -translate-y-1/2 h-16 w-5 border border-r-0 flex items-center justify-center transition-[right,opacity,background-color,box-shadow] duration-200 ease-out cursor-pointer bg-[var(--ui-accent)] hover:opacity-90 text-[var(--ui-accent-contrast)] border-[var(--ui-border)] shadow-md"
           style={{
             right: rightOpen ? '292px' : '0px',
             borderTopLeftRadius: '6px',

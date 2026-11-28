@@ -553,13 +553,13 @@ export function ObjectInspector({
           <button
             type="button"
             onClick={() => onTabChange('asterism')}
-            title="성군 작도 그룹 · 성군 · 도형 및 대표 성군 프리셋 관리"
+            title="그리기 그룹 · 성군 · 호핑 · 스타체인 및 도형 관리"
             className={`px-2 py-1 text-[10px] tracking-[-0.05em] font-medium border transition-colors whitespace-nowrap shrink-0 flex items-center gap-0.5 ${
               activeTab === 'asterism' ? ui.buttonActive : ui.buttonIdle
             }`}
             style={{ borderRadius: '4px' }}
           >
-            <span>성군작도</span>
+            <span>그리기</span>
             {asterismStore.asterisms.length > 0 && (
               <span className="font-mono text-[8.5px] tabular-nums opacity-80">
                 {asterismStore.asterisms.length}

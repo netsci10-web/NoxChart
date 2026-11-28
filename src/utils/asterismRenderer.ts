@@ -751,6 +751,8 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
       }
     } else if (obj.type === 'arrow' && obj.vertices.length >= 2) {
       applyLineDash(ctx, obj.lineStyle, obj.lineWidth);
+      let firstFrom: { x: number; y: number } | null = null;
+      let firstTo: { x: number; y: number } | null = null;
       let lastFrom: { x: number; y: number } | null = null;
       let lastTo: { x: number; y: number } | null = null;
 
@@ -763,12 +765,23 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
           ctx.lineTo(segPts[k].x, segPts[k].y);
         }
         ctx.stroke();
+        if (!firstFrom) {
+          firstFrom = segPts[0];
+          firstTo = segPts[1];
+        }
         lastFrom = segPts[segPts.length - 2];
         lastTo = segPts[segPts.length - 1];
       }
 
-      if (lastFrom && lastTo) {
-        drawArrowhead(ctx, lastFrom, lastTo, 9 + Math.min(6, obj.lineWidth) * 1.4, color);
+      const arrowSize = 9 + Math.min(6, obj.lineWidth) * 1.4;
+      const showStartArrow = Boolean(obj.arrowStart);
+      const showEndArrow = obj.arrowEnd !== false;
+
+      if (showStartArrow && firstFrom && firstTo) {
+        drawArrowhead(ctx, firstTo, firstFrom, arrowSize, color);
+      }
+      if (showEndArrow && lastFrom && lastTo) {
+        drawArrowhead(ctx, lastFrom, lastTo, arrowSize, color);
       }
 
       const ext = obj.extensionFactor ?? 1;
@@ -868,7 +881,9 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
           const tip = extPts[extPts.length - 1];
           const tipArrowSize = 9 + Math.min(6, obj.lineWidth) * 1.3;
           ctx.globalAlpha = Math.min(1, effAlpha);
-          drawArrowhead(ctx, tipPrev, tip, tipArrowSize, color);
+          if (showEndArrow) {
+            drawArrowhead(ctx, tipPrev, tip, tipArrowSize, color);
+          }
 
           const tdx = tip.x - tipPrev.x;
           const tdy = tip.y - tipPrev.y;
@@ -897,6 +912,133 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
           ctx.fillText(tipText, labelX, labelY);
           ctx.restore();
           ctx.restore();
+        }
+      }
+    } else if (obj.type === 'divider' && obj.vertices.length >= 2) {
+      const vA = obj.vertices[0];
+      const vB = obj.vertices[obj.vertices.length - 1];
+      const segPts = projectGreatCircleSegment(vA, vB, projector);
+      if (segPts.length >= 2) {
+        applyLineDash(ctx, obj.lineStyle, obj.lineWidth);
+        ctx.beginPath();
+        ctx.moveTo(segPts[0].x, segPts[0].y);
+        for (let k = 1; k < segPts.length; k++) {
+          if (Math.hypot(segPts[k].x - segPts[k - 1].x, segPts[k].y - segPts[k - 1].y) > 900) {
+            ctx.moveTo(segPts[k].x, segPts[k].y);
+          } else {
+            ctx.lineTo(segPts[k].x, segPts[k].y);
+          }
+        }
+        ctx.stroke();
+
+        const divCount = Math.max(2, Math.min(12, Math.round(obj.divisionCount ?? 4)));
+        const showDivLabels = obj.divisionShowLabels !== false;
+        const totalSep = angularDistanceDeg(vA.raDeg, vA.decDeg, vB.raDeg, vB.decDeg);
+        const pa = positionAngleDeg(vA.raDeg, vA.decDeg, vB.raDeg, vB.decDeg);
+        const tickHalfBase = 5.5 + Math.min(4, obj.lineWidth * 0.65);
+        const haloColor =
+          theme === 'white'
+            ? 'rgba(255,255,255,0.9)'
+            : theme === 'red'
+            ? 'rgba(10,0,0,0.88)'
+            : 'rgba(5,9,18,0.86)';
+
+        const divProjected: ({ x: number; y: number } | null)[] = [];
+        for (let k = 0; k <= divCount; k++) {
+          const frac = k / divCount;
+          const ptCel =
+            k === 0
+              ? { raDeg: vA.raDeg, decDeg: vA.decDeg }
+              : k === divCount
+              ? { raDeg: vB.raDeg, decDeg: vB.decDeg }
+              : destinationPointSpherical(vA.raDeg, vA.decDeg, pa, totalSep * frac);
+          divProjected.push(projector.project(ptCel.raDeg, ptCel.decDeg, 220));
+        }
+
+        const pStart = divProjected[0];
+        const pEnd = divProjected[divCount];
+        const approxSegPx =
+          pStart && pEnd ? Math.hypot(pEnd.x - pStart.x, pEnd.y - pStart.y) / divCount : 0;
+
+        ctx.setLineDash([]);
+        ctx.lineWidth = Math.max(1.2, obj.lineWidth * 0.95);
+        ctx.font = '600 9.5px "IBM Plex Mono", monospace';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+
+        for (let k = 0; k <= divCount; k++) {
+          const pCur = divProjected[k];
+          if (!pCur) continue;
+          const pPrev = k > 0 ? divProjected[k - 1] : null;
+          const pNext = k < divCount ? divProjected[k + 1] : null;
+          let tx = 1;
+          let ty = 0;
+          if (pPrev && pNext) {
+            const dx = pNext.x - pPrev.x;
+            const dy = pNext.y - pPrev.y;
+            const d = Math.hypot(dx, dy);
+            if (d > 1e-4) {
+              tx = dx / d;
+              ty = dy / d;
+            }
+          } else if (pNext) {
+            const dx = pNext.x - pCur.x;
+            const dy = pNext.y - pCur.y;
+            const d = Math.hypot(dx, dy);
+            if (d > 1e-4) {
+              tx = dx / d;
+              ty = dy / d;
+            }
+          } else if (pPrev) {
+            const dx = pCur.x - pPrev.x;
+            const dy = pCur.y - pPrev.y;
+            const d = Math.hypot(dx, dy);
+            if (d > 1e-4) {
+              tx = dx / d;
+              ty = dy / d;
+            }
+          }
+          let nx = -ty;
+          let ny = tx;
+          if (ny > 0.15) {
+            nx = -nx;
+            ny = -ny;
+          }
+
+          const isEndpoint = k === 0 || k === divCount;
+          const isMidpoint = divCount % 2 === 0 && k === divCount / 2;
+          const tickLen = isEndpoint
+            ? tickHalfBase * 1.25
+            : isMidpoint
+            ? tickHalfBase * 1.12
+            : tickHalfBase;
+
+          ctx.strokeStyle = color;
+          ctx.beginPath();
+          ctx.moveTo(pCur.x - nx * tickLen, pCur.y - ny * tickLen);
+          ctx.lineTo(pCur.x + nx * tickLen, pCur.y + ny * tickLen);
+          ctx.stroke();
+
+          if (!isEndpoint) {
+            ctx.beginPath();
+            ctx.arc(pCur.x, pCur.y, Math.max(1.8, Math.min(3.2, obj.lineWidth * 0.9)), 0, Math.PI * 2);
+            ctx.fill();
+          }
+
+          if (showDivLabels && !isEndpoint && approxSegPx >= 15) {
+            const labelDist = tickLen + 8.5;
+            const lx = pCur.x + nx * labelDist;
+            const ly = pCur.y + ny * labelDist;
+            const tickNum = obj.divisionReverseLabels ? divCount - k : k;
+            const txt = String(tickNum);
+            ctx.save();
+            ctx.lineWidth = 2.8;
+            ctx.strokeStyle = haloColor;
+            ctx.strokeText(txt, lx, ly);
+            ctx.fillStyle = color;
+            ctx.fillText(txt, lx, ly);
+            ctx.restore();
+          }
         }
       }
     } else if (obj.type === 'label' && validPts.length >= 1) {
@@ -929,7 +1071,12 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
     // Interactive vertex & midpoint handles when selected in Drawing Mode (outer pass only)
     if (isSelected && !isInnerClip) {
       ctx.save();
-      if (obj.type !== 'label' && obj.type !== 'circle' && obj.vertices.length >= 2) {
+      if (
+        obj.type !== 'label' &&
+        obj.type !== 'circle' &&
+        obj.type !== 'divider' &&
+        obj.vertices.length >= 2
+      ) {
         const segCount = obj.type === 'polygon' ? obj.vertices.length : obj.vertices.length - 1;
         for (let i = 0; i < segCount; i++) {
           const a = obj.vertices[i];
@@ -1201,13 +1348,80 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
           ctx.stroke();
 
           if (draft.type === 'arrow') {
-            drawArrowhead(
-              ctx,
-              projectedDraft[projectedDraft.length - 2],
-              projectedDraft[projectedDraft.length - 1],
-              10,
-              activeColor
-            );
+            if (store.settings.defaultArrowStart) {
+              drawArrowhead(ctx, projectedDraft[1], projectedDraft[0], 10, activeColor);
+            }
+            if (store.settings.defaultArrowEnd) {
+              drawArrowhead(
+                ctx,
+                projectedDraft[projectedDraft.length - 2],
+                projectedDraft[projectedDraft.length - 1],
+                10,
+                activeColor
+              );
+            }
+          } else if (draft.type === 'divider' && allDraftVerts.length >= 2) {
+            const vA = allDraftVerts[0];
+            const vB = allDraftVerts[allDraftVerts.length - 1];
+            const divCount = Math.max(2, Math.min(12, Math.round(store.settings.defaultDivisionCount ?? 4)));
+            const totalSep = angularDistanceDeg(vA.raDeg, vA.decDeg, vB.raDeg, vB.decDeg);
+            const pa = positionAngleDeg(vA.raDeg, vA.decDeg, vB.raDeg, vB.decDeg);
+            const p0 = projectedDraft[0];
+            const p1 = projectedDraft[projectedDraft.length - 1];
+            const dx = p1.x - p0.x;
+            const dy = p1.y - p0.y;
+            const dLen = Math.hypot(dx, dy) || 1;
+            let nx = -dy / dLen;
+            let ny = dx / dLen;
+            if (ny > 0.15) {
+              nx = -nx;
+              ny = -ny;
+            }
+            ctx.save();
+            ctx.setLineDash([]);
+            ctx.lineWidth = Math.max(1.2, store.settings.defaultLineWidth * 0.95);
+            const showDraftLabels = store.settings.defaultDivisionShowLabels !== false;
+            const reverseDraftLabels = Boolean(store.settings.defaultDivisionReverseLabels);
+            const approxDraftSegPx = dLen / divCount;
+            const draftHaloColor =
+              theme === 'white'
+                ? 'rgba(255,255,255,0.9)'
+                : theme === 'red'
+                ? 'rgba(10,0,0,0.88)'
+                : 'rgba(5,9,18,0.86)';
+            ctx.font = '600 9.5px "IBM Plex Mono", monospace';
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            for (let k = 0; k <= divCount; k++) {
+              const frac = k / divCount;
+              const ptCel =
+                k === 0
+                  ? { raDeg: vA.raDeg, decDeg: vA.decDeg }
+                  : k === divCount
+                  ? { raDeg: vB.raDeg, decDeg: vB.decDeg }
+                  : destinationPointSpherical(vA.raDeg, vA.decDeg, pa, totalSep * frac);
+              const pp = projector.project(ptCel.raDeg, ptCel.decDeg, 220);
+              if (!pp) continue;
+              const isEnd = k === 0 || k === divCount;
+              const tLen = isEnd ? 7.5 : 5.5;
+              ctx.beginPath();
+              ctx.moveTo(pp.x - nx * tLen, pp.y - ny * tLen);
+              ctx.lineTo(pp.x + nx * tLen, pp.y + ny * tLen);
+              ctx.stroke();
+              if (showDraftLabels && !isEnd && approxDraftSegPx >= 15) {
+                const lx = pp.x + nx * (tLen + 8.5);
+                const ly = pp.y + ny * (tLen + 8.5);
+                const txt = String(reverseDraftLabels ? divCount - k : k);
+                ctx.save();
+                ctx.lineWidth = 2.6;
+                ctx.strokeStyle = draftHaloColor;
+                ctx.strokeText(txt, lx, ly);
+                ctx.fillStyle = activeColor;
+                ctx.fillText(txt, lx, ly);
+                ctx.restore();
+              }
+            }
+            ctx.restore();
           }
         }
 
@@ -1235,7 +1449,13 @@ export function renderAsterismsPass(opts: RenderAsterismsOptions): void {
           if (prevP && sepDeg > 0.0002) {
             const mx = (prevP.x + hoverSnap.x) / 2;
             const my = (prevP.y + hoverSnap.y) / 2 - 14;
-            const txt = `${formatAngularSeparation(sepDeg)} · PA ${pa.toFixed(1)}°`;
+            const txt =
+              draft.type === 'divider'
+                ? (() => {
+                    const n = Math.max(2, Math.min(12, Math.round(store.settings.defaultDivisionCount ?? 4)));
+                    return `${n}등분 · 간격 ${formatAngularSeparation(sepDeg / n)} (총 ${formatAngularSeparation(sepDeg)})`;
+                  })()
+                : `${formatAngularSeparation(sepDeg)} · PA ${pa.toFixed(1)}°`;
             ctx.font = '600 10px "IBM Plex Mono", monospace';
             const tw = ctx.measureText(txt).width;
             ctx.fillStyle =
@@ -1384,7 +1604,7 @@ export function hitTestAsterisms(
             };
           }
         }
-        if (sel.type !== 'label' && sel.vertices.length >= 2) {
+        if (sel.type !== 'label' && sel.type !== 'divider' && sel.vertices.length >= 2) {
           const segCount = sel.type === 'polygon' ? sel.vertices.length : sel.vertices.length - 1;
           for (let i = 0; i < segCount; i++) {
             const a = sel.vertices[i];

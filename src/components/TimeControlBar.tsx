@@ -172,115 +172,48 @@ export function TimeControlBar({
   };
 
   const barCls =
-    theme === 'white'
-      ? 'bg-slate-200 border-slate-300 text-slate-800'
-      : theme === 'red'
-      ? 'bg-[#070000] border-[#300808] text-[#DC2626]'
-      : 'bg-[#070B14] border-[#1B273D] text-slate-200';
+    'bg-[var(--ui-bg-main)] border-[var(--ui-border)] text-[var(--ui-text-primary)]';
 
   const clockSegmentIdleCls =
-    theme === 'white'
-      ? 'text-blue-700 border-transparent hover:bg-blue-50 hover:border-blue-200'
-      : theme === 'red'
-      ? 'text-[#FF4D4D] border-transparent hover:bg-[#1E0303] hover:border-[#5A1212]'
-      : 'text-[#22D3EE] border-transparent hover:bg-[#102038] hover:border-[#2A4266]';
+    'text-[var(--ui-accent-text)] border-transparent hover:bg-[var(--ui-bg-hover)] hover:border-[var(--ui-border)]';
 
   const clockSegmentActiveCls =
-    theme === 'white'
-      ? 'bg-blue-600 border-blue-700 text-white shadow-xs'
-      : theme === 'red'
-      ? 'bg-[#6B1212] border-[#EF4444] text-[#FFE0E0]'
-      : 'bg-[#0C354A] border-[#22D3EE] text-white';
+    'bg-[var(--ui-accent)] border-[var(--ui-accent)] text-[var(--ui-accent-contrast)] shadow-xs';
 
-  const unitSuffixIdleCls =
-    theme === 'white'
-      ? 'text-slate-400'
-      : theme === 'red'
-      ? 'text-[#A02828]'
-      : 'text-slate-400';
+  const unitSuffixIdleCls = 'text-[var(--ui-text-muted)]';
 
-  const unitSuffixActiveCls =
-    theme === 'white'
-      ? 'text-blue-100'
-      : theme === 'red'
-      ? 'text-[#FF9E9E]'
-      : 'text-cyan-200';
+  const unitSuffixActiveCls = 'text-[var(--ui-accent-contrast)] opacity-80';
 
   const minusBtnCls =
-    theme === 'white'
-      ? 'bg-indigo-50/90 border-indigo-300 text-indigo-700 hover:bg-indigo-100'
-      : theme === 'red'
-      ? 'bg-[#170202] border-[#521010] text-[#E04040] hover:bg-[#260505] hover:text-[#FF5A5A]'
-      : 'bg-[#121D36] border-[#314E89] text-[#93C5FD] hover:bg-[#19284A] hover:text-[#BFDBFE]';
+    'bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-secondary)] hover:bg-[var(--ui-bg-hover)] hover:text-[var(--ui-accent-text)]';
 
   const plusBtnCls =
-    theme === 'white'
-      ? 'bg-sky-50/90 border-sky-300 text-sky-700 hover:bg-sky-100'
-      : theme === 'red'
-      ? 'bg-[#1C0303] border-[#6B1515] text-[#F05252] hover:bg-[#2C0606] hover:text-[#FF6B6B]'
-      : 'bg-[#0A2234] border-[#0C7BB3] text-[#7DD3FC] hover:bg-[#103048] hover:text-[#BAE6FD]';
+    'bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-secondary)] hover:bg-[var(--ui-bg-hover)] hover:text-[var(--ui-accent-text)]';
 
-  const capsuleCls =
-    theme === 'white'
-      ? 'bg-slate-100 border-slate-300'
-      : theme === 'red'
-      ? 'bg-[#100101] border-[#420C0C]'
-      : 'bg-[#0D1424] border-[#26344E]';
+  const capsuleCls = 'bg-[var(--ui-bg-surface)] border-[var(--ui-border)]';
 
   const decelBtnCls =
-    theme === 'white'
-      ? 'bg-amber-50 border-amber-400 text-amber-700 hover:bg-amber-100'
-      : theme === 'red'
-      ? 'bg-[#220404] border-[#8A1818] text-[#FF6B6B] hover:bg-[#330707] hover:text-[#FF8585]'
-      : 'bg-[#2A1806] border-[#D97706]/80 text-[#FBBF24] hover:bg-[#3A220A] hover:text-[#FDE68A]';
+    'bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-secondary)] hover:bg-[var(--ui-bg-hover)] hover:text-[var(--ui-accent-text)]';
 
   const accelBtnCls =
-    theme === 'white'
-      ? 'bg-emerald-50 border-emerald-400 text-emerald-700 hover:bg-emerald-100'
-      : theme === 'red'
-      ? 'bg-[#280505] border-[#B91C1C] text-[#FF4D4D] hover:bg-[#3A0808] hover:text-[#FF6E6E]'
-      : 'bg-[#062822] border-[#10B981]/80 text-[#34D399] hover:bg-[#0A3A31] hover:text-[#6EE7B7]';
+    'bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-secondary)] hover:bg-[var(--ui-bg-hover)] hover:text-[var(--ui-accent-text)]';
 
   const playBtnCls = observer.isPlaying
-    ? theme === 'white'
-      ? 'bg-blue-700 border-blue-700 text-white'
-      : theme === 'red'
-      ? 'bg-[#7F1D1D] border-[#EF4444] text-[#FF5252]'
-      : 'bg-[#0891B2] border-[#22D3EE] text-white'
-    : theme === 'white'
-    ? 'bg-white border-slate-300 text-slate-800 hover:bg-slate-100'
-    : theme === 'red'
-    ? 'bg-[#1A0303] border-[#5A1212] text-[#EF4444] hover:bg-[#280505]'
-    : 'bg-[#1A2438] border-[#314261] text-white hover:bg-[#23314A]';
+    ? 'bg-[var(--ui-accent)] border-[var(--ui-accent)] text-[var(--ui-accent-contrast)]'
+    : 'bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-primary)] hover:bg-[var(--ui-bg-hover)]';
 
   const isLiveNow = observer.useLiveTime;
   const nowBtnCls = isLiveNow
-    ? theme === 'white'
-      ? 'bg-sky-50 border-sky-500 text-sky-700'
-      : theme === 'red'
-      ? 'bg-[#2B0404] border-[#DC2626] text-[#FF3B3B]'
-      : 'bg-[#082B3A] border-[#06B6D4] text-[#22D3EE]'
-    : theme === 'white'
-    ? 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
-    : theme === 'red'
-    ? 'bg-[#150202] border-[#420C0C] text-[#B91C1C] hover:bg-[#220404] hover:text-[#EF4444]'
-    : 'bg-[#141D2F] border-[#26344E] text-slate-300 hover:bg-[#1C2840]';
+    ? 'bg-[var(--ui-bg-hover)] border-[var(--ui-accent)] text-[var(--ui-accent-text)]'
+    : 'bg-[var(--ui-bg-surface)] border-[var(--ui-border)] text-[var(--ui-text-secondary)] hover:bg-[var(--ui-bg-hover)] hover:text-[var(--ui-text-primary)]';
 
   const speedBadgeCls =
-    theme === 'white'
-      ? 'bg-emerald-50 border-emerald-500/70 text-emerald-700'
-      : theme === 'red'
-      ? 'bg-[#1E0303] border-[#991B1B] text-[#EF4444]'
-      : 'bg-[#062420] border-[#0D9488]/80 text-[#34E2A3]';
+    'bg-[var(--ui-bg-surface)] border-[var(--ui-accent)] text-[var(--ui-accent-text)]';
 
   const activeUnitLabel = TIME_UNIT_LABELS[selectedUnit];
 
   const collapseBtnCls =
-    theme === 'white'
-      ? 'bg-blue-600 hover:bg-blue-700 text-white border-blue-500 shadow-xs'
-      : theme === 'red'
-      ? 'bg-red-600 hover:bg-red-500 text-white border-red-400 shadow-[0_0_8px_rgba(239,68,68,0.35)]'
-      : 'bg-cyan-500 hover:bg-cyan-400 text-slate-950 border-cyan-300 shadow-[0_0_8px_rgba(34,211,238,0.35)]';
+    'bg-[var(--ui-accent)] hover:opacity-90 text-[var(--ui-accent-contrast)] border-[var(--ui-border)] shadow-xs';
 
   return (
     <div
@@ -372,8 +305,18 @@ export function TimeControlBar({
         </button>
       </div>
 
-      {/* Right of Date/Time: Playback/Acceleration Capsule [<<] [▶/⏸] [↺] [>>] + Fixed Max-Width Speed Readout */}
+      {/* Right of Date/Time: Fixed Max-Width Speed Readout + Playback/Acceleration Capsule [<<] [▶/⏸] [↺] [>>] */}
       <div className="flex items-center justify-center gap-1.5 shrink-0">
+        {/* Fixed max-width box sized for widest value (-x2592000(30일)) so layout never shifts */}
+        <div
+          title="현재 시간 가감속 배율 (<< / >> 버튼으로 조절)"
+          className={`w-[152px] h-7 px-2 rounded-md border shrink-0 flex items-center justify-center font-mono text-xs font-semibold tabular-nums whitespace-nowrap transition-opacity ${speedBadgeCls} ${
+            observer.isPlaying ? 'opacity-100' : 'opacity-85'
+          }`}
+        >
+          {formatTimeRateBadge(observer.timeRateSecPerSec)}
+        </div>
+
         <div
           className={`flex items-center gap-1 px-1.5 py-0.5 rounded-lg border shrink-0 ${capsuleCls}`}
         >
@@ -420,16 +363,6 @@ export function TimeControlBar({
           >
             <ChevronsRight className="w-4 h-4" />
           </button>
-        </div>
-
-        {/* Fixed max-width box sized for widest value (-x2592000(30일)) so layout never shifts */}
-        <div
-          title="현재 시간 가감속 배율 (<< / >> 버튼으로 조절)"
-          className={`w-[152px] h-7 px-2 rounded-md border shrink-0 flex items-center justify-center font-mono text-xs font-semibold tabular-nums whitespace-nowrap transition-opacity ${speedBadgeCls} ${
-            observer.isPlaying ? 'opacity-100' : 'opacity-85'
-          }`}
-        >
-          {formatTimeRateBadge(observer.timeRateSecPerSec)}
         </div>
       </div>
     </div>

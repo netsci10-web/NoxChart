@@ -1,5 +1,16 @@
 export type ThemeMode = 'dark' | 'white' | 'red';
 
+export type UiThemePresetId =
+  | 'deep-navy'
+  | 'red-night'
+  | 'midnight-amber'
+  | 'warm-paper'
+  | 'antique-parchment'
+  | 'obsidian-emerald'
+  | 'cosmic-violet'
+  | 'frost-blue'
+  | 'pure-carbon';
+
 export type CoordSystem = 'equatorial' | 'horizontal';
 
 export type ConstellationLineStyle = 'modern' | 'traditional';
@@ -114,6 +125,9 @@ export type DsoNameStyle = 'name' | 'abbr' | 'code' | 'code_name';
 export interface LayerSettings {
   showGridEq: boolean;
   showGridAltAz: boolean;
+  showGridLabels: boolean; // 좌표 그리드 숫자 표시 여부 (적경·적위·방위·고도)
+  gridLabelYPercent?: number; // 5..95 가로 숫자 줄 위치 (위에서 %, 기본 80) — 적경(RA)·방위(Az)
+  gridLabelXPercent?: number; // 5..95 세로 숫자 줄 위치 (왼쪽에서 %, 기본 20) — 적위(Dec)·고도(Alt)
   gridLineWidth: number; // 0.2..2.5 좌표 그리드 선 굵기 (px)
   gridLineOpacity: number; // 0.05..1.0 좌표 그리드 선 진하기
   showHorizon: boolean;
@@ -127,7 +141,8 @@ export interface LayerSettings {
   constellationLineOpacity: number; // 0.05..1.0
   constellationProjectionMode?: ConstellationProjectionMode; // 별자리 투영 모드 (현대 / 고전 도안)
   showConstellationArt?: boolean; // 독립 렌더링 레이어: 별자리 경계 내부 고전 도안 투영
-  constellationArtOpacity?: number; // 0.05..0.85 고전 도안 투영 진하기
+  constellationArtScope?: 'all' | 'center'; // 고전 도안 표시 범위 (전체 / 중심 별자리만)
+  constellationArtOpacity?: number; // 0.05..1.0 고전 도안 투영 진하기
   showConstellationBoundaries: boolean;
   showConstellationNames: boolean;
   showSolarSystem: boolean;
@@ -482,7 +497,14 @@ export interface ChallengeTrack {
   createdAt: number;
 }
 
-export type AsterismTool = 'select' | 'polyline' | 'polygon' | 'circle' | 'arrow' | 'label';
+export type AsterismTool =
+  | 'select'
+  | 'polyline'
+  | 'polygon'
+  | 'circle'
+  | 'arrow'
+  | 'divider'
+  | 'label';
 export type AsterismToolboxPopover = 'none' | 'props' | 'layers' | 'optics';
 export type AsterismLineStyle = 'dashed' | 'dashdot' | 'solid';
 export type AsterismLabelAnchor = 'top' | 'bottom' | 'left' | 'right';
@@ -513,10 +535,14 @@ export interface AsterismSavedView {
  * Asterism entity (성군) — belongs to a Layer/Group (AsterismLayer),
  * and owns multiple child shape elements (AsterismObject[]).
  */
+export type AsterismCategory = 'asterism' | 'hopping' | 'starchain' | 'other';
+
 export interface AsterismGroup {
   id: string;
   layerId: string;
   name: string;
+  /** Classification category: 성군 | 호핑 | 스타체인 | 기타 (default: 'asterism') */
+  category?: AsterismCategory;
   visible: boolean;
   /** Optional multiline observation memo for this asterism */
   memo?: string;
@@ -534,7 +560,7 @@ export interface AsterismObject {
   layerId: string;
   /** Parent AsterismGroup ID (성군 > 도형요소 계층) */
   asterismId: string;
-  type: 'polyline' | 'polygon' | 'circle' | 'arrow' | 'label';
+  type: 'polyline' | 'polygon' | 'circle' | 'arrow' | 'divider' | 'label';
   vertices: AsterismVertex[];
   /** Angular radius in degrees for 'circle' shapes */
   radiusDeg?: number;
@@ -553,6 +579,16 @@ export interface AsterismObject {
   fillAlpha?: number;
   /** Optional extension multiplier for direction vector (e.g. 2.5 = extend 2.5x beyond AB) */
   extensionFactor?: number;
+  /** Arrowhead at start vertex of 'arrow' (방향선 시작점 화살표) */
+  arrowStart?: boolean;
+  /** Arrowhead at end vertex of 'arrow' (방향선 끝점 화살표, default true) */
+  arrowEnd?: boolean;
+  /** Equal division segment count for 'divider' (등분선 등분 수, 2..20) */
+  divisionCount?: number;
+  /** Show tick division index numbers on 'divider' (등분선 눈금 숫자 표시) */
+  divisionShowLabels?: boolean;
+  /** Reverse tick division numbering order on 'divider' (등분선 눈금 숫자 반대로 표시) */
+  divisionReverseLabels?: boolean;
   /** Legacy/fallback FOV range (rendering inherits parent AsterismGroup.visibleFovRange) */
   visibleFovRange: [number, number];
   /** Shape display name in manager (NOT rendered on star chart canvas) */
@@ -594,6 +630,11 @@ export interface AsterismSettings {
   circleLinkEyepiece: boolean;
   circleLinkFinder: boolean;
   defaultExtensionFactor: number;
+  defaultArrowStart: boolean;
+  defaultArrowEnd: boolean;
+  defaultDivisionCount: number;
+  defaultDivisionShowLabels: boolean;
+  defaultDivisionReverseLabels?: boolean;
   defaultVisibleFovRange: [number, number];
   defaultLabelAnchor: AsterismLabelAnchor;
 }
@@ -619,7 +660,7 @@ export interface AsterismSnapPreview {
 }
 
 export interface AsterismDraftState {
-  type: 'polyline' | 'polygon' | 'circle' | 'arrow';
+  type: 'polyline' | 'polygon' | 'circle' | 'arrow' | 'divider';
   vertices: AsterismVertex[];
 }
 

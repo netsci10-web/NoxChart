@@ -25,7 +25,6 @@ import {
   Map as MapIcon,
   MapPin,
   Minus,
-  Moon,
   Pin,
   Plus,
   RefreshCw,
@@ -34,7 +33,6 @@ import {
   Settings,
   SlidersHorizontal,
   Sparkles,
-  Sun,
   Target,
   Trash2,
   Type,
@@ -81,6 +79,7 @@ import {
   Star,
   StarNameStyle,
   ThemeMode,
+  UiThemePresetId,
 } from '../types/astronomy';
 import {
   angularDistanceDeg,
@@ -174,7 +173,7 @@ import {
   syncMpcBrightAsteroids,
   syncMpcComets,
 } from '../utils/solarSystem';
-import { getUiTheme } from '../utils/themeClasses';
+import { getUiTheme, UI_THEME_PRESETS } from '../utils/themeClasses';
 import { EquipmentLockerPanel } from './EquipmentLockerPanel';
 
 type SidebarTab = 'explore' | 'layers' | 'optics' | 'observer' | 'settings';
@@ -316,6 +315,8 @@ interface ControlSidebarProps {
   onImportLayerSettings: (bundle: LayerSettingsBundle) => void;
   onResetLayerSettings: () => void;
   onChangeTheme: (theme: ThemeMode) => void;
+  uiThemePreset: UiThemePresetId;
+  onChangeUiThemePreset: (preset: UiThemePresetId) => void;
   redIntensity: number;
   onChangeRedIntensity: (val: number) => void;
   uiFontFamily: UiFontFamily;
@@ -426,7 +427,8 @@ export function ControlSidebar({
   onImportSites,
   onImportLayerSettings,
   onResetLayerSettings,
-  onChangeTheme,
+  uiThemePreset,
+  onChangeUiThemePreset,
   redIntensity,
   onChangeRedIntensity,
   uiFontFamily,
@@ -455,6 +457,7 @@ export function ControlSidebar({
     }
   }, [requestedTab]);
   const [exploreCategory, setExploreCategory] = useState<ExploreCategory>('all');
+  const [themePresetDropdownOpen, setThemePresetDropdownOpen] = useState(false);
   const [starFilter, setStarFilter] = useState<StarSubFilter>('all');
   const [exploreSort, setExploreSort] = useState<ExploreSortMode>('default');
   const [exploreSortDir, setExploreSortDir] = useState<ExploreSortDir>('asc');
@@ -4356,13 +4359,14 @@ export function ControlSidebar({
               {(() => {
                 const artVisible =
                   layers.showConstellationArt ?? layers.constellationProjectionMode === 'classical';
-                const artOpacity = layers.constellationArtOpacity ?? 0.28;
+                const artScope = layers.constellationArtScope ?? 'all';
+                const artOpacity = layers.constellationArtOpacity ?? 0.45;
                 return (
                   <div className={`pt-1.5 mt-1 border-t space-y-1 ${ui.divider}`}>
                     <div className="flex items-center justify-between gap-1.5 py-0.5">
                       <label className="flex items-center gap-1.5 cursor-pointer min-w-0">
                         <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textSecondary}`}>
-                          고전 별자리 도안 (경계 내 투영)
+                          별자리 그림 도안 투영
                         </span>
                       </label>
                       <div className="flex items-center gap-1.5 shrink-0">
@@ -4385,19 +4389,49 @@ export function ControlSidebar({
                               ...(checked ? { constellationProjectionMode: 'classical' as ConstellationProjectionMode } : {}),
                             }));
                           }}
-                          className="w-3.5 h-3.5 shrink-0 accent-cyan-500 cursor-pointer"
+                          className="w-3.5 h-3.5 shrink-0 [accent-color:var(--ui-accent)] cursor-pointer"
                         />
                       </div>
                     </div>
 
                     <div
-                      className={`pl-2 pb-0.5 space-y-0.5 transition-opacity ${
+                      className={`pl-2 pb-0.5 space-y-1 transition-opacity ${
                         artVisible ? '' : 'opacity-45 cursor-not-allowed'
                       }`}
                     >
+                      <div className="grid grid-cols-2 gap-1">
+                        {(
+                          [
+                            { id: 'all' as const, label: '전체', title: '화면에 보이는 모든 별자리 도안 표시' },
+                            { id: 'center' as const, label: '중심', title: '화면 중심에 해당하는 별자리 도안만 표시' },
+                          ] as const
+                        ).map((opt) => {
+                          const active = artScope === opt.id;
+                          return (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              disabled={!artVisible}
+                              title={opt.title}
+                              onClick={() =>
+                                onChangeLayers((p) => ({
+                                  ...p,
+                                  constellationArtScope: opt.id,
+                                }))
+                              }
+                              aria-pressed={active}
+                              className={`py-0.5 px-1.5 border rounded text-[9.5px] font-medium whitespace-nowrap transition-colors ${
+                                artVisible ? 'cursor-pointer' : 'cursor-not-allowed'
+                              } ${active ? ui.buttonActive : ui.buttonIdle}`}
+                            >
+                              {opt.label}
+                            </button>
+                          );
+                        })}
+                      </div>
                       <div className="flex items-center justify-between text-[10px]">
                         <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
-                          고전 도안 투영 진하기
+                          별자리 그림 투영 진하기
                         </span>
                         <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
                           {Math.round(artOpacity * 100)}%
@@ -4406,7 +4440,7 @@ export function ControlSidebar({
                       <input
                         type="range"
                         min={0.05}
-                        max={0.85}
+                        max={1}
                         step={0.05}
                         disabled={!artVisible}
                         value={artOpacity}
@@ -4416,8 +4450,8 @@ export function ControlSidebar({
                             constellationArtOpacity: Number(e.target.value),
                           }))
                         }
-                        aria-label="고전 별자리 도안 투영 진하기"
-                        className={`w-full h-1.5 accent-cyan-500 ${
+                        aria-label="별자리 그림 투영 진하기"
+                        className={`w-full h-1.5 [accent-color:var(--ui-accent)] ${
                           artVisible ? 'cursor-pointer' : 'cursor-not-allowed'
                         }`}
                       />
@@ -5847,6 +5881,7 @@ export function ControlSidebar({
                 [
                   ['showGridEq', '적도 좌표 그리드 (RA/Dec)'],
                   ['showGridAltAz', '지평 좌표 그리드 (Alt/Az)'],
+                  ['showGridLabels', '그리드 숫자 표시 (적경·적위·방위·고도)'],
                 ] as [keyof LayerSettings, string][]
               ).map(([key, label]) => (
                 <label
@@ -5858,7 +5893,11 @@ export function ControlSidebar({
                   </span>
                   <input
                     type="checkbox"
-                    checked={Boolean(layers[key])}
+                    checked={
+                      key === 'showGridLabels'
+                        ? layers.showGridLabels !== false
+                        : Boolean(layers[key])
+                    }
                     onChange={(e) =>
                       onChangeLayers((p) => ({ ...p, [key]: e.target.checked }))
                     }
@@ -5868,12 +5907,154 @@ export function ControlSidebar({
               ))}
               {(() => {
                 const anyGridActive = layers.showGridEq || layers.showGridAltAz;
+                const gridLabelsActive = anyGridActive && layers.showGridLabels !== false;
+                const labelYPct = Math.round(layers.gridLabelYPercent ?? 80);
+                const labelXPct = Math.round(layers.gridLabelXPercent ?? 20);
+                const isCustomPos = labelYPct !== 80 || labelXPct !== 20;
                 return (
                   <div
-                    className={`pl-2 pt-0.5 pb-1 space-y-1.5 transition-opacity ${
+                    className={`pl-2 pt-0.5 pb-1 space-y-2 transition-opacity ${
                       anyGridActive ? '' : 'opacity-45 cursor-not-allowed'
                     }`}
                   >
+                    <div
+                      className={`rounded-md border p-2 space-y-1.5 transition-opacity ${ui.panelMuted} ${ui.border} ${
+                        gridLabelsActive ? '' : 'opacity-45'
+                      }`}
+                    >
+                      <div className="flex items-center justify-between gap-1">
+                        <span
+                          className={`text-[10px] font-semibold whitespace-nowrap tracking-[-0.04em] ${ui.textPrimary}`}
+                        >
+                          그리드 좌표 숫자 위치 설정
+                        </span>
+                        <button
+                          type="button"
+                          disabled={!gridLabelsActive || !isCustomPos}
+                          onClick={() =>
+                            onChangeLayers((p) => ({
+                              ...p,
+                              gridLabelYPercent: 80,
+                              gridLabelXPercent: 20,
+                            }))
+                          }
+                          title="기준 위치로 되돌리기 (가로 위 80% · 세로 좌 20%)"
+                          className={`px-1.5 py-0.5 rounded border text-[9px] font-mono tabular-nums transition-colors ${
+                            gridLabelsActive && isCustomPos
+                              ? `${ui.buttonIdle} cursor-pointer`
+                              : `${ui.border} ${ui.textMuted} opacity-50 cursor-default`
+                          }`}
+                        >
+                          기본 80·20
+                        </button>
+                      </div>
+
+                      {/* Mini viewport guide showing horizontal (top %) & vertical (left %) number lines */}
+                      <div
+                        aria-hidden="true"
+                        className="relative w-full h-11 rounded border overflow-hidden select-none"
+                        style={{
+                          backgroundColor: 'var(--ui-bg-main)',
+                          borderColor: 'var(--ui-border)',
+                        }}
+                      >
+                        <div
+                          className="absolute inset-x-0 border-t border-dashed"
+                          style={{
+                            top: `${labelYPct}%`,
+                            borderColor: 'var(--ui-accent)',
+                            opacity: 0.85,
+                          }}
+                        />
+                        <div
+                          className="absolute inset-y-0 border-l border-dashed"
+                          style={{
+                            left: `${labelXPct}%`,
+                            borderColor: 'var(--ui-accent)',
+                            opacity: 0.85,
+                          }}
+                        />
+                        <div
+                          className="absolute w-1.5 h-1.5 rounded-full -translate-x-1/2 -translate-y-1/2"
+                          style={{
+                            left: `${labelXPct}%`,
+                            top: `${labelYPct}%`,
+                            backgroundColor: 'var(--ui-accent)',
+                          }}
+                        />
+                        <span
+                          className="absolute top-0.5 left-1 text-[8px] font-mono opacity-65"
+                          style={{ color: 'var(--ui-text-muted)' }}
+                        >
+                          좌상단 0%
+                        </span>
+                        <span
+                          className="absolute bottom-0.5 right-1 text-[8px] font-mono tabular-nums"
+                          style={{ color: 'var(--ui-accent-text)' }}
+                        >
+                          가로 {labelYPct}% · 세로 {labelXPct}%
+                        </span>
+                      </div>
+
+                      <div className="space-y-0.5">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                            가로 줄 위치 (적경·방위 / 위에서)
+                          </span>
+                          <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                            {labelYPct}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={5}
+                          max={95}
+                          step={1}
+                          disabled={!gridLabelsActive}
+                          value={labelYPct}
+                          onChange={(e) =>
+                            onChangeLayers((p) => ({
+                              ...p,
+                              gridLabelYPercent: Number(e.target.value),
+                            }))
+                          }
+                          aria-label="그리드 가로 숫자 줄 위치 (위에서 %)"
+                          className={`w-full h-1.5 [accent-color:var(--ui-accent)] ${
+                            gridLabelsActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                          }`}
+                        />
+                      </div>
+
+                      <div className="space-y-0.5">
+                        <div className="flex items-center justify-between text-[10px]">
+                          <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                            세로 줄 위치 (적위·고도 / 왼쪽에서)
+                          </span>
+                          <span className={`font-mono tabular-nums ${ui.textSecondary}`}>
+                            {labelXPct}%
+                          </span>
+                        </div>
+                        <input
+                          type="range"
+                          min={5}
+                          max={95}
+                          step={1}
+                          disabled={!gridLabelsActive}
+                          value={labelXPct}
+                          onChange={(e) =>
+                            onChangeLayers((p) => ({
+                              ...p,
+                              gridLabelXPercent: Number(e.target.value),
+                            }))
+                          }
+                          aria-label="그리드 세로 숫자 줄 위치 (왼쪽에서 %)"
+                          className={`w-full h-1.5 [accent-color:var(--ui-accent)] ${
+                            gridLabelsActive ? 'cursor-pointer' : 'cursor-not-allowed'
+                          }`}
+                        />
+                      </div>
+                    </div>
+
                     <div className="space-y-0.5">
                       <div className="flex items-center justify-between text-[10px]">
                         <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
@@ -5897,7 +6078,7 @@ export function ControlSidebar({
                           }))
                         }
                         aria-label="좌표 그리드 선 굵기"
-                        className={`w-full h-1.5 accent-cyan-500 ${
+                        className={`w-full h-1.5 [accent-color:var(--ui-accent)] ${
                           anyGridActive ? 'cursor-pointer' : 'cursor-not-allowed'
                         }`}
                       />
@@ -5925,7 +6106,7 @@ export function ControlSidebar({
                           }))
                         }
                         aria-label="좌표 그리드 선 진하기"
-                        className={`w-full h-1.5 accent-cyan-500 ${
+                        className={`w-full h-1.5 [accent-color:var(--ui-accent)] ${
                           anyGridActive ? 'cursor-pointer' : 'cursor-not-allowed'
                         }`}
                       />
@@ -6541,8 +6722,23 @@ export function ControlSidebar({
                 </label>
               </div>
 
-              {/* Star Hopping Path Toggle */}
+              {/* FOV Ring Label Toggle */}
               <label className="flex items-center justify-between gap-1.5 pt-1 px-1 cursor-pointer">
+                <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
+                  시야링 옆 종류·시야각 표시
+                </span>
+                <input
+                  type="checkbox"
+                  checked={optics.showReticleLabel !== false}
+                  onChange={(e) =>
+                    onChangeOptics((p) => ({ ...p, showReticleLabel: e.target.checked }))
+                  }
+                  className="w-3.5 h-3.5 shrink-0 accent-cyan-500"
+                />
+              </label>
+
+              {/* Star Hopping Path Toggle */}
+              <label className="flex items-center justify-between gap-1.5 pt-0.5 px-1 cursor-pointer">
                 <span className={`whitespace-nowrap tracking-[-0.05em] ${ui.textMuted}`}>
                   선택된 천체대상 호핑(경로) 가이드
                 </span>
@@ -8894,7 +9090,7 @@ export function ControlSidebar({
                 ) : !authUser ? (
                   <div className="space-y-2">
                     <p className={`text-[10px] leading-relaxed break-keep ${ui.textMuted}`}>
-                      Google 계정으로 로그인하면 관측지, 장비, 관측목록, 챌린지, 성군 작도, 관측기록 및 설정이 여러 기기에 실시간 동기화됩니다.
+                      Google 계정으로 로그인하면 관측지, 장비, 관측목록, 챌린지, 그리기, 관측기록 및 설정이 여러 기기에 실시간 동기화됩니다.
                     </p>
                     <button
                       type="button"
@@ -9058,82 +9254,217 @@ export function ControlSidebar({
                 )}
               </div>
 
-              {/* Theme Mode Quick Switcher */}
+              {/* Screen Theme Preset Selector (9 Curated Presets + Red Night-Vision Intensity) */}
               <div className={`border rounded-md p-2.5 space-y-2 ${cardIdleCls}`}>
-                <div className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}>
-                  <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
-                  <span>화면 테마</span>
-                </div>
-                <div className="grid grid-cols-3 gap-1">
-                  <button
-                    type="button"
-                    onClick={() => onChangeTheme('dark')}
-                    className={`py-1.5 px-1 border rounded text-[10.5px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
-                      theme === 'dark' ? ui.buttonActive : ui.buttonIdle
-                    }`}
-                  >
-                    <Moon className="w-3 h-3 shrink-0" />
-                    <span>다크</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChangeTheme('white')}
-                    className={`py-1.5 px-1 border rounded text-[10.5px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
-                      theme === 'white' ? ui.buttonActive : ui.buttonIdle
-                    }`}
-                  >
-                    <Sun className="w-3 h-3 shrink-0" />
-                    <span>화이트</span>
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => onChangeTheme('red')}
-                    className={`py-1.5 px-1 border rounded text-[10.5px] font-medium flex items-center justify-center gap-1 transition-colors cursor-pointer ${
-                      theme === 'red' ? ui.buttonActive : ui.buttonIdle
-                    }`}
-                  >
-                    <span className="w-2.5 h-2.5 rounded-full bg-red-500 shrink-0" />
-                    <span>적색</span>
-                  </button>
+                <div className="flex items-center justify-between gap-1">
+                  <div className={`font-semibold text-[11px] flex items-center gap-1.5 ${ui.textPrimary}`}>
+                    <SlidersHorizontal className="w-3.5 h-3.5 shrink-0" />
+                    <span>화면 테마</span>
+                  </div>
+                  <span className={`text-[9px] ${ui.textMuted}`}>
+                    UI · 성도 일괄 적용
+                  </span>
                 </div>
 
-                {theme === 'red' && (
-                  <div className={`pt-2 border-t space-y-1.5 ${ui.divider}`}>
-                    <div className="flex items-center justify-between gap-1 text-[10px]">
-                      <span className={`font-medium ${ui.textSecondary}`}>적색 정도</span>
-                      <div className="flex items-center gap-1.5">
-                        <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
-                          {redIntensity}%
-                        </span>
-                        {redIntensity !== 50 && (
-                          <button
-                            type="button"
-                            onClick={() => onChangeRedIntensity(50)}
-                            title="적색 정도 기본값(50%) 복원"
-                            className={`px-1 py-0.5 border rounded text-[9px] cursor-pointer ${ui.buttonIdle}`}
+                {/* 9 Curated UI Theme Presets (Dropdown Selector) */}
+                {(() => {
+                  const activePreset =
+                    UI_THEME_PRESETS.find((p) => p.id === uiThemePreset) ?? UI_THEME_PRESETS[0];
+                  const isRedNightActive = uiThemePreset === 'red-night' || theme === 'red';
+                  return (
+                    <div className="space-y-1.5">
+                      <div className="relative">
+                        <button
+                          type="button"
+                          onClick={() => setThemePresetDropdownOpen((o) => !o)}
+                          aria-expanded={themePresetDropdownOpen}
+                          aria-haspopup="listbox"
+                          className={`w-full flex items-center justify-between gap-1.5 px-2 py-1.5 border rounded-md text-left transition-colors cursor-pointer ${ui.input}`}
+                        >
+                          <span className="flex items-center gap-1.5 min-w-0">
+                            <span
+                              className="inline-flex items-center shrink-0 rounded overflow-hidden border"
+                              style={{ borderColor: activePreset.border }}
+                              aria-hidden="true"
+                            >
+                              <span
+                                className="w-2 h-3.5 block"
+                                style={{ backgroundColor: activePreset.bgMain }}
+                              />
+                              <span
+                                className="w-2 h-3.5 block"
+                                style={{ backgroundColor: activePreset.bgSurface }}
+                              />
+                              <span
+                                className="w-2 h-3.5 block"
+                                style={{ backgroundColor: activePreset.accent }}
+                              />
+                            </span>
+                            <span className={`text-[10.5px] font-semibold truncate ${ui.textPrimary}`}>
+                              {activePreset.order}. {activePreset.name}
+                            </span>
+                          </span>
+                          <ChevronDown
+                            className={`w-3.5 h-3.5 shrink-0 transition-transform duration-150 ${ui.textMuted} ${
+                              themePresetDropdownOpen ? 'rotate-180' : ''
+                            }`}
+                          />
+                        </button>
+
+                        {themePresetDropdownOpen && (
+                          <div
+                            role="listbox"
+                            aria-label="테마 프리셋 선택"
+                            className={`mt-1 border rounded-md p-1 space-y-1 max-h-[290px] overflow-y-auto astro-scroll shadow-md ${ui.panel}`}
                           >
-                            기본
-                          </button>
+                            {UI_THEME_PRESETS.map((preset) => {
+                              const isActive = uiThemePreset === preset.id;
+                              return (
+                                <button
+                                  key={preset.id}
+                                  type="button"
+                                  role="option"
+                                  aria-selected={isActive}
+                                  onClick={() => {
+                                    onChangeUiThemePreset(preset.id);
+                                    setThemePresetDropdownOpen(false);
+                                  }}
+                                  className={`w-full text-left p-1.5 border rounded transition-colors cursor-pointer space-y-0.5 ${
+                                    isActive
+                                      ? ui.buttonActive
+                                      : `${ui.panelMuted} ${ui.border} hover:opacity-95`
+                                  }`}
+                                >
+                                  <div className="flex items-center justify-between gap-1.5">
+                                    <span className="flex items-center gap-1.5 min-w-0">
+                                      <span
+                                        className="inline-flex items-center shrink-0 rounded overflow-hidden border"
+                                        style={{ borderColor: preset.border }}
+                                        aria-hidden="true"
+                                      >
+                                        <span
+                                          className="w-2 h-3 block"
+                                          style={{ backgroundColor: preset.bgMain }}
+                                        />
+                                        <span
+                                          className="w-2 h-3 block"
+                                          style={{ backgroundColor: preset.bgSurface }}
+                                        />
+                                        <span
+                                          className="w-2 h-3 block"
+                                          style={{ backgroundColor: preset.accent }}
+                                        />
+                                      </span>
+                                      <span
+                                        className={`text-[10px] font-semibold truncate ${
+                                          isActive ? '' : ui.textPrimary
+                                        }`}
+                                      >
+                                        {preset.order}. {preset.name}
+                                      </span>
+                                    </span>
+                                    <span
+                                      className={`text-[8.5px] shrink-0 px-1 py-0.5 rounded border ${
+                                        isActive
+                                          ? 'border-current/40 bg-black/10'
+                                          : `${ui.border} ${ui.textMuted}`
+                                      }`}
+                                    >
+                                      {preset.subtitle}
+                                    </span>
+                                  </div>
+                                  <div
+                                    className={`flex items-center justify-between gap-1 text-[8.5px] font-mono ${
+                                      isActive ? 'opacity-90' : ui.textMuted
+                                    }`}
+                                  >
+                                    <span>
+                                      {preset.bgMain} / {preset.bgSurface}
+                                    </span>
+                                    <span className="inline-flex items-center gap-1 shrink-0">
+                                      <span
+                                        className="w-2 h-2 rounded-full inline-block border border-white/30"
+                                        style={{ backgroundColor: preset.accent }}
+                                      />
+                                      <span>{preset.accentName}</span>
+                                    </span>
+                                  </div>
+                                  <p
+                                    className={`text-[9px] leading-snug break-keep ${
+                                      isActive ? 'opacity-95' : ui.textSecondary
+                                    }`}
+                                  >
+                                    {preset.description}
+                                  </p>
+                                </button>
+                              );
+                            })}
+                          </div>
                         )}
                       </div>
+
+                      {!themePresetDropdownOpen && (
+                        <div
+                          className={`p-1.5 border rounded space-y-0.5 ${ui.panelMuted} ${ui.border}`}
+                        >
+                          <div className={`flex items-center justify-between gap-1 text-[9px] font-mono ${ui.textMuted}`}>
+                            <span>
+                              {activePreset.bgMain} / {activePreset.bgSurface}
+                            </span>
+                            <span className="inline-flex items-center gap-1 shrink-0">
+                              <span
+                                className="w-2 h-2 rounded-full inline-block border border-white/30"
+                                style={{ backgroundColor: activePreset.accent }}
+                              />
+                              <span>{activePreset.accentName}</span>
+                            </span>
+                          </div>
+                          <p className={`text-[9.5px] leading-snug break-keep ${ui.textSecondary}`}>
+                            {activePreset.description}
+                          </p>
+                        </div>
+                      )}
+
+                      {isRedNightActive && (
+                        <div className={`pt-2 border-t space-y-1.5 ${ui.divider}`}>
+                          <div className="flex items-center justify-between gap-1 text-[10px]">
+                            <span className={`font-medium ${ui.textSecondary}`}>적색 정도</span>
+                            <div className="flex items-center gap-1.5">
+                              <span className={`font-mono tabular-nums font-semibold ${ui.textPrimary}`}>
+                                {redIntensity}%
+                              </span>
+                              {redIntensity !== 50 && (
+                                <button
+                                  type="button"
+                                  onClick={() => onChangeRedIntensity(50)}
+                                  title="적색 정도 기본값(50%) 복원"
+                                  className={`px-1 py-0.5 border rounded text-[9px] cursor-pointer ${ui.buttonIdle}`}
+                                >
+                                  기본
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                          <input
+                            type="range"
+                            min={0}
+                            max={100}
+                            step={5}
+                            value={redIntensity}
+                            onChange={(e) => onChangeRedIntensity(Number(e.target.value))}
+                            aria-label="적색 정도 조절"
+                            className="w-full h-1.5 cursor-pointer accent-red-600"
+                          />
+                          <div className={`flex items-center justify-between text-[9px] ${ui.textMuted}`}>
+                            <span>연하게 (밝음)</span>
+                            <span>표준</span>
+                            <span>진하게 (암적응)</span>
+                          </div>
+                        </div>
+                      )}
                     </div>
-                    <input
-                      type="range"
-                      min={0}
-                      max={100}
-                      step={5}
-                      value={redIntensity}
-                      onChange={(e) => onChangeRedIntensity(Number(e.target.value))}
-                      aria-label="적색 정도 조절"
-                      className="w-full h-1.5 cursor-pointer accent-red-600"
-                    />
-                    <div className={`flex items-center justify-between text-[9px] ${ui.textMuted}`}>
-                      <span>연하게 (밝음)</span>
-                      <span>표준</span>
-                      <span>진하게 (암적응)</span>
-                    </div>
-                  </div>
-                )}
+                  );
+                })()}
               </div>
 
               {/* Dedicated Independent Section: 성도 표기 설정 (Constellations · Stars · DSOs · Cardinals) */}
@@ -9144,7 +9475,8 @@ export function ControlSidebar({
                   (layers.showConstellationArt ? 'classical' : 'modern');
                 const conArtLayerEnabled =
                   layers.showConstellationArt ?? conProjMode === 'classical';
-                const conArtOpacity = layers.constellationArtOpacity ?? 0.28;
+                const conArtScope = layers.constellationArtScope ?? 'all';
+                const conArtOpacity = layers.constellationArtOpacity ?? 0.45;
                 const starStyle: StarNameStyle = layers.starNameStyle ?? 'traditional';
                 const dsoStyle: DsoNameStyle = layers.dsoNameStyle ?? 'code_name';
 
@@ -9468,6 +9800,58 @@ export function ControlSidebar({
                             </button>
                           </div>
 
+                          {/* 표시 범위: 전체 / 중심 */}
+                          <div
+                            className={`space-y-1 transition-opacity ${
+                              conArtLayerEnabled ? '' : 'opacity-45 cursor-not-allowed'
+                            }`}
+                          >
+                            <div className="flex items-center justify-between text-[9.5px]">
+                              <span className={ui.textMuted}>표시 범위</span>
+                              <span className={`text-[9px] tracking-[-0.03em] ${ui.textMuted}`}>
+                                {conArtScope === 'center' ? '화면 중심 별자리만' : '모든 별자리 표시'}
+                              </span>
+                            </div>
+                            <div className="grid grid-cols-2 gap-1">
+                              {(
+                                [
+                                  {
+                                    id: 'all' as const,
+                                    label: '전체',
+                                    title: '화면에 보이는 모든 별자리 도안을 표시합니다',
+                                  },
+                                  {
+                                    id: 'center' as const,
+                                    label: '중심',
+                                    title: '현재 화면 중심에 해당하는 별자리 도안만 표시합니다',
+                                  },
+                                ] as const
+                              ).map((opt) => {
+                                const active = conArtScope === opt.id;
+                                return (
+                                  <button
+                                    key={opt.id}
+                                    type="button"
+                                    disabled={!conArtLayerEnabled}
+                                    title={opt.title}
+                                    onClick={() =>
+                                      onChangeLayers((p) => ({
+                                        ...p,
+                                        constellationArtScope: opt.id,
+                                      }))
+                                    }
+                                    aria-pressed={active}
+                                    className={`py-1 px-1.5 border rounded text-[10px] font-medium whitespace-nowrap transition-colors ${
+                                      conArtLayerEnabled ? 'cursor-pointer' : 'cursor-not-allowed'
+                                    } ${active ? ui.buttonActive : ui.buttonIdle}`}
+                                  >
+                                    {opt.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+
                           <div
                             className={`space-y-0.5 transition-opacity ${
                               conArtLayerEnabled ? '' : 'opacity-45 cursor-not-allowed'
@@ -9482,7 +9866,7 @@ export function ControlSidebar({
                             <input
                               type="range"
                               min={0.05}
-                              max={0.85}
+                              max={1}
                               step={0.05}
                               disabled={!conArtLayerEnabled}
                               value={conArtOpacity}
@@ -9493,7 +9877,7 @@ export function ControlSidebar({
                                 }))
                               }
                               aria-label="고전 도안 투영 진하기"
-                              className={`w-full h-1.5 accent-cyan-500 ${
+                              className={`w-full h-1.5 [accent-color:var(--ui-accent)] ${
                                 conArtLayerEnabled ? 'cursor-pointer' : 'cursor-not-allowed'
                               }`}
                             />

@@ -75,6 +75,9 @@ export function sanitizeLayerSettings(
   return {
     showGridEq: readBool(obj.showGridEq, fallback.showGridEq),
     showGridAltAz: readBool(obj.showGridAltAz, fallback.showGridAltAz),
+    showGridLabels: readBool(obj.showGridLabels, fallback.showGridLabels),
+    gridLabelYPercent: clampNum(obj.gridLabelYPercent, fallback.gridLabelYPercent ?? 80, 5, 95),
+    gridLabelXPercent: clampNum(obj.gridLabelXPercent, fallback.gridLabelXPercent ?? 20, 5, 95),
     gridLineWidth: clampNum(obj.gridLineWidth, fallback.gridLineWidth, 0.2, 2.5),
     gridLineOpacity: clampNum(obj.gridLineOpacity, fallback.gridLineOpacity, 0.05, 1.0),
     showHorizon: readBool(obj.showHorizon, fallback.showHorizon),
@@ -105,11 +108,15 @@ export function sanitizeLayerSettings(
         ? true
         : fallback.showConstellationArt ?? false
     ),
+    constellationArtScope:
+      obj.constellationArtScope === 'center' || obj.constellationArtScope === 'all'
+        ? obj.constellationArtScope
+        : fallback.constellationArtScope ?? 'all',
     constellationArtOpacity: clampNum(
       obj.constellationArtOpacity,
-      fallback.constellationArtOpacity ?? 0.28,
+      fallback.constellationArtOpacity ?? 0.45,
       0.05,
-      0.85
+      1.0
     ),
     showConstellationBoundaries: readBool(
       obj.showConstellationBoundaries,
@@ -428,6 +435,9 @@ export function downloadLayerSettingsFile(
 const RECOGNIZED_LAYER_KEYS: readonly string[] = [
   'showGridEq',
   'showGridAltAz',
+  'showGridLabels',
+  'gridLabelYPercent',
+  'gridLabelXPercent',
   'gridLineWidth',
   'gridLineOpacity',
   'showHorizon',
@@ -438,6 +448,7 @@ const RECOGNIZED_LAYER_KEYS: readonly string[] = [
   'showConstellationLines',
   'constellationProjectionMode',
   'showConstellationArt',
+  'constellationArtScope',
   'constellationArtOpacity',
   'showConstellationNames',
   'showSolarSystem',

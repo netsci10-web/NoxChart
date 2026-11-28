@@ -68,7 +68,10 @@ export class LabelPlacer {
   }
 
   /**
-   * Find optimal non-overlapping label placement around (cx, cy) via 8-direction search.
+   * Find optimal non-overlapping label placement around (cx, cy).
+   * When `mode === 'horizontalSides'`, strictly positions the label to the right or left
+   * of the target (vertically centered first, then gentle left/right vertical shifts) so the
+   * target itself is never covered.
    */
   public placeLabel(
     cx: number,
@@ -77,21 +80,36 @@ export class LabelPlacer {
     textW: number,
     textH: number,
     viewWidth: number,
-    viewHeight: number
+    viewHeight: number,
+    mode: 'default' | 'horizontalSides' = 'default'
   ): { x: number; y: number } | null {
-    const pad = 4;
+    const pad = mode === 'horizontalSides' ? 5 : 4;
     const r = radius + pad;
 
-    const offsets = [
-      { dx: r, dy: -r - textH },              // Top-right
-      { dx: r, dy: r },                       // Bottom-right
-      { dx: -r - textW, dy: -r - textH },     // Top-left
-      { dx: -r - textW, dy: r },              // Bottom-left
-      { dx: -textW / 2, dy: -r - textH },     // Top-center
-      { dx: -textW / 2, dy: r },              // Bottom-center
-      { dx: r + 2, dy: -textH / 2 },          // Right-middle
-      { dx: -r - textW - 2, dy: -textH / 2 }, // Left-middle
-    ];
+    const offsets =
+      mode === 'horizontalSides'
+        ? [
+            { dx: r, dy: -textH / 2 },                   // Right-center (primary)
+            { dx: -r - textW, dy: -textH / 2 },          // Left-center (secondary)
+            { dx: r, dy: -textH * 0.9 },                 // Right slightly up
+            { dx: -r - textW, dy: -textH * 0.9 },        // Left slightly up
+            { dx: r, dy: -textH * 0.1 },                 // Right slightly down
+            { dx: -r - textW, dy: -textH * 0.1 },        // Left slightly down
+            { dx: r + 2, dy: -textH - 2 },               // Right-upper
+            { dx: -r - textW - 2, dy: -textH - 2 },      // Left-upper
+            { dx: r + 2, dy: 2 },                        // Right-lower
+            { dx: -r - textW - 2, dy: 2 },               // Left-lower
+          ]
+        : [
+            { dx: r, dy: -r - textH },                   // Top-right
+            { dx: r, dy: r },                            // Bottom-right
+            { dx: -r - textW, dy: -r - textH },          // Top-left
+            { dx: -r - textW, dy: r },                   // Bottom-left
+            { dx: -textW / 2, dy: -r - textH },          // Top-center
+            { dx: -textW / 2, dy: r },                   // Bottom-center
+            { dx: r + 2, dy: -textH / 2 },               // Right-middle
+            { dx: -r - textW - 2, dy: -textH / 2 },      // Left-middle
+          ];
 
     for (const offset of offsets) {
       const x1 = cx + offset.dx;

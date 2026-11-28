@@ -70,9 +70,14 @@ import {
   RAD2DEG,
   unprojectStereographic,
 } from '../utils/astronomy';
-import { formatLinkedReticleTitle, hitTestAsterisms } from '../utils/asterismRenderer';
+import {
+  destinationPointSpherical,
+  formatLinkedReticleTitle,
+  hitTestAsterisms,
+} from '../utils/asterismRenderer';
 import { formatCatalogCode, formatObjectDisplayName } from '../utils/catalogNames';
 import { renderStarChart, RenderResult } from '../utils/chartRenderer';
+import { subscribeConstellationArtLoad } from '../utils/constellationArtRenderer';
 import { getPlanetRenderer } from '../utils/planetRenderer';
 import { getSolarSystemBodies, subscribeMpcAsteroids } from '../utils/solarSystem';
 import { getUiTheme } from '../utils/themeClasses';
@@ -618,8 +623,12 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
     });
     const [planetTexRev, setPlanetTexRev] = useState(0);
     const [mpcCatalogRev, setMpcCatalogRev] = useState(0);
+    const [constellationArtRev, setConstellationArtRev] = useState(0);
     useEffect(() => {
       return subscribeMpcAsteroids(() => setMpcCatalogRev((r) => r + 1));
+    }, []);
+    useEffect(() => {
+      return subscribeConstellationArtLoad(() => setConstellationArtRev((r) => r + 1));
     }, []);
     const [fovEditing, setFovEditing] = useState(false);
     const [fovInputDraft, setFovInputDraft] = useState('');
@@ -1434,6 +1443,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       solarTrails,
       planetTexRev,
       mpcCatalogRev,
+      constellationArtRev,
       asterismStore,
       asterismMode,
       asterismTool,
@@ -1506,6 +1516,67 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
       };
     };
 
+    const findNearestDividerTickSnap = (
+      x: number,
+      y: number,
+      proj: ReturnType<typeof createProjectionParams>,
+      curFov: number,
+      radius: number
+    ): { snap: AsterismSnapPreview; dist: number } | null => {
+      if (asterismStore.objects.length === 0) return null;
+      const visibleLayerIds = new Set(
+        asterismStore.layers.filter((l) => l.visible).map((l) => l.id)
+      );
+      const groupById = new Map(asterismStore.asterisms.map((g) => [g.id, g]));
+      let bestSnap: AsterismSnapPreview | null = null;
+      let bestDist = Infinity;
+
+      for (const obj of asterismStore.objects) {
+        if (obj.type !== 'divider' || obj.vertices.length < 2) continue;
+        if (!visibleLayerIds.has(obj.layerId)) continue;
+        const grp = groupById.get(obj.asterismId);
+        if (grp && !grp.visible) continue;
+        const [minFov, maxFov] = grp ? grp.visibleFovRange : obj.visibleFovRange;
+        if (curFov < minFov * 0.85 || curFov > maxFov * 1.15) continue;
+
+        const vA = obj.vertices[0];
+        const vB = obj.vertices[obj.vertices.length - 1];
+        const divCount = Math.max(2, Math.min(12, Math.round(obj.divisionCount ?? 4)));
+        const totalSep = angularDistanceDeg(vA.raDeg, vA.decDeg, vB.raDeg, vB.decDeg);
+        const pa = positionAngleDeg(vA.raDeg, vA.decDeg, vB.raDeg, vB.decDeg);
+
+        for (let k = 0; k <= divCount; k++) {
+          const frac = k / divCount;
+          const ptCel =
+            k === 0
+              ? { raDeg: vA.raDeg, decDeg: vA.decDeg }
+              : k === divCount
+              ? { raDeg: vB.raDeg, decDeg: vB.decDeg }
+              : destinationPointSpherical(vA.raDeg, vA.decDeg, pa, totalSep * frac);
+          const projPt = projectStereographic(ptCel.raDeg, ptCel.decDeg, proj, 40);
+          if (!projPt) continue;
+          const d = Math.hypot(projPt.x - x, projPt.y - y);
+          if (d <= radius && d < bestDist) {
+            bestDist = d;
+            const tickIdx = obj.divisionReverseLabels ? divCount - k : k;
+            bestSnap = {
+              x: projPt.x,
+              y: projPt.y,
+              raDeg: ptCel.raDeg,
+              decDeg: ptCel.decDeg,
+              snapped: true,
+              starName:
+                k === 0 || k === divCount
+                  ? `등분 끝점 (${tickIdx}/${divCount})`
+                  : `등분 눈금 ${tickIdx}/${divCount}`,
+            };
+          }
+        }
+      }
+
+      return bestSnap ? { snap: bestSnap, dist: bestDist } : null;
+    };
+
     const computeSnapAtPoint = (x: number, y: number): AsterismSnapPreview | null => {
       const eff = getEffectiveTransformAtPoint(x, y, view);
       const proj = createProjectionParams(
@@ -1538,6 +1609,11 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
               bestTarget = t;
             }
           }
+        }
+
+        const dividerHit = findNearestDividerTickSnap(x, y, proj, eff.view.fsz, radius);
+        if (dividerHit && dividerHit.dist + 0.6 < bestScore) {
+          return dividerHit.snap;
         }
 
         if (bestTarget) {
@@ -1632,6 +1708,24 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         observer.lat,
         eff.rotationDeg
       );
+      const dividerHit = findNearestDividerTickSnap(
+        x,
+        y,
+        proj,
+        eff.view.fsz,
+        Math.max(10, asterismStore.settings.snapRadiusPx)
+      );
+      if (dividerHit) {
+        return {
+          point: {
+            raDeg: dividerHit.snap.raDeg,
+            decDeg: dividerHit.snap.decDeg,
+            snapped: true,
+            label: dividerHit.snap.starName,
+          },
+          hit: null,
+        };
+      }
       const unproj = unprojectStereographic(x, y, proj);
       if (!unproj) return null;
       return {
@@ -2073,7 +2167,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
               }
             }
             onSelectAsterism(null);
-            // Fall through to allow normal star/DSO/planet selection when no asterism was clicked
+            // In drawing mode, clicking celestial targets must not open celestial info
+            return;
           } else {
             const snap = computeSnapAtPoint(clickX, clickY);
             if (!snap) return;
@@ -2212,8 +2307,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         const hitObj = tryHitAsterismShape();
         if (hitObj) {
           onOpenAsterismShapeProps(hitObj.asterismId, hitObj.id);
-          return;
         }
+        return;
       }
 
       const hit = findHitTarget(x, y, 8);
@@ -2450,20 +2545,14 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
           <div
             ref={contextMenuRef}
             role="menu"
-            aria-label={contextMenu.mode === 'asterism' ? '작도 도구 빠른 메뉴' : '성도 빠른 메뉴'}
+            aria-label={contextMenu.mode === 'asterism' ? '그리기 도구 빠른 메뉴' : '성도 빠른 메뉴'}
             onContextMenu={(e) => e.preventDefault()}
-            className={`no-print absolute z-50 py-1 border shadow-2xl backdrop-blur-md text-[12px] max-h-[calc(100%-16px)] overflow-y-auto ${
+            className={`no-print absolute z-50 py-1 border shadow-2xl backdrop-blur-md text-[12px] max-h-[calc(100%-16px)] overflow-y-auto bg-[var(--ui-bg-main)] border-[var(--ui-border)] text-[var(--ui-text-primary)] ${
               contextMenu.target
                 ? 'min-w-[178px]'
                 : contextMenu.mode === 'asterism'
                 ? 'min-w-[152px]'
                 : 'min-w-[116px]'
-            } ${
-              theme === 'white'
-                ? 'bg-white/95 border-slate-300 text-slate-800'
-                : theme === 'red'
-                ? 'bg-[#120202]/95 border-[#5A1212] text-[#EF4444]'
-                : 'bg-[#0C1322]/95 border-[#293B5A] text-slate-100'
             }`}
             style={{
               left: `${contextMenu.x}px`,
@@ -2472,19 +2561,9 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             }}
           >
             {(() => {
-              const dividerCls =
-                theme === 'white'
-                  ? 'border-slate-200'
-                  : theme === 'red'
-                  ? 'border-[#3F0A0A]'
-                  : 'border-slate-700/80';
+              const dividerCls = 'border-[var(--ui-border)]';
               const rowPad = contextMenu.mode === 'asterism' ? 'py-1' : 'py-1.5';
-              const baseItemCls =
-                theme === 'white'
-                  ? `w-full px-2.5 ${rowPad} flex items-center gap-2 text-left text-[11.5px] font-medium text-slate-700 hover:bg-blue-50 hover:text-blue-700 transition-colors cursor-pointer`
-                  : theme === 'red'
-                  ? `w-full px-2.5 ${rowPad} flex items-center gap-2 text-left text-[11.5px] font-medium text-[#EF4444] hover:bg-[#2A0505] hover:text-[#FF6B6B] transition-colors cursor-pointer`
-                  : `w-full px-2.5 ${rowPad} flex items-center gap-2 text-left text-[11.5px] font-medium text-slate-200 hover:bg-[#192740] hover:text-cyan-300 transition-colors cursor-pointer`;
+              const baseItemCls = `w-full px-2.5 ${rowPad} flex items-center gap-2 text-left text-[11.5px] font-medium text-[var(--ui-text-primary)] hover:bg-[var(--ui-bg-hover)] hover:text-[var(--ui-accent-text)] transition-colors cursor-pointer`;
 
               const renderOriginalChartMenu = (target: SelectedItem | null) => {
                 const inTonight = target ? sessionIds.has(target.data.id) : false;
@@ -2500,13 +2579,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                     {target && (
                       <>
                         <div
-                          className={`px-2.5 py-1.5 mb-0.5 border-b flex items-center justify-between gap-2 select-none ${dividerCls} ${
-                            theme === 'white'
-                              ? 'bg-slate-100/80 text-slate-900'
-                              : theme === 'red'
-                              ? 'bg-[#220404]/90 text-[#FCA5A5]'
-                              : 'bg-[#131E33]/90 text-cyan-200'
-                          }`}
+                          className={`px-2.5 py-1.5 mb-0.5 border-b flex items-center justify-between gap-2 select-none bg-[var(--ui-bg-surface)] text-[var(--ui-accent-text)] ${dividerCls}`}
                           title={targetTitle}
                         >
                           <span className="text-[11.5px] font-semibold truncate max-w-[148px]">
@@ -2582,13 +2655,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                           onJumpCardinal?.(dir.az);
                           setContextMenu(null);
                         }}
-                        className={`w-full px-2.5 ${rowPad} flex items-center justify-between text-left text-[11.5px] font-medium transition-colors cursor-pointer ${
-                          theme === 'white'
-                            ? 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'
-                            : theme === 'red'
-                            ? 'text-[#EF4444] hover:bg-[#2A0505] hover:text-[#FF6B6B]'
-                            : 'text-slate-200 hover:bg-[#192740] hover:text-cyan-300'
-                        }`}
+                        className={`w-full px-2.5 ${rowPad} flex items-center justify-between text-left text-[11.5px] font-medium transition-colors cursor-pointer text-[var(--ui-text-primary)] hover:bg-[var(--ui-bg-hover)] hover:text-[var(--ui-accent-text)]`}
                       >
                         <span className="flex items-center gap-2">
                           <Compass className="w-3.5 h-3.5 shrink-0 opacity-75" />
@@ -2608,16 +2675,8 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                 const itemCls = (active: boolean) =>
                   `w-full px-2.5 ${rowPad} flex items-center justify-between gap-2 text-left text-[11.5px] font-medium transition-colors cursor-pointer ${
                     active
-                      ? theme === 'white'
-                        ? 'bg-blue-50 text-blue-700'
-                        : theme === 'red'
-                        ? 'bg-[#2A0505] text-[#FF6B6B]'
-                        : 'bg-[#192740] text-cyan-300'
-                      : theme === 'white'
-                      ? 'text-slate-700 hover:bg-blue-50 hover:text-blue-700'
-                      : theme === 'red'
-                      ? 'text-[#EF4444] hover:bg-[#2A0505] hover:text-[#FF6B6B]'
-                      : 'text-slate-200 hover:bg-[#192740] hover:text-cyan-300'
+                      ? 'bg-[var(--ui-bg-hover)] text-[var(--ui-accent-text)]'
+                      : 'text-[var(--ui-text-primary)] hover:bg-[var(--ui-bg-hover)] hover:text-[var(--ui-accent-text)]'
                   }`;
                 const deleteTarget = contextMenu.deleteTarget;
                 const deleteTag =
@@ -2640,6 +2699,27 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
                   { id: 'polygon', label: '다각형', icon: <Hexagon className="w-3.5 h-3.5 shrink-0 opacity-80" /> },
                   { id: 'circle', label: '원', icon: <Circle className="w-3.5 h-3.5 shrink-0 opacity-80" /> },
                   { id: 'arrow', label: '방향선', icon: <ArrowUpRight className="w-3.5 h-3.5 shrink-0 opacity-80" /> },
+                  {
+                    id: 'divider',
+                    label: '등분선',
+                    icon: (
+                      <svg
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        strokeWidth={2}
+                        strokeLinecap="round"
+                        className="w-3.5 h-3.5 shrink-0 opacity-80"
+                        aria-hidden="true"
+                      >
+                        <line x1="3" y1="12" x2="21" y2="12" />
+                        <line x1="3" y1="8" x2="3" y2="16" />
+                        <line x1="9" y1="9.5" x2="9" y2="14.5" />
+                        <line x1="15" y1="9.5" x2="15" y2="14.5" />
+                        <line x1="21" y1="8" x2="21" y2="16" />
+                      </svg>
+                    ),
+                  },
                   { id: 'label', label: '텍스트', icon: <Type className="w-3.5 h-3.5 shrink-0 opacity-80" /> },
                 ];
                 return (
@@ -2850,7 +2930,7 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
         {/* Bottom-Left Crosshair Pointer Telemetry */}
         {pointerEq && pointerAltAz && (
           <div
-            className={`no-print pointer-events-none absolute z-20 bottom-3 border px-2 sm:px-3 py-1 sm:py-1.5 text-[10px] sm:text-[11px] font-mono tabular-nums backdrop-blur-sm transition-[left] duration-200 ease-out overflow-hidden ${ui.hudOverlay}`}
+            className={`no-print pointer-events-none absolute z-20 bottom-3 border px-2 sm:px-3 py-1 sm:py-1.5 text-[10px] sm:text-[11px] font-mono tabular-nums backdrop-blur-sm transition-[left] duration-200 ease-out overflow-hidden shadow-sm ${ui.hudOverlay}`}
             style={{
               borderRadius: '6px',
               left: `${hudLeftPx}px`,
@@ -2858,14 +2938,23 @@ export const StarChartCanvas = forwardRef<StarChartCanvasHandle, StarChartCanvas
             }}
           >
             <div className="flex flex-nowrap items-center gap-1.5 sm:gap-2 whitespace-nowrap overflow-hidden">
-              <Crosshair className="w-3.5 h-3.5 shrink-0" />
+              <Crosshair className={`w-3.5 h-3.5 shrink-0 ${ui.accentText}`} />
               <span className="shrink-0">
-                RA {formatRA(pointerEq.raDeg)} · Dec {formatDec(pointerEq.decDeg)}
+                <span className={ui.accentText}>RA</span>{' '}
+                <span className={ui.textPrimary}>{formatRA(pointerEq.raDeg)}</span>{' '}
+                <span className={ui.textMuted}>·</span>{' '}
+                <span className={ui.accentText}>Dec</span>{' '}
+                <span className={ui.textPrimary}>{formatDec(pointerEq.decDeg)}</span>
               </span>
-              <span aria-hidden="true" className="shrink-0">|</span>
+              <span aria-hidden="true" className={`shrink-0 ${ui.textMuted}`}>|</span>
               <span className="shrink-0">
-                고도 {pointerAltAz.altDeg.toFixed(1)}° · 방위각 {pointerAltAz.azDeg.toFixed(1)}° (
-                {getCompassDirection(pointerAltAz.azDeg, nameLang)})
+                <span className={ui.textSecondary}>고도</span>{' '}
+                <span className={ui.textPrimary}>{pointerAltAz.altDeg.toFixed(1)}°</span>{' '}
+                <span className={ui.textMuted}>·</span>{' '}
+                <span className={ui.textSecondary}>방위각</span>{' '}
+                <span className={ui.textPrimary}>
+                  {pointerAltAz.azDeg.toFixed(1)}° ({getCompassDirection(pointerAltAz.azDeg, nameLang)})
+                </span>
               </span>
             </div>
           </div>

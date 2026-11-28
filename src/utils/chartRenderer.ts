@@ -72,7 +72,6 @@ import {
   RAD2DEG,
 } from './astronomy';
 import {
-  drawCircleRimLabel,
   formatLinkedReticleTitle,
   getOpticsDirectionVector,
   renderAsterismsPass,
@@ -1357,38 +1356,244 @@ function drawOpticalReticles(
   const stereoRadiusPx = (diameterDeg: number) =>
     2 * proj.scale * Math.tan((diameterDeg * DEG2RAD) / 4);
 
-  if (optics.showTelrad) {
-    ctx.save();
-    ctx.strokeStyle = palette.reticleTelrad;
-    ctx.globalAlpha = 0.82;
-    ctx.lineWidth = 1.25;
-    for (const deg of [0.5, 2.0, 4.0]) {
-      const rPx = stereoRadiusPx(deg);
-      if (rPx >= 3 && rPx < Math.max(width, height)) {
-        ctx.beginPath();
-        ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
-        ctx.stroke();
-      }
-    }
-    ctx.font = '500 10px "IBM Plex Mono", monospace';
-    ctx.fillStyle = palette.reticleTelrad;
-    const outerR = stereoRadiusPx(4.0);
-    if (outerR > 12 && outerR < Math.min(width, height) * 0.48) {
-      ctx.fillText('Telrad 4°', cx + 4, cy - outerR - 4);
-    }
-    ctx.restore();
-  }
-
   const reticleLineWidth = Math.max(0.5, Math.min(6.0, optics.reticleLineWidth ?? 1.4));
   const reticleOpacity = Math.max(0.1, Math.min(1.0, optics.reticleOpacity ?? 0.85));
   const showReticleLabel = optics.showReticleLabel !== false;
   const reticleLabelDirection = optics.reticleLabelDirection ?? 'ne';
   const reticleDirVec = getOpticsDirectionVector(reticleLabelDirection);
 
+  const formatRingFovDeg = (deg: number): string => {
+    if (!Number.isFinite(deg)) return '0°';
+    const r = Number(deg.toFixed(2));
+    return `${r}°`;
+  };
+
+  // Collision-free, viewport-clamped FOV ring label renderer (works for both tiny & huge rings)
+  const placedRingLabelBoxes: { x: number; y: number; w: number; h: number }[] = [];
+  const baseDirAngle = Math.atan2(reticleDirVec.uy, reticleDirVec.ux);
+  const drawSmartRingLabel = (
+    rPx: number,
+    text: string,
+    color: string,
+    alpha: number,
+    preferredOffsetDeg = 0
+  ) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    const maxVisibleR = Math.hypot(cx, cy) - 2;
+    if (rPx < 3 || rPx > maxVisibleR) return;
+
+    ctx.save();
+    ctx.setLineDash([]);
+    ctx.font = '600 10.5px "IBM Plex Mono", "Pretendard", "Noto Sans KR", sans-serif';
+    const textW = ctx.measureText(trimmed).width;
+    const padX = 5;
+    const boxW = Math.ceil(textW) + padX * 2;
+    const boxH = 17;
+    const margin = 8;
+    const baseAng = baseDirAngle + preferredOffsetDeg * DEG2RAD;
+
+    const angleOffsetsDeg: number[] = [
+      0, 15, -15, 30, -30, 45, -45, 60, -60, 75, -75, 90, -90,
+      105, -105, 120, -120, 135, -135, 150, -150, 165, -165, 180,
+    ];
+    if (rPx > Math.min(cx, cy) * 0.8) {
+      for (let d = 5; d < 180; d += 5) {
+        if (d % 15 !== 0) {
+          angleOffsetsDeg.push(d, -d);
+        }
+      }
+    }
+
+    const overlapsPlaced = (bx: number, by: number): boolean => {
+      const gap = 3;
+      for (const b of placedRingLabelBoxes) {
+        if (
+          bx < b.x + b.w + gap &&
+          bx + boxW + gap > b.x &&
+          by < b.y + b.h + gap &&
+          by + boxH + gap > b.y
+        ) {
+          return true;
+        }
+      }
+      return false;
+    };
+
+    const fitsInViewport = (bx: number, by: number): boolean =>
+      bx >= margin &&
+      bx + boxW <= width - margin &&
+      by >= margin &&
+      by + boxH <= height - margin;
+
+    const computeBoxAt = (
+      rx: number,
+      ry: number,
+      ux: number,
+      uy: number,
+      dirSign: 1 | -1,
+      dist: number
+    ) => {
+      const ox = dirSign * ux;
+      const oy = dirSign * uy;
+      const px = rx + ox * dist;
+      const py = ry + oy * dist;
+      let bx = px - boxW / 2;
+      let by = py - boxH / 2;
+      if (ox > 0.25) bx = px;
+      else if (ox < -0.25) bx = px - boxW;
+      if (oy > 0.25) by = py;
+      else if (oy < -0.25) by = py - boxH;
+      return { bx, by, dist };
+    };
+
+    const radialAttempts: { dirSign: 1 | -1; dist: number }[] = [
+      { dirSign: 1, dist: 8 },
+      { dirSign: 1, dist: 20 },
+      { dirSign: 1, dist: 34 },
+      { dirSign: 1, dist: 50 },
+    ];
+
+    let chosen: { rx: number; ry: number; bx: number; by: number; dist: number } | null = null;
+    let fallback: { rx: number; ry: number; bx: number; by: number; dist: number } | null = null;
+
+    outer: for (const attempt of radialAttempts) {
+      for (const degOff of angleOffsetsDeg) {
+        const ang = baseAng + degOff * DEG2RAD;
+        const ux = Math.cos(ang);
+        const uy = Math.sin(ang);
+        const rx = cx + ux * rPx;
+        const ry = cy + uy * rPx;
+        if (rx < 4 || rx > width - 4 || ry < 4 || ry > height - 4) continue;
+
+        const { bx, by, dist } = computeBoxAt(rx, ry, ux, uy, attempt.dirSign, attempt.dist);
+        if (fitsInViewport(bx, by)) {
+          if (!fallback) fallback = { rx, ry, bx, by, dist };
+          if (!overlapsPlaced(bx, by)) {
+            chosen = { rx, ry, bx, by, dist };
+            break outer;
+          }
+        }
+      }
+    }
+
+    // Only if the ring is so large that no outward spot fits inside the viewport at any angle,
+    // clamp an outward placement at the closest visible rim point inside the viewport margin.
+    if (!chosen && !fallback) {
+      for (const degOff of angleOffsetsDeg) {
+        const ang = baseAng + degOff * DEG2RAD;
+        const ux = Math.cos(ang);
+        const uy = Math.sin(ang);
+        const rx = cx + ux * rPx;
+        const ry = cy + uy * rPx;
+        if (rx < 4 || rx > width - 4 || ry < 4 || ry > height - 4) continue;
+        const { bx, by, dist } = computeBoxAt(rx, ry, ux, uy, 1, 8);
+        const clampedBx = Math.max(margin, Math.min(width - margin - boxW, bx));
+        const clampedBy = Math.max(margin, Math.min(height - margin - boxH, by));
+        fallback = { rx, ry, bx: clampedBx, by: clampedBy, dist };
+        break;
+      }
+    }
+
+    const placed = chosen ?? fallback;
+    if (!placed) {
+      ctx.restore();
+      return;
+    }
+
+    const { rx, ry, bx, by, dist } = placed;
+    const clampedAlpha = Math.max(0.25, Math.min(1, alpha));
+
+    // Draw a subtle leader tick from the ring rim to the pill when stepped out
+    const nearX = Math.max(bx, Math.min(bx + boxW, rx));
+    const nearY = Math.max(by, Math.min(by + boxH, ry));
+    const rimDist = Math.hypot(nearX - rx, nearY - ry);
+    if (dist >= 14 || rimDist >= 8) {
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.globalAlpha = Math.min(0.75, clampedAlpha * 0.8);
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(rx, ry);
+      ctx.lineTo(nearX, nearY);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    // Crisp pill badge behind label text for readability over stars & grid lines
+    const radius = 3.5;
+    ctx.beginPath();
+    ctx.moveTo(bx + radius, by);
+    ctx.lineTo(bx + boxW - radius, by);
+    ctx.quadraticCurveTo(bx + boxW, by, bx + boxW, by + radius);
+    ctx.lineTo(bx + boxW, by + boxH - radius);
+    ctx.quadraticCurveTo(bx + boxW, by + boxH, bx + boxW - radius, by + boxH);
+    ctx.lineTo(bx + radius, by + boxH);
+    ctx.quadraticCurveTo(bx, by + boxH, bx, by + boxH - radius);
+    ctx.lineTo(bx, by + radius);
+    ctx.quadraticCurveTo(bx, by, bx + radius, by);
+    ctx.closePath();
+
+    ctx.globalAlpha = Math.min(0.95, clampedAlpha + 0.08);
+    ctx.fillStyle =
+      theme === 'white'
+        ? 'rgba(255, 255, 255, 0.92)'
+        : theme === 'red'
+        ? 'rgba(18, 3, 3, 0.90)'
+        : 'rgba(8, 13, 24, 0.86)';
+    ctx.fill();
+
+    ctx.strokeStyle = color;
+    ctx.globalAlpha = Math.min(0.7, clampedAlpha * 0.65);
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    ctx.globalAlpha = Math.max(0.85, clampedAlpha);
+    ctx.fillStyle = color;
+    ctx.textAlign = 'left';
+    ctx.textBaseline = 'middle';
+    ctx.fillText(trimmed, bx + padX, by + boxH / 2 + 0.5);
+
+    placedRingLabelBoxes.push({ x: bx, y: by, w: boxW, h: boxH });
+    ctx.restore();
+  };
+
+  if (optics.showTelrad) {
+    ctx.save();
+    ctx.strokeStyle = palette.reticleTelrad;
+    ctx.globalAlpha = 0.82;
+    ctx.lineWidth = 1.25;
+    const telradRings = [0.5, 2.0, 4.0] as const;
+    for (const deg of telradRings) {
+      const rPx = stereoRadiusPx(deg);
+      if (rPx >= 3 && rPx < Math.max(width, height) * 1.8) {
+        ctx.beginPath();
+        ctx.arc(cx, cy, rPx, 0, Math.PI * 2);
+        ctx.stroke();
+      }
+    }
+    if (showReticleLabel) {
+      const outerR = stereoRadiusPx(4.0);
+      const midR = stereoRadiusPx(2.0);
+      const innerR = stereoRadiusPx(0.5);
+      // Label outer 4° ring (and inner 2° / 0.5° rings when comfortably spaced)
+      if (outerR >= 3) {
+        drawSmartRingLabel(outerR, `Telrad (${formatRingFovDeg(4.0)})`, palette.reticleTelrad, 0.95, 26);
+      }
+      if (midR >= 22 && outerR - midR >= 22) {
+        drawSmartRingLabel(midR, `Telrad (${formatRingFovDeg(2.0)})`, palette.reticleTelrad, 0.88, 26);
+      }
+      if (innerR >= 20 && midR - innerR >= 22) {
+        drawSmartRingLabel(innerR, `Telrad (${formatRingFovDeg(0.5)})`, palette.reticleTelrad, 0.88, 26);
+      }
+    }
+    ctx.restore();
+  }
+
   if (optics.showFinder7x50) {
     const finderFov = Math.max(0.5, Math.min(30, optics.finderFovDeg ?? 7.0));
     const finderR = stereoRadiusPx(finderFov);
-    if (finderR >= 4 && finderR < Math.max(width, height) * 1.6) {
+    if (finderR >= 4 && finderR < Math.max(width, height) * 1.8) {
       ctx.save();
       const customFinderColor =
         typeof optics.finderColor === 'string' && /^#[0-9a-fA-F]{6}$/.test(optics.finderColor.trim())
@@ -1433,17 +1638,14 @@ function drawOpticalReticles(
         ctx.restore();
       }
 
-      if (showReticleLabel && finderR > 14 && finderR < Math.min(width, height) * 0.5) {
-        drawCircleRimLabel(
-          ctx,
-          cx + reticleDirVec.ux * finderR,
-          cy + reticleDirVec.uy * finderR,
-          reticleLabelDirection,
-          formatLinkedReticleTitle('finder', finderFov),
-          finderColor,
-          theme,
-          reticleOpacity
-        );
+      if (showReticleLabel && finderR >= 4) {
+        const customName = optics.finderLabel?.trim();
+        const finderTitle = customName
+          ? customName.includes('파인더')
+            ? `${customName} (${formatRingFovDeg(finderFov)})`
+            : `파인더 · ${customName} (${formatRingFovDeg(finderFov)})`
+          : formatLinkedReticleTitle('finder', finderFov);
+        drawSmartRingLabel(finderR, finderTitle, finderColor, reticleOpacity, 0);
       }
       ctx.restore();
     }
@@ -1451,7 +1653,7 @@ function drawOpticalReticles(
 
   if (optics.showEyepiece) {
     const rPx = stereoRadiusPx(optics.eyepieceFovDeg);
-    if (rPx >= 3 && rPx < Math.max(width, height) * 1.6) {
+    if (rPx >= 3 && rPx < Math.max(width, height) * 1.8) {
       ctx.save();
       const epColor =
         theme === 'white' ? '#D97706' : theme === 'red' ? '#DC2626' : '#F59E0B';
@@ -1491,7 +1693,7 @@ function drawOpticalReticles(
         ctx.stroke();
       }
 
-      if (showReticleLabel) {
+      if (showReticleLabel && rPx >= 3) {
         const magText =
           optics.eyepieceInputMode === 'calc' && optics.eyepieceFocalLengthMm > 0
             ? ` · ${(optics.telescopeFocalLengthMm / optics.eyepieceFocalLengthMm).toFixed(0)}×`
@@ -1500,21 +1702,15 @@ function drawOpticalReticles(
         const rotTag = rotActive ? `회전 ${Math.round(normRot)}°` : '';
         const extraTags = [flipTag, rotTag].filter(Boolean).join(' · ');
         const extraSuffix = extraTags ? ` · ${extraTags}` : '';
-        const baseTitle = formatLinkedReticleTitle('eyepiece', optics.eyepieceFovDeg);
-        const fullLabel =
-          magText || extraSuffix
-            ? `${baseTitle.slice(0, -1)}${magText}${extraSuffix})`
-            : baseTitle;
-        drawCircleRimLabel(
-          ctx,
-          cx + reticleDirVec.ux * rPx,
-          cy + reticleDirVec.uy * rPx,
-          reticleLabelDirection,
-          fullLabel,
-          epColor,
-          theme,
-          reticleOpacity
-        );
+        const rawEpName = optics.eyepieceLabel?.trim() || '';
+        const epKindPrefix =
+          rawEpName && rawEpName !== '망원경 아이피스'
+            ? rawEpName.includes('아이피스')
+              ? rawEpName
+              : `아이피스 · ${rawEpName}`
+            : '아이피스';
+        const fullLabel = `${epKindPrefix} (${formatRingFovDeg(optics.eyepieceFovDeg)}${magText}${extraSuffix})`;
+        drawSmartRingLabel(rPx, fullLabel, epColor, reticleOpacity, -26);
       }
       ctx.restore();
     }
@@ -1786,6 +1982,86 @@ function renderStarChartPass(
     return `${sign}${wholeDeg}°${String(arcMin).padStart(2, '0')}′`;
   };
 
+  const showGridLabels = layers.showGridLabels !== false;
+  const gridLabelYPercent = Math.max(5, Math.min(95, layers.gridLabelYPercent ?? 80));
+  const gridLabelXPercent = Math.max(5, Math.min(95, layers.gridLabelXPercent ?? 20));
+  const meridianLabelTargetY = Math.max(
+    14,
+    Math.min(height - 8, height * (gridLabelYPercent / 100))
+  );
+  const parallelLabelTargetX = Math.max(
+    8,
+    Math.min(width - 42, width * (gridLabelXPercent / 100))
+  );
+
+  // Find where a projected sky curve intersects a target horizontal line (default 80% down from top)
+  const findProjectedCurveYCrossing = (
+    skyPts: { raDeg: number; decDeg: number }[],
+    targetY: number
+  ): { x: number; y: number } | null => {
+    let prev: { x: number; y: number } | null = null;
+    let best: { x: number; y: number } | null = null;
+    let bestDist = Infinity;
+    const centerX = width * 0.5;
+    for (let i = 0; i < skyPts.length; i++) {
+      const cur = projectStereographic(skyPts[i].raDeg, skyPts[i].decDeg, proj, 180);
+      if (prev && cur) {
+        if (Math.hypot(cur.x - prev.x, cur.y - prev.y) < 420) {
+          const d0 = prev.y - targetY;
+          const d1 = cur.y - targetY;
+          if ((d0 <= 0 && d1 >= 0) || (d0 >= 0 && d1 <= 0)) {
+            const denom = cur.y - prev.y;
+            const t = Math.abs(denom) > 1e-4 ? (targetY - prev.y) / denom : 0.5;
+            const lx = prev.x + t * (cur.x - prev.x);
+            if (lx > 8 && lx < width - 44) {
+              const dist = Math.abs(lx - centerX);
+              if (dist < bestDist) {
+                bestDist = dist;
+                best = { x: lx, y: targetY };
+              }
+            }
+          }
+        }
+      }
+      prev = cur;
+    }
+    return best;
+  };
+
+  // Find where a projected sky curve intersects a target vertical line (default 20% right from left)
+  const findProjectedCurveXCrossing = (
+    skyPts: { raDeg: number; decDeg: number }[],
+    targetX: number
+  ): { x: number; y: number } | null => {
+    let prev: { x: number; y: number } | null = null;
+    let best: { x: number; y: number } | null = null;
+    let bestDist = Infinity;
+    const centerY = height * 0.5;
+    for (let i = 0; i < skyPts.length; i++) {
+      const cur = projectStereographic(skyPts[i].raDeg, skyPts[i].decDeg, proj, 180);
+      if (prev && cur) {
+        if (Math.hypot(cur.x - prev.x, cur.y - prev.y) < 420) {
+          const d0 = prev.x - targetX;
+          const d1 = cur.x - targetX;
+          if ((d0 <= 0 && d1 >= 0) || (d0 >= 0 && d1 <= 0)) {
+            const denom = cur.x - prev.x;
+            const t = Math.abs(denom) > 1e-4 ? (targetX - prev.x) / denom : 0.5;
+            const ly = prev.y + t * (cur.y - prev.y);
+            if (ly > 14 && ly < height - 10) {
+              const dist = Math.abs(ly - centerY);
+              if (dist < bestDist) {
+                bestDist = dist;
+                best = { x: targetX, y: ly };
+              }
+            }
+          }
+        }
+      }
+      prev = cur;
+    }
+    return best;
+  };
+
   // 3. Equatorial RA / Dec Grid (progressive steps down to 0.5°)
   if (layers.showGridEq) {
     const raStepDeg =
@@ -1875,9 +2151,11 @@ function renderStarChartPass(
 
       if (isEquator || isHalfDeg) ctx.restore();
 
-      const labelPt = projectStereographic(proj.ra0Deg, d, proj, 0);
-      if (labelPt) {
-        ctx.fillText(formatGridDeg(d, true), labelPt.x + 4, labelPt.y - 4);
+      if (showGridLabels) {
+        const labelPt = findProjectedCurveXCrossing(pts, parallelLabelTargetX);
+        if (labelPt) {
+          ctx.fillText(formatGridDeg(d, true), labelPt.x + 4, labelPt.y - 4);
+        }
       }
     }
 
@@ -1910,8 +2188,6 @@ function renderStarChartPass(
     const merDecMin = useEqCull ? Math.max(-88, proj.dec0Deg - eqViewRadius) : -85;
     const merDecMax = useEqCull ? Math.min(88, proj.dec0Deg + eqViewRadius) : 85;
     const merDecSample = useEqCull ? Math.max(0.2, Math.min(5, (merDecMax - merDecMin) / 36)) : 5;
-    const labelDecLimit = decStepDeg <= 1 ? 86 : 75;
-    const labelDec = Math.max(-labelDecLimit, Math.min(labelDecLimit, proj.dec0Deg));
 
     for (const r of eqMeridianRAs) {
       const isHalfDeg = raStepDeg < 1 && !Number.isInteger(r);
@@ -1929,13 +2205,15 @@ function renderStarChartPass(
 
       if (isHalfDeg) ctx.restore();
 
-      const labelPt = projectStereographic(r, labelDec, proj, 0);
-      if (labelPt) {
-        const totalMin = Math.round((r / 15) * 60);
-        const hrs = Math.floor(totalMin / 60) % 24;
-        const mins = totalMin % 60;
-        const raTxt = mins > 0 ? `${hrs}h${String(mins).padStart(2, '0')}m` : `${hrs}h`;
-        ctx.fillText(raTxt, labelPt.x + 3, labelPt.y + 11);
+      if (showGridLabels) {
+        const labelPt = findProjectedCurveYCrossing(pts, meridianLabelTargetY);
+        if (labelPt) {
+          const totalMin = Math.round((r / 15) * 60);
+          const hrs = Math.floor(totalMin / 60) % 24;
+          const mins = totalMin % 60;
+          const raTxt = mins > 0 ? `${hrs}h${String(mins).padStart(2, '0')}m` : `${hrs}h`;
+          ctx.fillText(raTxt, labelPt.x + 4, labelPt.y - 3);
+        }
       }
     }
     ctx.restore();
@@ -2053,9 +2331,9 @@ function renderStarChartPass(
 
       if (isHalfDeg) ctx.restore();
 
-      if (view.coordSystem === 'horizontal') {
-        const lbl = projectHorizontalRaw(alt, proj.az0Deg, proj, -0.1);
-        if (lbl && lbl.x > 16 && lbl.x < width - 48 && lbl.y > 16 && lbl.y < height - 16) {
+      if (showGridLabels && (view.coordSystem === 'horizontal' || !layers.showGridEq)) {
+        const lbl = findProjectedCurveXCrossing(pts, parallelLabelTargetX);
+        if (lbl) {
           ctx.fillText(formatGridDeg(alt, true), lbl.x + 4, lbl.y - 3);
         }
       }
@@ -2094,10 +2372,6 @@ function renderStarChartPass(
       : 0;
     const merAltMax = useHzCull ? Math.min(88, proj.alt0Deg + hzViewRadius) : 86;
     const merAltSample = useHzCull ? Math.max(0.2, Math.min(4, (merAltMax - merAltMin) / 36)) : 4;
-    const lblAlt = Math.max(
-      altStep <= 1 ? -75 : 2,
-      Math.min(altStep <= 1 ? 86 : 75, proj.alt0Deg)
-    );
 
     for (const az of hzAzimuths) {
       const isHalfDeg = azStep < 1 && !Number.isInteger(az);
@@ -2115,10 +2389,10 @@ function renderStarChartPass(
 
       if (isHalfDeg) ctx.restore();
 
-      if (view.coordSystem === 'horizontal') {
-        const lbl = projectHorizontalRaw(lblAlt, az, proj, -0.1);
-        if (lbl && lbl.x > 16 && lbl.x < width - 48 && lbl.y > 16 && lbl.y < height - 16) {
-          ctx.fillText(formatGridDeg(az, false), lbl.x + 3, lbl.y + 11);
+      if (showGridLabels && (view.coordSystem === 'horizontal' || !layers.showGridEq)) {
+        const lbl = findProjectedCurveYCrossing(pts, meridianLabelTargetY);
+        if (lbl) {
+          ctx.fillText(formatGridDeg(az, false), lbl.x + 4, lbl.y - 3);
         }
       }
     }
@@ -2170,10 +2444,11 @@ function renderStarChartPass(
       height,
       view.fsz,
       theme,
-      Math.max(0.05, Math.min(0.85, layers.constellationArtOpacity ?? 0.28)),
+      Math.max(0.05, Math.min(1.0, layers.constellationArtOpacity ?? 0.45)),
       catalogs.constellations,
       catalogs.constellationBoundaries,
-      proj
+      proj,
+      layers.constellationArtScope ?? 'all'
     );
   }
 
@@ -2255,6 +2530,7 @@ function renderStarChartPass(
     color: string;
     font: string;
     alpha?: number;
+    placementMode?: 'default' | 'horizontalSides';
   };
   const labelCandidates: LabelCandidate[] = [];
 
@@ -2553,6 +2829,7 @@ function renderStarChartPass(
                 ? '600 10.5px "IBM Plex Mono", monospace'
                 : '500 10.5px "IBM Plex Mono", monospace',
             alpha: isSensorPhoto ? 1 : effDsoLabelOpacity,
+            placementMode: 'horizontalSides',
           },
         });
       }
@@ -2925,6 +3202,7 @@ function renderStarChartPass(
                 ? '600 11.5px "IBM Plex Sans", "Noto Sans KR", sans-serif'
                 : '500 10.5px "IBM Plex Sans", "Noto Sans KR", sans-serif',
             alpha: isSensorPhoto ? 1 : starLabelOpacity,
+            placementMode: 'horizontalSides',
           });
         }
       }
@@ -2954,6 +3232,7 @@ function renderStarChartPass(
                 ? '600 11.5px "IBM Plex Sans", "Noto Sans KR", sans-serif'
                 : '500 10.5px "IBM Plex Sans", "Noto Sans KR", sans-serif',
             alpha: isSensorPhoto ? 1 : starLabelOpacity,
+            placementMode: 'horizontalSides',
           });
         }
       }
@@ -3355,6 +3634,7 @@ function renderStarChartPass(
           color: sys.isMultiple ? palette.multipleStarStroke : palette.doubleStarLabel,
           font: '500 9.5px "IBM Plex Mono", "Noto Sans KR", monospace',
           alpha: isSensorPhoto ? 1 : doubleStarLabelOpacity,
+          placementMode: 'horizontalSides',
         });
       }
     }
@@ -5859,9 +6139,15 @@ function renderStarChartPass(
   }
 
   // 12. Collision-Free Label Pass (integer-snapped coordinates + crisp halo for high legibility)
+  // Register every labeled star/DSO target as an obstacle so no label ever obscures a target symbol
+  for (const cand of labelCandidates) {
+    if (cand.placementMode === 'horizontalSides') {
+      placer.registerObstacle(cand.x, cand.y, Math.max(2.5, cand.radius + 1));
+    }
+  }
   labelCandidates.sort((a, b) => a.priority - b.priority);
   ctx.save();
-  ctx.textBaseline = 'top';
+  ctx.textBaseline = 'middle';
   ctx.textAlign = 'left';
   ctx.lineJoin = 'round';
   ctx.miterLimit = 2;
@@ -5890,11 +6176,12 @@ function renderStarChartPass(
       textW,
       textH,
       width,
-      height
+      height,
+      cand.placementMode ?? 'default'
     );
     if (pos) {
       const drawX = Math.round(pos.x);
-      const drawY = Math.round(pos.y);
+      const drawY = Math.round(pos.y + textH * 0.5);
       ctx.globalAlpha = cand.alpha ?? 1;
       ctx.strokeText(cand.text, drawX, drawY);
       ctx.fillStyle = cand.color;

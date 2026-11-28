@@ -1,4 +1,5 @@
 import {
+  AsterismCategory,
   AsterismGroup,
   AsterismLabelAnchor,
   AsterismLayer,
@@ -11,14 +12,37 @@ import {
   OpticsLabelDirection,
 } from '../types/astronomy';
 
+export const ASTERISM_CATEGORIES: { id: AsterismCategory; label: string }[] = [
+  { id: 'asterism', label: '성군' },
+  { id: 'hopping', label: '호핑' },
+  { id: 'starchain', label: '스타체인' },
+  { id: 'other', label: '기타' },
+];
+
+const VALID_CATEGORIES: AsterismCategory[] = ['asterism', 'hopping', 'starchain', 'other'];
+
+export function normalizeAsterismCategory(raw: unknown): AsterismCategory {
+  return VALID_CATEGORIES.includes(raw as AsterismCategory)
+    ? (raw as AsterismCategory)
+    : 'asterism';
+}
+
+export function getAsterismCategoryLabel(category?: AsterismCategory): string {
+  const norm = normalizeAsterismCategory(category);
+  const found = ASTERISM_CATEGORIES.find((c) => c.id === norm);
+  return found ? found.label : '성군';
+}
+
 export const ASTERISM_STORAGE_KEY = 'noxchart_asterisms_v1';
 
 export const ASTERISM_COLOR_SWATCHES = [
   { hex: '#FFFFFF', label: '흰색' },
   { hex: '#EF4444', label: '빨강' },
   { hex: '#F97316', label: '주황' },
+  { hex: '#EAB308', label: '노랑' },
   { hex: '#22C55E', label: '녹색' },
   { hex: '#3B82F6', label: '파랑' },
+  { hex: '#4F46E5', label: '남색' },
   { hex: '#A855F7', label: '보라' },
 ];
 
@@ -39,6 +63,11 @@ export const DEFAULT_ASTERISM_SETTINGS: AsterismSettings = {
   circleLinkEyepiece: false,
   circleLinkFinder: false,
   defaultExtensionFactor: 1,
+  defaultArrowStart: false,
+  defaultArrowEnd: true,
+  defaultDivisionCount: 4,
+  defaultDivisionShowLabels: true,
+  defaultDivisionReverseLabels: false,
   defaultVisibleFovRange: [0.05, 45],
   defaultLabelAnchor: 'top',
 };
@@ -62,6 +91,7 @@ export function createBuiltInPresetAsterismBundles(): BuiltInAsterismPreset[] {
         id: 'preset_grp_umi_engagement_ring',
         layerId: 'ast_layer_personal',
         name: '약혼반지 (Engagement Ring)',
+        category: 'asterism',
         visible: true,
         memo: '북극성(Polaris)을 다이아몬드로 삼는 작은 반지 성군',
         eyepieceTag: '30mm 82° · 저배율',
@@ -99,6 +129,7 @@ export function createBuiltInPresetAsterismBundles(): BuiltInAsterismPreset[] {
         id: 'preset_grp_m45_stream',
         layerId: 'ast_layer_cluster',
         name: 'M45 아틀라스~알키오네 물줄기',
+        category: 'starchain',
         visible: true,
         memo: '플레이아데스 주성에서 이어지는 대표 스타 체인',
         eyepieceTag: '24mm 68° · 파인더',
@@ -137,6 +168,7 @@ export function createBuiltInPresetAsterismBundles(): BuiltInAsterismPreset[] {
         id: 'preset_grp_double_cluster_chain',
         layerId: 'ast_layer_cluster',
         name: '이중성단 내부 별 사슬',
+        category: 'starchain',
         visible: true,
         memo: 'NGC 869와 NGC 884 사이를 잇는 핵심 호핑 체인',
         eyepieceTag: '11mm 82° · 고배율',
@@ -206,7 +238,9 @@ export function getNextShapeName(
       : type === 'circle'
       ? '원'
       : type === 'arrow'
-      ? '화살표'
+      ? '방향선'
+      : type === 'divider'
+      ? '등분선'
       : '텍스트';
 
   const scope = asterismId
@@ -234,7 +268,7 @@ export function getNextAsterismGroupName(existingAsterisms: AsterismGroup[]): st
       if (Number.isFinite(n) && n > maxNum) maxNum = n;
     }
   }
-  return `새 성군 ${Math.max(maxNum + 1, existingAsterisms.length + 1)}`;
+  return `새 그리기 ${Math.max(maxNum + 1, existingAsterisms.length + 1)}`;
 }
 
 function clamp(v: unknown, fallback: number, min: number, max: number): number {
@@ -260,6 +294,7 @@ const VALID_OBJ_TYPES: AsterismObject['type'][] = [
   'polygon',
   'circle',
   'arrow',
+  'divider',
   'label',
 ];
 
@@ -301,6 +336,21 @@ export function sanitizeAsterismSettings(raw: unknown): AsterismSettings {
     circleLinkFinder:
       typeof o.circleLinkFinder === 'boolean' ? o.circleLinkFinder : fb.circleLinkFinder,
     defaultExtensionFactor: clamp(o.defaultExtensionFactor, fb.defaultExtensionFactor, 1, 6),
+    defaultArrowStart:
+      typeof o.defaultArrowStart === 'boolean' ? o.defaultArrowStart : fb.defaultArrowStart,
+    defaultArrowEnd:
+      typeof o.defaultArrowEnd === 'boolean' ? o.defaultArrowEnd : fb.defaultArrowEnd,
+    defaultDivisionCount: Math.round(
+      clamp(o.defaultDivisionCount, fb.defaultDivisionCount, 2, 12)
+    ),
+    defaultDivisionShowLabels:
+      typeof o.defaultDivisionShowLabels === 'boolean'
+        ? o.defaultDivisionShowLabels
+        : fb.defaultDivisionShowLabels,
+    defaultDivisionReverseLabels:
+      typeof o.defaultDivisionReverseLabels === 'boolean'
+        ? o.defaultDivisionReverseLabels
+        : Boolean(fb.defaultDivisionReverseLabels),
     defaultVisibleFovRange: [minFov, Math.max(minFov, maxFov)],
     defaultLabelAnchor: VALID_ANCHORS.includes(o.defaultLabelAnchor as AsterismLabelAnchor)
       ? (o.defaultLabelAnchor as AsterismLabelAnchor)
@@ -357,6 +407,7 @@ export function sanitizeAsterismGroup(
       typeof g.name === 'string' && g.name.trim()
         ? g.name.trim().slice(0, 80)
         : `성군 ${index + 1}`,
+    category: normalizeAsterismCategory(g.category),
     visible: typeof g.visible === 'boolean' ? g.visible : true,
     memo: typeof g.memo === 'string' && g.memo.trim() ? g.memo.slice(0, 600) : undefined,
     eyepieceTag:
@@ -422,6 +473,18 @@ export function sanitizeAsterismObject(
         ? 0.08
         : 0,
     extensionFactor: o.extensionFactor !== undefined ? clamp(o.extensionFactor, 1, 1, 6) : 1,
+    arrowStart: type === 'arrow' ? Boolean(o.arrowStart) : undefined,
+    arrowEnd: type === 'arrow' ? (typeof o.arrowEnd === 'boolean' ? o.arrowEnd : true) : undefined,
+    divisionCount:
+      type === 'divider' ? Math.round(clamp(o.divisionCount, 4, 2, 12)) : undefined,
+    divisionShowLabels:
+      type === 'divider'
+        ? typeof o.divisionShowLabels === 'boolean'
+          ? o.divisionShowLabels
+          : true
+        : undefined,
+    divisionReverseLabels:
+      type === 'divider' ? Boolean(o.divisionReverseLabels) : undefined,
     visibleFovRange: [minFov, Math.max(minFov, maxFov)],
     label: typeof o.label === 'string' ? o.label.slice(0, 80) : '',
     memo: typeof o.memo === 'string' && o.memo.trim() ? o.memo.slice(0, 600) : undefined,
@@ -708,7 +771,7 @@ export function parseAsterismsFromJson(
         layers: [],
         asterisms: [],
         objects: [],
-        error: '가져올 성군 벡터 데이터가 없습니다.',
+        error: '가져올 그리기 벡터 데이터가 없습니다.',
       };
     }
     return { layers, asterisms: normalized.asterisms, objects: normalized.objects };
@@ -743,7 +806,7 @@ interface CompactPayloadV2 {
     string, // id
     string, // layerId
     string, // asterismId
-    'p' | 'g' | 'c' | 'a' | 't', // polyline | polygon | circle | arrow | label
+    'p' | 'g' | 'c' | 'a' | 'd' | 't', // polyline | polygon | circle | arrow | divider | label
     [number, number, string?][], // vertices
     string, // color hex without '#'
     number, // width
@@ -756,15 +819,17 @@ interface CompactPayloadV2 {
     number, // textOpacity (for label)
     string, // label (shape name)
     string, // memo (label canvas text)
-    number?, // optional textSize (for label)
+    number?, // optional textSize (label) | divisionCount (divider) | arrowMask (arrow: bit0=start, bit1=end)
+    (0 | 1)?, // optional divisionShowLabels (divider)
   ][];
 }
 
-const TYPE_TO_SHORT: Record<AsterismObject['type'], 'p' | 'g' | 'c' | 'a' | 't'> = {
+const TYPE_TO_SHORT: Record<AsterismObject['type'], 'p' | 'g' | 'c' | 'a' | 'd' | 't'> = {
   polyline: 'p',
   polygon: 'g',
   circle: 'c',
   arrow: 'a',
+  divider: 'd',
   label: 't',
 };
 const SHORT_TO_TYPE: Record<string, AsterismObject['type']> = {
@@ -772,6 +837,7 @@ const SHORT_TO_TYPE: Record<string, AsterismObject['type']> = {
   g: 'polygon',
   c: 'circle',
   a: 'arrow',
+  d: 'divider',
   t: 'label',
 };
 const STYLE_TO_SHORT: Record<AsterismLineStyle, 'd' | 'c' | 's'> = {
@@ -872,6 +938,12 @@ export function encodeAsterismsToUrlParam(
       ];
       if (obj.type === 'label' && obj.textSize !== undefined) {
         tuple.push(Math.round(obj.textSize));
+      } else if (obj.type === 'arrow') {
+        const mask = (obj.arrowStart ? 1 : 0) | (obj.arrowEnd !== false ? 2 : 0);
+        if (mask !== 2) tuple.push(mask);
+      } else if (obj.type === 'divider') {
+        tuple.push(Math.round(clamp(obj.divisionCount, 4, 2, 12)));
+        tuple.push(obj.divisionShowLabels !== false ? 1 : 0);
       }
       return tuple;
     }),
@@ -951,6 +1023,28 @@ export function decodeAsterismsFromUrlParam(
           smooth: row[9] === 1,
           fillAlpha: clamp(row[10], 0, 0, 0.45),
           extensionFactor: clamp(row[11], 1, 1, 6),
+          arrowStart:
+            type === 'arrow'
+              ? row.length >= 17
+                ? (Number(row[16]) & 1) !== 0
+                : false
+              : undefined,
+          arrowEnd:
+            type === 'arrow'
+              ? row.length >= 17
+                ? (Number(row[16]) & 2) !== 0
+                : true
+              : undefined,
+          divisionCount:
+            type === 'divider'
+              ? Math.round(clamp(row.length >= 17 ? row[16] : 4, 4, 2, 12))
+              : undefined,
+          divisionShowLabels:
+            type === 'divider'
+              ? row.length >= 18
+                ? row[17] !== 0
+                : true
+              : undefined,
           radiusDeg: type === 'circle' ? clamp(row[12], 0.5, 0.01, 90) : undefined,
           textOpacity: type === 'label' ? clamp(row[13], 0.95, 0.1, 1.0) : undefined,
           textSize:
